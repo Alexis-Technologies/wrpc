@@ -56,6 +56,7 @@ const {
 } = require('./framing.js');
 const { StreamMux } = require('./streams.js');
 const { negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
+const { ConfigError } = require('../errors.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -81,7 +82,7 @@ const READ_AHEAD = 1 << 20;
 const normalizeBackpressure = (value, label) => {
   if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
   if (!Number.isInteger(value) || value < 0) {
-    throw new TypeError(`${label}: maxBackpressure must be a non-negative integer of bytes (0 = off)`);
+    throw new ConfigError(`${label}: maxBackpressure must be a non-negative integer of bytes (0 = off)`);
   }
   return value;
 };

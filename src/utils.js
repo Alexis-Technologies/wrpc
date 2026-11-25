@@ -1,6 +1,7 @@
 'use strict';
 
 const { generateUUID } = require('./runtime/node.js');
+const { ConfigError } = require('./errors.js');
 
 // Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
 // to become a rejection: `void emitter.emit('close')` is the house style, and a
@@ -418,7 +419,7 @@ const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUND
 // path forever to save one id at boot.
 const resolveGenerateId = (value, label) => {
   const fail = (message) => {
-    throw new TypeError(`${label}: generateId ${message}`);
+    throw new ConfigError(`${label}: generateId ${message}`);
   };
   if (value === null || value === undefined) return { generate: generateUUID, first: generateUUID() };
   if (typeof value !== 'function') return fail('must be a function');
@@ -442,7 +443,7 @@ const resolveGenerateId = (value, label) => {
 // refused everything.
 const checkLimit = (label, name, value) => {
   if ((Number.isInteger(value) && value >= 0) || value === Infinity) return value;
-  throw new TypeError(`${label}: ${name} must be a non-negative integer or Infinity`);
+  throw new ConfigError(`${label}: ${name} must be a non-negative integer or Infinity`);
 };
 
 module.exports = {

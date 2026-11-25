@@ -1,6 +1,7 @@
 'use strict';
 
 const zlib = require('node:zlib');
+const { ConfigError } = require('../errors.js');
 
 const EXTENSION_NAME = 'permessage-deflate';
 const TRAILER = Buffer.from([0x00, 0x00, 0xff, 0xff]);
@@ -138,13 +139,13 @@ const acceptOffer = (offer, options) => {
 // (−1 is zlib's default, 6) and memLevel 1..9.
 const assertDeflateOptions = (options) => {
   if (options === true || options === undefined || options === null) return;
-  if (typeof options !== 'object') throw new TypeError('perMessageDeflate: expected true or an options object');
+  if (typeof options !== 'object') throw new ConfigError('perMessageDeflate: expected true or an options object');
   const { level, memLevel } = options;
   if (level !== undefined && !(Number.isInteger(level) && level >= -1 && level <= 9)) {
-    throw new TypeError('perMessageDeflate: level must be an integer from -1 to 9');
+    throw new ConfigError('perMessageDeflate: level must be an integer from -1 to 9');
   }
   if (memLevel !== undefined && !(Number.isInteger(memLevel) && memLevel >= 1 && memLevel <= 9)) {
-    throw new TypeError('perMessageDeflate: memLevel must be an integer from 1 to 9');
+    throw new ConfigError('perMessageDeflate: memLevel must be an integer from 1 to 9');
   }
 };
 

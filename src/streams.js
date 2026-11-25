@@ -2,6 +2,7 @@
 
 const { Emitter } = require('./utils.js');
 const { chunkEncode } = require('./chunks.js');
+const { ArgumentError } = require('./errors.js');
 
 const PUSH_EVENT = Symbol('push');
 const PULL_EVENT = Symbol('pull');
@@ -395,9 +396,11 @@ class WrpcWritable extends Emitter {
   // it announced whatever it was given and was closed by the server's 400 a
   // round trip later. A mistake in a program is told where it is made.
   constructor(id, name, size, transport, otel = null, registry = null) {
-    if (typeof name !== 'string' || name === '') throw new TypeError('createStream: name must be a non-empty string');
+    if (typeof name !== 'string' || name === '') {
+      throw new ArgumentError('createStream: name must be a non-empty string');
+    }
     if (!Number.isSafeInteger(size) || size < 0) {
-      throw new TypeError('createStream: size must be a non-negative integer of bytes');
+      throw new ArgumentError('createStream: size must be a non-negative integer of bytes');
     }
     super();
     this.id = id;
@@ -504,9 +507,9 @@ class WrpcWritable extends Emitter {
   // so nothing was written and the answer was `true`; a `chunkSize` of zero
   // never advanced, and wrote empty chunks until the process died.
   async writeAll(data, chunkSize = CHUNK_SIZE) {
-    if (!(data instanceof Uint8Array)) throw new TypeError('writeAll: data must be a Uint8Array');
+    if (!(data instanceof Uint8Array)) throw new ArgumentError('writeAll: data must be a Uint8Array');
     if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
-      throw new TypeError('writeAll: chunkSize must be a positive integer of bytes');
+      throw new ArgumentError('writeAll: chunkSize must be a positive integer of bytes');
     }
     for (let at = 0; at < data.length; at += chunkSize) {
       if (this.write(data.subarray(at, at + chunkSize))) continue;

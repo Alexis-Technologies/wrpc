@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError } = require('../errors.js');
+
 // A preset dictionary for the per-message codecs, built from what a router
 // declares. One-shot deflate has no history to lean on: a 90 B event
 // compresses to 79 B because every field name and every method target is
@@ -102,9 +104,11 @@ const schemaKeys = (schema, out, depth = 0) => {
  */
 const buildDictionary = (router, { limit = MAX_DICTIONARY } = {}) => {
   if (!router || typeof router.introspect !== 'function') {
-    throw new TypeError('buildDictionary: a Router (anything with introspect()) is required');
+    throw new ConfigError('buildDictionary: a Router (anything with introspect()) is required');
   }
-  if (!Number.isInteger(limit) || limit <= 0) throw new TypeError('buildDictionary: limit must be a positive integer');
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new ConfigError('buildDictionary: limit must be a positive integer');
+  }
   const info = router.introspect(null, { schemas: true });
   const keys = new Set();
   const targets = [];

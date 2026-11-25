@@ -26,6 +26,7 @@ const hasToken = (value, token) => !!value && value.toLowerCase().includes(token
 // can rely on. A peer that offers nothing gets no subprotocol and speaks
 // 1.0 — additive, nothing breaks. Re-exported below, as it always was.
 const { getPathname, negotiateProtocol } = require('./upgrade.js');
+const { ConfigError } = require('../errors.js');
 
 const writeResponse = (socket, headerLines) => {
   socket.cork();
@@ -66,7 +67,7 @@ class WebsocketServer extends EventEmitter {
   constructor({ server, logger = globalThis.console, ...opts } = {}) {
     super();
     if (server !== undefined && (!server || typeof server.on !== 'function')) {
-      throw new TypeError('WebsocketServer: options.server must be an http.Server');
+      throw new ConfigError('WebsocketServer: options.server must be an http.Server');
     }
     permessageDeflate.assertDeflateOptions(opts.perMessageDeflate);
     // Normalized once here, childed per connection below. The `Server` shell

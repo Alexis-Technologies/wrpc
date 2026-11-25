@@ -29,6 +29,7 @@ const PROTOCOL_HEADER = 'sec-websocket-protocol';
 // deployment reads the caller's address from when no proxy has set it.
 // The deny list lives in reserved.js, beside the sealed request's.
 const { RESERVED_DECLARED } = require('./reserved.js');
+const { ConfigError } = require('../errors.js');
 
 const NO_LOG = { warn() {} };
 
@@ -152,7 +153,7 @@ const readHandshake = (req, { metaMaxBytes = DEFAULT_META_MAX, log = NO_LOG, dec
 const normalizeDeclaredHeaders = (value, label) => {
   if (value === null || value === undefined) return null;
   if (!Array.isArray(value) || !value.every((name) => typeof name === 'string' && name.length > 0)) {
-    throw new TypeError(`${label}: declaredHeaders must be an array of header names, or null`);
+    throw new ConfigError(`${label}: declaredHeaders must be an array of header names, or null`);
   }
   const allow = new Set();
   for (const name of value) {

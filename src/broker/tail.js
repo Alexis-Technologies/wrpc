@@ -52,6 +52,7 @@ const { codedError } = require('./ids.js');
 const { positiveInteger } = require('./retry.js');
 const { Deque } = require('../deque.js');
 const { sleep } = require('./adapter.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_HIGH_WATER_MARK = 1024;
 const DEFAULT_PAGE = 256;
@@ -95,18 +96,18 @@ class TopicTails {
     onLag = null,
   }) {
     for (const [name, fn] of Object.entries({ live, range, covered, advance })) {
-      if (typeof fn !== 'function') throw new TypeError(`TopicTails: ${name} must be a function`);
+      if (typeof fn !== 'function') throw new ConfigError(`TopicTails: ${name} must be a function`);
     }
     if (contiguous !== null && typeof contiguous !== 'function') {
-      throw new TypeError('TopicTails: contiguous must be a function or null');
+      throw new ConfigError('TopicTails: contiguous must be a function or null');
     }
     if (onLag !== null && typeof onLag !== 'function') {
-      throw new TypeError('TopicTails: onLag must be a function or null');
+      throw new ConfigError('TopicTails: onLag must be a function or null');
     }
     // A mark that is not a count never lags a reader (NaN, Infinity) or lags
     // it on every entry (null), and a page of nothing never ends a catch-up.
-    if (!positiveInteger(highWaterMark)) throw new TypeError('TopicTails: highWaterMark must be a positive integer');
-    if (!positiveInteger(page)) throw new TypeError('TopicTails: page must be a positive integer');
+    if (!positiveInteger(highWaterMark)) throw new ConfigError('TopicTails: highWaterMark must be a positive integer');
+    if (!positiveInteger(page)) throw new ConfigError('TopicTails: page must be a positive integer');
     this.#onLag = onLag;
     this.#live = live;
     this.#range = range;

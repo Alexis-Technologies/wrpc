@@ -24,6 +24,7 @@ const { clip } = require('./errors.js');
 // browser bundle for it.
 const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
 const { hasBytes, encodeAttachments } = require('../attachments.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -510,7 +511,7 @@ class Client extends Emitter {
       throw refusal(`Can't send wrpc event to http transport`);
     }
     // An ask expects an answer, and a datagram may never arrive.
-    if (options.unreliable) throw new TypeError('ask() cannot be unreliable: an answer is expected');
+    if (options.unreliable) throw new ArgumentError('ask() cannot be unreliable: an answer is expected');
     const id = this.generateId();
     const packet = { type: 'event', name, data, id };
     this.send(packet);
@@ -594,7 +595,7 @@ class Client extends Emitter {
     // is a file.
     const id = this.generateId();
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
-      throw new TypeError('createStream: generateId must return a string of at most 255 characters');
+      throw new ConfigError('createStream: generateId must return a string of at most 255 characters');
     }
     // Not registered in `streams`: that map holds what the PEER announced —
     // what getStream() answers, chunks are routed to and `maxStreams` caps.

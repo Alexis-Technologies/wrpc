@@ -12,6 +12,7 @@
 // so the subpath stays ~1 KB) — one file serves both sides, like ./query.
 
 const { META_PARAM, META_HEADER, META_PREFIX, BEARER_PROTOCOL } = require('../wire.js');
+const { ConfigError } = require('../errors.js');
 
 // ---------------------------------------------------------------------------
 // Client-side token stores. The contract is three functions, sync or async
@@ -105,9 +106,9 @@ const cookieStorage = (doc, { prefix = 'wrpc:', maxAge = 31536000, path = '/', s
 // re-binds the LIVE connection while the stored pair covers the next one.
 const bearerAuth = ({ store, signIn, refresh, key = 'tokens', on }) => {
   if (!isTokenStore(store)) {
-    throw new TypeError('bearerAuth: store must provide get/set/delete (a Map qualifies)');
+    throw new ConfigError('bearerAuth: store must provide get/set/delete (a Map qualifies)');
   }
-  if (typeof signIn !== 'function') throw new TypeError('bearerAuth: signIn must be a function');
+  if (typeof signIn !== 'function') throw new ConfigError('bearerAuth: signIn must be a function');
   const options = {
     headers: async () => {
       const tokens = await store.get(key);

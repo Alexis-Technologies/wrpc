@@ -6,6 +6,7 @@ const { dictionaryCompressor } = require('./compression/dictionary.js');
 const { deflateCompressor, brotliCompressor, zstdCompressor } = require('./compression/codecs.js');
 const { buildDictionary } = require('./rpc/dictionary.js');
 const { WrpcClient, WrpcClientProxy, WrpcError, connect } = require('./client.js');
+const { ConfigError, ArgumentError } = require('./errors.js');
 const { Server } = require('./server.js');
 const { RpcServer, Client, Context } = require('./rpc/core.js');
 const { readHandshake } = require('./rpc/handshake.js');
@@ -25,6 +26,8 @@ module.exports = {
   WrpcClient,
   WrpcClientProxy,
   WrpcError,
+  ConfigError,
+  ArgumentError,
   connect,
   Server,
   RpcServer,

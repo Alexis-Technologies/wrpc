@@ -20,6 +20,7 @@ const { tracked } = require('../rpc/subscriptions.js');
 const { capabilityOf, brokerName } = require('./port.js');
 const { codedError, signId, openId, toText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_MAX_ID_LENGTH = 512;
 // A sealed entry the feed cannot open is logged at warn once per reason per
@@ -45,7 +46,7 @@ const brokerFeed = (broker, topic, options = {}) => {
   const log = capabilityOf(broker, 'log', 'brokerFeed');
   const system = brokerName(log) === 'custom' ? brokerName(broker) : brokerName(log);
   if (typeof topic !== 'function' && (typeof topic !== 'string' || topic.length === 0)) {
-    throw new TypeError('brokerFeed: topic must be a non-empty string or a (context, args) => topic function');
+    throw new ConfigError('brokerFeed: topic must be a non-empty string or a (context, args) => topic function');
   }
   const {
     from = 'latest',
@@ -65,19 +66,19 @@ const brokerFeed = (broker, topic, options = {}) => {
     text: true,
   });
   if (from !== 'latest' && from !== 'earliest') {
-    throw new TypeError("brokerFeed: from must be 'latest' or 'earliest'");
+    throw new ConfigError("brokerFeed: from must be 'latest' or 'earliest'");
   }
   const decodeValue = typeof decode === 'function' ? decode : DECODERS[decode];
   if (typeof decodeValue !== 'function') {
-    throw new TypeError("brokerFeed: decode must be 'json', 'text' or a function");
+    throw new ConfigError("brokerFeed: decode must be 'json', 'text' or a function");
   }
-  if (map !== null && typeof map !== 'function') throw new TypeError('brokerFeed: map must be a function');
-  if (onGap !== null && typeof onGap !== 'function') throw new TypeError('brokerFeed: onGap must be a function');
+  if (map !== null && typeof map !== 'function') throw new ConfigError('brokerFeed: map must be a function');
+  if (onGap !== null && typeof onGap !== 'function') throw new ConfigError('brokerFeed: onGap must be a function');
   if (secret !== null && (typeof secret !== 'string' || secret.length === 0)) {
-    throw new TypeError('brokerFeed: secret must be a non-empty string');
+    throw new ConfigError('brokerFeed: secret must be a non-empty string');
   }
   if (!Number.isInteger(maxIdLength) || maxIdLength <= 0) {
-    throw new TypeError('brokerFeed: maxIdLength must be a positive integer');
+    throw new ConfigError('brokerFeed: maxIdLength must be a positive integer');
   }
 
   // The resume position a peer-supplied id stands for, or the refusal code.

@@ -8,6 +8,7 @@ const { buildMeta } = require('../rpc/client.js');
 const { createSignalingUnit, createSignalingHooks } = require('./signaling.js');
 const { createAssertionIssuer, generateAssertionKeys } = require('./assertionIssuer.js');
 const { RtcPeerTransport } = require('./transport.js');
+const { ConfigError } = require('../errors.js');
 
 /**
  * A raw data channel the application negotiated itself, attached to an
@@ -23,7 +24,7 @@ const { RtcPeerTransport } = require('./transport.js');
  * is warned on the client's log as 'rtc.channel.error' and closes the channel.
  */
 const attachChannel = (server, channel, options = {}) => {
-  if (typeof server?.attach !== 'function') throw new TypeError('attachChannel: a server with attach() is required');
+  if (typeof server?.attach !== 'function') throw new ConfigError('attachChannel: a server with attach() is required');
   const {
     peer,
     headers,

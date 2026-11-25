@@ -46,6 +46,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
+const { ConfigError, ArgumentError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_ACK_WAIT = 30_000;
@@ -83,22 +84,22 @@ const createNatsBroker = (options = {}) => {
   // Ids: an injected generator is used verbatim — see idFactory.
   const { nextId } = idFactory(generateId, 'createNatsBroker');
   if (!nc || !isFunction(nc.publish) || !isFunction(nc.subscribe)) {
-    throw new TypeError('createNatsBroker: options.nc must be a NATS connection (publish/subscribe/...)');
+    throw new ConfigError('createNatsBroker: options.nc must be a NATS connection (publish/subscribe/...)');
   }
   if (!isFunction(headersFactory)) {
-    throw new TypeError('createNatsBroker: options.headers must be the nats headers() factory (a package export)');
+    throw new ConfigError('createNatsBroker: options.headers must be the nats headers() factory (a package export)');
   }
   if ((jetstream === null) !== (jetstreamManager === null)) {
-    throw new TypeError('createNatsBroker: options.jetstream and options.jetstreamManager come together');
+    throw new ConfigError('createNatsBroker: options.jetstream and options.jetstreamManager come together');
   }
   if (jetstream !== null && (!isFunction(jetstream) || !isFunction(jetstreamManager))) {
-    throw new TypeError('createNatsBroker: options.jetstream/jetstreamManager must be the nats JetStream factories');
+    throw new ConfigError('createNatsBroker: options.jetstream/jetstreamManager must be the nats JetStream factories');
   }
   // Strict, at construction: `ackWait` becomes nanoseconds in a consumer
   // config, and a string from the environment multiplied is NaN — a
   // consumer the server refuses at the first consume(), not here.
   if (!positiveInteger(ackWait)) {
-    throw new TypeError('createNatsBroker: options.ackWait must be a positive integer of milliseconds');
+    throw new ConfigError('createNatsBroker: options.ackWait must be a positive integer of milliseconds');
   }
   // The GROUP's cap on unacked messages, set on the durable consumer every
   // member of the group shares; null leaves JetStream's own default. It
@@ -106,7 +107,7 @@ const createNatsBroker = (options = {}) => {
   // it for the whole group, and a fleet of four with prefetch 16 held 16
   // between them, not 64.
   if (maxAckPending !== null && !positiveInteger(maxAckPending)) {
-    throw new TypeError('createNatsBroker: options.maxAckPending must be a positive integer or null');
+    throw new ConfigError('createNatsBroker: options.maxAckPending must be a positive integer or null');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'nats' });
   const report = reporter(log);
@@ -148,7 +149,7 @@ const createNatsBroker = (options = {}) => {
       }
     },
     subscribe(channel, handler) {
-      if (!isFunction(handler)) throw new TypeError('nats backplane.subscribe: handler must be a function');
+      if (!isFunction(handler)) throw new ArgumentError('nats backplane.subscribe: handler must be a function');
       const subscription = nc.subscribe(channelSubject(channel), {
         callback: (error, message) => {
           if (error) return void report('broker.nats.subscription', error, { channel });
@@ -337,7 +338,7 @@ const createNatsBroker = (options = {}) => {
   const read = (topic, options = {}) => {
     const { after = null, from = 'latest', signal = null } = options;
     if (from !== 'latest' && from !== 'earliest') {
-      throw new TypeError("nats log.read: from must be 'latest' or 'earliest'");
+      throw new ArgumentError("nats log.read: from must be 'latest' or 'earliest'");
     }
     if (after === null || after === undefined) {
       if (from === 'latest') return wrapRead(tails.read(topic, { from, signal }), Promise.resolve());

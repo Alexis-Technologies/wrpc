@@ -1,6 +1,6 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
 import * as deflate from '../src/deflate/index.js';
-import type { DeflateCodecOptions, DeflateError } from '../src/deflate/index.js';
+import type { DeflateCodecOptions, DeflateError, DeflateErrorCode } from '../src/deflate/index.js';
 import type { Compressor, RpcServerOptions, Router } from '../index.js';
 import { buildDictionary } from '../index.js';
 
@@ -19,4 +19,5 @@ expectAssignable<RpcServerOptions>({ router, compression: { codec } });
 expectType<Uint8Array>(deflate.deflateRaw(new Uint8Array(4)));
 expectType<Uint8Array>(deflate.inflateRaw(new Uint8Array(4), { maxOutput: 1024 }));
 declare const error: DeflateError;
-expectType<string>(error.code);
+expectType<DeflateErrorCode>(error.code);
+expectAssignable<string>(error.code);

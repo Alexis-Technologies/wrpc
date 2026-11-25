@@ -53,7 +53,10 @@ export declare function deflateRaw(
   options?: { dictionary?: ArrayBuffer | ArrayBufferView | null; level?: number },
 ): Uint8Array;
 
-/** Every malformed input is one of these, with a code: truncated, huffman, stored, distance, block, too-large. */
+/** What was wrong with the input, or `too-large` past `maxOutput`. */
+export type DeflateErrorCode = 'truncated' | 'huffman' | 'stored' | 'distance' | 'block' | 'too-large';
+
+/** Every malformed input is one of these, with a code. */
 export declare class DeflateError extends Error {
-  readonly code: string;
+  readonly code: DeflateErrorCode;
 }

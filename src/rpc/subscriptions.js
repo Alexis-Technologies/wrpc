@@ -27,6 +27,7 @@
 // more subscription-specific than Emitter is.
 const { EventStream, createEventStream } = require('../utils.js');
 const { publicErrorMessage, clip } = require('./errors.js');
+const { ConfigError } = require('../errors.js');
 
 const TRACKED = Symbol.for('wrpc.tracked');
 
@@ -59,14 +60,14 @@ class EventLog {
 
   constructor({ size = DEFAULT_LOG_SIZE, start = 0, epoch = null } = {}) {
     if (!(Number.isInteger(size) && size > 0)) {
-      throw new TypeError('createEventLog: size must be a positive integer');
+      throw new ConfigError('createEventLog: size must be a positive integer');
     }
     this.#size = size;
     this.#entries = new Array(size);
     this.#next = start;
     this.#epoch = epoch === null || epoch === undefined ? Math.random().toString(36).slice(2, 10) : String(epoch);
     if (this.#epoch.includes('.')) {
-      throw new TypeError('createEventLog: epoch must not contain a dot');
+      throw new ConfigError('createEventLog: epoch must not contain a dot');
     }
   }
 

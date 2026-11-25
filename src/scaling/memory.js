@@ -1,6 +1,7 @@
 'use strict';
 
 const { createLoggerWriter } = require('../logging.js');
+const { ArgumentError } = require('../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 
@@ -59,7 +60,7 @@ class MemoryBackplane {
 
   subscribe(channel, handler) {
     if (typeof handler !== 'function') {
-      throw new TypeError('MemoryBackplane.subscribe: handler must be a function');
+      throw new ArgumentError('MemoryBackplane.subscribe: handler must be a function');
     }
     const key = this.#key(channel);
     let handlers = this.#channels.get(key);

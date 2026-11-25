@@ -26,6 +26,7 @@ const crypto = require('node:crypto');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('./envelope.js');
 const { isKeyProvider, OpenError } = require('./contracts.js');
 const { createLoggerWriter } = require('../logging.js');
+const { ConfigError } = require('../errors.js');
 
 const isFunction = (value) => typeof value === 'function';
 const CREATE = Object.freeze({ create: true });
@@ -45,18 +46,20 @@ const isState = (value) => typeof value === 'object' && value !== null && !Array
 
 const sealedStore = (store, options = {}) => {
   if (!store || !isFunction(store.get) || !isFunction(store.set) || !isFunction(store.delete)) {
-    throw new TypeError('sealedStore: store must be a session store with get(token), set(token, data), delete(token)');
+    throw new ConfigError(
+      'sealedStore: store must be a session store with get(token), set(token, data), delete(token)',
+    );
   }
   const { acceptPlaintext = false, seal = true, logger = globalThis.console } = options;
   if (typeof acceptPlaintext !== 'boolean') {
-    throw new TypeError('sealedStore: options.acceptPlaintext must be a boolean');
+    throw new ConfigError('sealedStore: options.acceptPlaintext must be a boolean');
   }
-  if (typeof seal !== 'boolean') throw new TypeError('sealedStore: options.seal must be a boolean');
+  if (typeof seal !== 'boolean') throw new ConfigError('sealedStore: options.seal must be a boolean');
   // A rotation is walked through kids(): a provider without it would keep
   // every session under an older kid unreadable — a mass logout the
   // moment `current` moved. Refused here, not discovered at the rotation.
   if (isKeyProvider(options.keys) && typeof options.keys.kids !== 'function') {
-    throw new TypeError('sealedStore: a key provider must implement kids() — the kids a rotation is walked through');
+    throw new ConfigError('sealedStore: a key provider must implement kids() — the kids a rotation is walked through');
   }
   const encryption = normalizeEnvelopeEncryption(
     { keys: options.keys, cipher: options.cipher, replayWindow: false },

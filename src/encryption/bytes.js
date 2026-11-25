@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError } = require('../errors.js');
+
 // Byte plumbing for @alexify/wrpc/encryption — browser-safe and require-free
 // (no Buffer: this file is bundled for a page). Everything here is a cold
 // path: key parsing, handshake assembly, labels. The per-message paths build
@@ -113,7 +115,7 @@ const counterNonce = (counter, out = new Uint8Array(12)) => {
  */
 const randomSource = (crypto = globalThis.crypto) => {
   if (!crypto || typeof crypto.getRandomValues !== 'function') {
-    throw new TypeError('encryption: crypto.getRandomValues is required (a secure context in a browser)');
+    throw new ConfigError('encryption: crypto.getRandomValues is required (a secure context in a browser)');
   }
   return (length) => crypto.getRandomValues(new Uint8Array(length));
 };
@@ -121,7 +123,7 @@ const randomSource = (crypto = globalThis.crypto) => {
 /** `crypto.subtle`, or the refusal every WebCrypto-backed factory shares. */
 const requireSubtle = (subtle, name) => {
   if (!subtle || typeof subtle.importKey !== 'function') {
-    throw new TypeError(`${name}: WebCrypto (crypto.subtle) is required — a secure context in a browser`);
+    throw new ConfigError(`${name}: WebCrypto (crypto.subtle) is required — a secure context in a browser`);
   }
   return subtle;
 };

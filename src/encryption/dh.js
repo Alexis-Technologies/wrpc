@@ -13,6 +13,7 @@
 
 const nodeCrypto = require('node:crypto');
 const { isZero } = require('./bytes.js');
+const { ArgumentError } = require('../errors.js');
 
 const LENGTH = 32;
 
@@ -31,7 +32,7 @@ const x25519 = ({ crypto = nodeCrypto } = {}) => {
 
   const dh = async (privateKey, publicKey) => {
     if (!(publicKey instanceof Uint8Array) || publicKey.length !== LENGTH) {
-      throw new TypeError(`encryption: an X25519 public key is ${LENGTH} bytes`);
+      throw new ArgumentError(`encryption: an X25519 public key is ${LENGTH} bytes`);
     }
     // A low-order point makes the output zero whatever the private key is
     // (RFC 7748 §6.1) — an attacker's way to force a known secret. OpenSSL
@@ -59,7 +60,7 @@ const x25519 = ({ crypto = nodeCrypto } = {}) => {
 
   const keyPair = async (seed) => {
     if (!(seed instanceof Uint8Array) || seed.length !== LENGTH) {
-      throw new TypeError(`encryption: an X25519 private key is ${LENGTH} bytes`);
+      throw new ArgumentError(`encryption: an X25519 private key is ${LENGTH} bytes`);
     }
     const pkcs8 = Buffer.concat([PKCS8_PREFIX, seed]);
     try {

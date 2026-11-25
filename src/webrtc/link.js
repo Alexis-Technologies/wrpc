@@ -33,6 +33,7 @@ const { isRtcAdapter, isRtcPeerConnection } = require('./port.js');
 const { negotiateMessageSize, MIN_MESSAGE_SIZE } = require('./framing.js');
 const { sdpFingerprint } = require('./assertions.js');
 const { deferred } = require('./ids.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // Candidates held until the remote description arrives; past it they are
 // dropped, said once per dial — a peer used to be able to fill memory
@@ -62,7 +63,7 @@ const CLOSE_REASONS = Object.freeze(['goodbye', 'refused', 'gave-up']);
 const closeReason = (value) => (value === undefined ? 'goodbye' : CLOSE_REASONS.includes(value) ? value : 'unknown');
 
 const normalizeChannels = (channels = {}) => {
-  if (typeof channels !== 'object' || channels === null) throw new TypeError('channels must be an object');
+  if (typeof channels !== 'object' || channels === null) throw new ConfigError('channels must be an object');
   const {
     initiator = DEFAULT_CHANNELS.initiator,
     responder = DEFAULT_CHANNELS.responder,
@@ -73,11 +74,13 @@ const normalizeChannels = (channels = {}) => {
     ['responder', responder],
   ]) {
     if (!Number.isInteger(id) || id < 0 || id > MAX_CHANNEL_ID) {
-      throw new TypeError(`channels.${name} must be an integer in 0..${MAX_CHANNEL_ID}`);
+      throw new ConfigError(`channels.${name} must be an integer in 0..${MAX_CHANNEL_ID}`);
     }
   }
-  if (initiator === responder) throw new TypeError('channels.initiator and channels.responder must differ');
-  if (typeof label !== 'string' || label.length === 0) throw new TypeError('channels.label must be a non-empty string');
+  if (initiator === responder) throw new ConfigError('channels.initiator and channels.responder must differ');
+  if (typeof label !== 'string' || label.length === 0) {
+    throw new ConfigError('channels.label must be a non-empty string');
+  }
   return Object.freeze({ initiator, responder, label });
 };
 
@@ -152,16 +155,18 @@ class RtcLink extends Emitter {
   }) {
     super();
     if (caps !== null && (typeof caps !== 'object' || Array.isArray(caps))) {
-      throw new TypeError('caps must be an object or null');
+      throw new ConfigError('caps must be an object or null');
     }
     this.#caps = caps;
-    if (typeof localId !== 'string' || localId.length === 0) throw new TypeError('localId must be a non-empty string');
-    if (typeof remoteId !== 'string' || remoteId.length === 0) {
-      throw new TypeError('remoteId must be a non-empty string');
+    if (typeof localId !== 'string' || localId.length === 0) {
+      throw new ConfigError('localId must be a non-empty string');
     }
-    if (localId === remoteId) throw new TypeError('localId and remoteId must differ');
-    if (!isRtcAdapter(adapter)) throw new TypeError('adapter must satisfy the RtcAdapter contract');
-    if (typeof signal !== 'function') throw new TypeError('signal must be a function');
+    if (typeof remoteId !== 'string' || remoteId.length === 0) {
+      throw new ConfigError('remoteId must be a non-empty string');
+    }
+    if (localId === remoteId) throw new ConfigError('localId and remoteId must differ');
+    if (!isRtcAdapter(adapter)) throw new ConfigError('adapter must satisfy the RtcAdapter contract');
+    if (typeof signal !== 'function') throw new ConfigError('signal must be a function');
     this.#localId = localId;
     this.#remoteId = remoteId;
     this.#adapter = adapter;
@@ -304,7 +309,7 @@ class RtcLink extends Emitter {
   /** Tells the peer why (a goodbye by default), closes the connection, emits 'close' once. */
   close(reason = 'goodbye') {
     if (!CLOSE_REASONS.includes(reason)) {
-      throw new TypeError(`RtcLink.close: reason must be one of ${CLOSE_REASONS.join(', ')}`);
+      throw new ArgumentError(`RtcLink.close: reason must be one of ${CLOSE_REASONS.join(', ')}`);
     }
     this.#finish(reason, true, false);
   }
@@ -317,7 +322,7 @@ class RtcLink extends Emitter {
    */
   abandon(reason = 'abandoned') {
     if (reason !== 'abandoned' && !CLOSE_REASONS.includes(reason)) {
-      throw new TypeError(`RtcLink.abandon: reason must be 'abandoned' or one of ${CLOSE_REASONS.join(', ')}`);
+      throw new ArgumentError(`RtcLink.abandon: reason must be 'abandoned' or one of ${CLOSE_REASONS.join(', ')}`);
     }
     this.#finish(reason, false, false);
   }
@@ -350,7 +355,7 @@ class RtcLink extends Emitter {
     try {
       pc = this.#adapter.createPeerConnection(this.#configuration);
       if (!isRtcPeerConnection(pc)) {
-        throw new TypeError('adapter.createPeerConnection() did not return a peer connection');
+        throw new ConfigError('adapter.createPeerConnection() did not return a peer connection');
       }
       // Both channels exist before the first offer: the SDP needs an
       // m=application section, and a negotiated channel is never announced.

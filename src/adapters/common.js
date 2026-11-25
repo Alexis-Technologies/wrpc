@@ -37,6 +37,7 @@ const { STATUS_CODES } = require('../status.js');
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
 const { getPathname } = require('../websocket/upgrade.js');
+const { ConfigError } = require('../errors.js');
 
 // The one upgrade gate every host shares. With an explicit ws.path the
 // engine already gates the pathname, and the default RPC-path gate would
@@ -90,7 +91,7 @@ const prematureClose = () => {
 // is settled, as the loop's did: a late error is swallowed, never thrown.
 const receiveBody = (stream, limit = MAX_BODY_SIZE) => {
   if (!Number.isSafeInteger(limit) || limit < 0) {
-    return Promise.reject(new TypeError('Body size limit must be a non-negative safe integer'));
+    return Promise.reject(new ConfigError('Body size limit must be a non-negative safe integer'));
   }
   if (stream.errored) return Promise.reject(stream.errored);
   if (stream.readableEnded) return Promise.resolve(null);

@@ -24,7 +24,7 @@ const {
 // re-armed eight hundred times a second with a TimeoutOverflowWarning each.
 const timeoutOf = (name, value) => {
   if (typeof value === 'number' && value > 0 && value < 2 ** 31) return value;
-  throw new TypeError(`WrpcClient: ${name} must be a number of milliseconds from 1 to 2^31 - 1`);
+  throw new ConfigError(`WrpcClient: ${name} must be a number of milliseconds from 1 to 2^31 - 1`);
 };
 
 // How many cancelled calls a client remembers the ids of (see #cancel).
@@ -49,6 +49,7 @@ const {
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
 const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 
@@ -592,7 +593,7 @@ class WrpcClient extends Emitter {
         this.#refresh = refresh.handler;
         if (Array.isArray(refresh.on) && refresh.on.length > 0) this.#refreshCodes = [...refresh.on];
       } else {
-        throw new TypeError('WrpcClient: options.refresh must be a function or { on?, handler }');
+        throw new ConfigError('WrpcClient: options.refresh must be a function or { on?, handler }');
       }
     }
     const { retry } = options;
@@ -614,7 +615,7 @@ class WrpcClient extends Emitter {
         ...(retry === true ? {} : retry),
       };
       if (!(merged.attempts > 0) || !Array.isArray(merged.on) || merged.on.length === 0) {
-        throw new TypeError('WrpcClient: options.retry needs attempts > 0 and a non-empty `on` code list');
+        throw new ConfigError('WrpcClient: options.retry needs attempts > 0 and a non-empty `on` code list');
       }
       this.#retry = merged;
     }
@@ -626,7 +627,7 @@ class WrpcClient extends Emitter {
     // server's procedure declares `schema.headers`.
     if (headers !== undefined && headers !== null) {
       const valid = typeof headers === 'function' || (typeof headers === 'object' && !Array.isArray(headers));
-      if (!valid) throw new TypeError('WrpcClient: options.headers must be an object or a function returning one');
+      if (!valid) throw new ConfigError('WrpcClient: options.headers must be an object or a function returning one');
       this.#headers = headers;
     }
     const { meta } = options;
@@ -635,7 +636,7 @@ class WrpcClient extends Emitter {
     // has a per-call twin (the packet `meta` field / context.callMeta).
     if (meta !== undefined && meta !== null) {
       const valid = typeof meta === 'function' || (typeof meta === 'object' && !Array.isArray(meta));
-      if (!valid) throw new TypeError('WrpcClient: options.meta must be an object or a function returning one');
+      if (!valid) throw new ConfigError('WrpcClient: options.meta must be an object or a function returning one');
       this.#meta = meta;
     }
     const { metaFormat } = options;
@@ -648,7 +649,7 @@ class WrpcClient extends Emitter {
     // silently flip the connection and change what CORS has to allow.
     if (metaFormat !== undefined) {
       if (metaFormat !== 'json' && metaFormat !== 'prefixed') {
-        throw new TypeError("WrpcClient: options.metaFormat must be 'json' or 'prefixed'");
+        throw new ConfigError("WrpcClient: options.metaFormat must be 'json' or 'prefixed'");
       }
       this.#metaFormat = metaFormat;
     }
@@ -660,11 +661,11 @@ class WrpcClient extends Emitter {
     // mangles Sec-WebSocket-Protocol, at the price of labels in access logs.
     if (carrier !== undefined) {
       if (carrier !== 'auto' && carrier !== 'protocol' && carrier !== 'query') {
-        throw new TypeError("WrpcClient: options.carrier must be 'auto', 'protocol' or 'query'");
+        throw new ConfigError("WrpcClient: options.carrier must be 'auto', 'protocol' or 'query'");
       }
       // A token needs an offer the server can answer next to it.
       if (carrier === 'protocol' && options.protocols?.length === 0) {
-        throw new TypeError("WrpcClient: carrier 'protocol' cannot ride an empty `protocols` offer");
+        throw new ConfigError("WrpcClient: carrier 'protocol' cannot ride an empty `protocols` offer");
       }
     }
     // Off by default, unlike the server: a client that printed on every
@@ -698,7 +699,7 @@ class WrpcClient extends Emitter {
     // Structural check shared with the server (isCodec).
     if (codec !== undefined && codec !== null) {
       if (!isCodec(codec)) {
-        throw new TypeError(
+        throw new ConfigError(
           'WrpcClient: options.codec must provide encode(packet)/decode(text), a rest section, or both',
         );
       }
@@ -765,17 +766,19 @@ class WrpcClient extends Emitter {
     // keyring instead of a handshake, and says so: `encrypts = 'keys'`.
     if (Transport.encrypts === 'keys' && typeof encryption === 'object' && encryption.keys !== undefined) return;
     if (typeof encryption !== 'object' || typeof encryption.secure !== 'function') {
-      throw new TypeError("options.encryption must come from createEncryption() ('@alexify/wrpc/encryption')");
+      throw new ConfigError("options.encryption must come from createEncryption() ('@alexify/wrpc/encryption')");
     }
     // A transport that seals each request (http, sse) needs the server's
     // key before the first one, which only some patterns have: said here,
     // for every fallback candidate, not on the day ws is unreachable.
     if (Transport.encrypts === 'request') {
       if (typeof encryption.fetch === 'function') return;
-      throw new TypeError(`options.encryption has no serverKey to seal a request to — the ${name} transport needs one`);
+      throw new ConfigError(
+        `options.encryption has no serverKey to seal a request to — the ${name} transport needs one`,
+      );
     }
     if (Transport.encrypts !== true) {
-      throw new TypeError(`Transport '${name}' cannot carry options.encryption — and plaintext is not a fallback`);
+      throw new ConfigError(`Transport '${name}' cannot carry options.encryption — and plaintext is not a fallback`);
     }
   }
 
@@ -811,7 +814,7 @@ class WrpcClient extends Emitter {
       // The port to a worker is in-process; the hop that leaves the machine
       // is the one WrpcClientProxy opens, and that is where the option goes.
       if (options.encryption) {
-        throw new TypeError('options.encryption belongs to the WrpcClientProxy in the worker, not to its page');
+        throw new ConfigError('options.encryption belongs to the WrpcClientProxy in the worker, not to its page');
       }
       // One transport per client, never the class-level getInstance(): a
       // shared one made a second connect() to ANOTHER worker reuse the first
@@ -836,7 +839,7 @@ class WrpcClient extends Emitter {
           throw new Error(`Unknown transport '${candidate}'`);
         }
         if (!isClientTransport(WrpcClient.transport[candidate])) {
-          throw new TypeError(`Transport '${candidate}' does not satisfy the ClientTransport contract`);
+          throw new ConfigError(`Transport '${candidate}' does not satisfy the ClientTransport contract`);
         }
         WrpcClient.#checkEncryption(options, candidate, WrpcClient.transport[candidate]);
       }
@@ -849,7 +852,7 @@ class WrpcClient extends Emitter {
       throw new Error(`Unknown transport '${name}'`);
     }
     if (!isClientTransport(Transport)) {
-      throw new TypeError(`Transport '${name}' does not satisfy the ClientTransport contract`);
+      throw new ConfigError(`Transport '${name}' does not satisfy the ClientTransport contract`);
     }
     WrpcClient.#checkEncryption(options, name, Transport);
     const transport = new Transport(mapScheme(url, name));
@@ -1575,7 +1578,7 @@ class WrpcClient extends Emitter {
     // generator emitting more than 255 UTF-8 bytes would only fail later,
     // deep inside chunkEncode — refuse it here, where the cause is visible.
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
-      throw new TypeError('createStream: generateId must return a string of at most 255 characters');
+      throw new ConfigError('createStream: generateId must return a string of at most 255 characters');
     }
     return new WrpcWritable(id, name, size, this, null, this.#writables);
   }
@@ -1796,10 +1799,10 @@ class WrpcClient extends Emitter {
    */
   respond(name, handler) {
     if (typeof name !== 'string' || name.length === 0) {
-      throw new TypeError('respond: name must be a non-empty string');
+      throw new ArgumentError('respond: name must be a non-empty string');
     }
     if (typeof handler !== 'function') {
-      throw new TypeError('respond: handler must be a function');
+      throw new ArgumentError('respond: handler must be a function');
     }
     if (this.#responders.has(name)) {
       throw new Error(`Duplicate responder for '${name}'`);
@@ -2013,12 +2016,12 @@ class WrpcClient extends Emitter {
    */
   use(introspection) {
     if (typeof introspection !== 'object' || introspection === null || Array.isArray(introspection)) {
-      throw new TypeError('use() takes an introspection object: { unit: { method: info } }');
+      throw new ArgumentError('use() takes an introspection object: { unit: { method: info } }');
     }
     for (const unit of Object.keys(introspection)) {
       const instance = introspection[unit];
       if (typeof instance !== 'object' || instance === null || Array.isArray(instance)) {
-        throw new TypeError(`use(): unit '${unit}' must be an object of method infos`);
+        throw new ArgumentError(`use(): unit '${unit}' must be an object of method infos`);
       }
       if (this.#loaded.has(unit)) continue;
       this.#static.add(unit);

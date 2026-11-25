@@ -274,9 +274,11 @@ export declare class Frame {
   readonly isControlFrame: boolean;
 }
 
+export type ParseErrorCode = (typeof PARSE_ERR_CODES)[keyof typeof PARSE_ERR_CODES];
+
 export declare class ParseError extends Error {
-  code: string;
-  constructor(code: string, message: string);
+  code: ParseErrorCode;
+  constructor(code: ParseErrorCode, message: string);
 }
 
 export declare const PARSE_ERR_CODES: {

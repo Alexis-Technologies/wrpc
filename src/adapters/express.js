@@ -13,6 +13,7 @@ const {
   respondBodyError,
   MAX_BODY_SIZE,
 } = require('./common.js');
+const { ConfigError } = require('../errors.js');
 
 // express (and bare node:http) adapter. Unlike the batteries-included
 // Server, nothing here owns the listener — the app does:
@@ -31,10 +32,10 @@ const createWrpc = (options = {}) => {
   const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, logger }));
   const engine = options.engine ?? createNodeEngine(ws);
   if (!isEngine(engine)) {
-    throw new TypeError('createWrpc: options.engine does not implement the Engine contract');
+    throw new ConfigError('createWrpc: options.engine does not implement the Engine contract');
   }
   if (engine.standalone) {
-    throw new TypeError(
+    throw new ConfigError(
       'createWrpc: a standalone engine (uWebSockets.js) owns its own network stack ' +
         'and cannot be driven from express middleware — use Server({ engine }) instead',
     );
@@ -57,7 +58,7 @@ const createWrpc = (options = {}) => {
   });
   if (typeof source.handleUpgrade !== 'function') {
     engine.close(); // the attach above already claimed resources
-    throw new TypeError('createWrpc: the engine does not support manual upgrades (no handleUpgrade on its source)');
+    throw new ConfigError('createWrpc: the engine does not support manual upgrades (no handleUpgrade on its source)');
   }
 
   const handler = (req, res, next) => {

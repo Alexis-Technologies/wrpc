@@ -22,6 +22,7 @@
 
 const { procedure } = require('../rpc/router.js');
 const { sanitizeDeclared } = require('../rpc/handshake.js');
+const { ConfigError } = require('../errors.js');
 
 const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -204,7 +205,7 @@ const injectedHeaders = async (mirror, allow, context, headers) => {
 const allowedNames = (value) => {
   if (value === undefined || value === null) return null;
   if (!Array.isArray(value) || !value.every((name) => typeof name === 'string' && name.length > 0)) {
-    throw new TypeError('wrpcFastify mirror: allowHeaders must be an array of header names');
+    throw new ConfigError('wrpcFastify mirror: allowHeaders must be an array of header names');
   }
   return new Set(value.map((name) => name.toLowerCase()));
 };
@@ -282,7 +283,7 @@ const setupMirror = (fastify, rpc, options) => {
         units.set(unitName, unit);
       }
       if (Object.hasOwn(unit, methodName)) {
-        throw new TypeError(
+        throw new ConfigError(
           `wrpcFastify mirror: '${unitName}/${methodName}' is claimed by both ` +
             `${route.method} ${route.url} and an earlier route — set config.wrpc.name on one`,
         );

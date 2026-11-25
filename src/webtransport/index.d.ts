@@ -308,10 +308,7 @@ export declare const DEFAULT_MAX_PENDING: number;
 export declare const DEFAULT_HIGH_WATER_MARK: number;
 export declare const DEFAULT_LOW_WATER_MARK: number;
 
-export declare class FramingError extends Error {
-  name: 'FramingError';
-  code: 'kind' | 'too-large' | 'utf8';
-}
+export { FramingError, FramingErrorCode } from '../errors.js';
 
 export declare function toBytes(input: ArrayBuffer | ArrayBufferView): Uint8Array;
 /** One message: a fresh frame, header included. */

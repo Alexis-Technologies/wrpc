@@ -21,6 +21,7 @@
 // protection (the binding that uses this adds its own).
 
 const { concat, utf8 } = require('./bytes.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const EMPTY = new Uint8Array(0);
 const VERSION = utf8('HPKE-v1');
@@ -158,16 +159,16 @@ class HpkeContext {
  * it learns WHICH static key sealed the message.
  */
 const createHpke = ({ kem, kdf, cipher }) => {
-  if (!isKem(kem)) throw new TypeError('hpke: kem must be a Kem');
+  if (!isKem(kem)) throw new ConfigError('hpke: kem must be a Kem');
   const aeadId = AEAD_IDS[cipher.id];
-  if (aeadId === undefined) throw new TypeError(`hpke: no registered AEAD id for ${JSON.stringify(cipher.id)}`);
+  if (aeadId === undefined) throw new ConfigError(`hpke: no registered AEAD id for ${JSON.stringify(cipher.id)}`);
   const suite = concat(utf8('HPKE'), i2osp(kem.id, 2), i2osp(KDF_HKDF_SHA256, 2), i2osp(aeadId, 2));
   const { extract, expand } = labelled(kdf, suite);
 
   const schedule = async (sharedSecret, { info = EMPTY, psk = null, pskId = null } = {}, auth = false) => {
     const hasPsk = psk !== null && psk !== undefined;
-    if (hasPsk !== (pskId !== null && pskId !== undefined)) throw new TypeError('hpke: psk and pskId go together');
-    if (hasPsk && psk.length < 32) throw new TypeError('hpke: a psk is 32 bytes or more');
+    if (hasPsk !== (pskId !== null && pskId !== undefined)) throw new ArgumentError('hpke: psk and pskId go together');
+    if (hasPsk && psk.length < 32) throw new ArgumentError('hpke: a psk is 32 bytes or more');
     const mode = (auth ? MODE_AUTH : MODE_BASE) + (hasPsk ? MODE_PSK : 0);
     const [pskIdHash, infoHash] = await Promise.all([
       extract(EMPTY, 'psk_id_hash', hasPsk ? pskId : EMPTY),

@@ -42,6 +42,7 @@ const {
   MAX_HELD,
   MAX_HELD_BYTES,
 } = require('./session.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_PATTERNS = Object.freeze(['NK', 'XX']);
 // What may pile up behind an unfinished handshake: an onConnect hook or a
@@ -56,7 +57,7 @@ const CLOSE_PROTOCOL = 1002;
 const listOf = (value, allowed, fallback, name) => {
   if (value === undefined || value === null) return fallback;
   if (!Array.isArray(value) || value.length === 0 || !value.every((entry) => allowed.includes(entry))) {
-    throw new TypeError(`${name} must be a non-empty list of ${allowed.join(', ')}`);
+    throw new ConfigError(`${name} must be a non-empty list of ${allowed.join(', ')}`);
   }
   return Object.freeze([...new Set(value)]);
 };
@@ -72,7 +73,7 @@ const listOf = (value, allowed, fallback, name) => {
 const normalizeServerEncryption = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   if (typeof value !== 'object' || Array.isArray(value) || value.keys === undefined) {
-    throw new TypeError(`${name}: encryption must be { keys, required?, patterns?, ciphers?, psk?, authorize?, … }`);
+    throw new ConfigError(`${name}: encryption must be { keys, required?, patterns?, ciphers?, psk?, authorize?, … }`);
   }
   const {
     required = false,
@@ -85,40 +86,40 @@ const normalizeServerEncryption = (value, name) => {
     discovery = true,
   } = value;
   if (!(Number.isInteger(maxSkew) && maxSkew > 0)) {
-    throw new TypeError(`${name}: encryption.maxSkew must be a positive integer (ms)`);
+    throw new ConfigError(`${name}: encryption.maxSkew must be a positive integer (ms)`);
   }
   // A shared memory (`seen`), or the built-in cache's own knobs.
   if (replay !== null && (typeof replay !== 'object' || Array.isArray(replay))) {
-    throw new TypeError(`${name}: encryption.replay must be { seen(id, ttl) } or { max, overflow }`);
+    throw new ConfigError(`${name}: encryption.replay must be { seen(id, ttl) } or { max, overflow }`);
   }
   if (replay !== null && replay.seen !== undefined && typeof replay.seen !== 'function') {
-    throw new TypeError(`${name}: encryption.replay must be { seen(id, ttl) } or { max, overflow }`);
+    throw new ConfigError(`${name}: encryption.replay must be { seen(id, ttl) } or { max, overflow }`);
   }
   if (replay !== null && typeof replay.seen !== 'function') {
     const { max, overflow } = replay;
     if (max !== undefined && !(Number.isInteger(max) && max > 0)) {
-      throw new TypeError(`${name}: encryption.replay.max must be a positive integer`);
+      throw new ConfigError(`${name}: encryption.replay.max must be a positive integer`);
     }
     if (overflow !== undefined && overflow !== 'refuse' && overflow !== 'evict') {
-      throw new TypeError(`${name}: encryption.replay.overflow must be 'refuse' or 'evict'`);
+      throw new ConfigError(`${name}: encryption.replay.overflow must be 'refuse' or 'evict'`);
     }
   }
-  if (typeof discovery !== 'boolean') throw new TypeError(`${name}: encryption.discovery must be a boolean`);
-  if (typeof required !== 'boolean') throw new TypeError(`${name}: encryption.required must be a boolean`);
+  if (typeof discovery !== 'boolean') throw new ConfigError(`${name}: encryption.discovery must be a boolean`);
+  if (typeof required !== 'boolean') throw new ConfigError(`${name}: encryption.required must be a boolean`);
   if (authorize !== null && typeof authorize !== 'function') {
-    throw new TypeError(`${name}: encryption.authorize must be a function`);
+    throw new ConfigError(`${name}: encryption.authorize must be a function`);
   }
   if (!(Number.isInteger(handshakeTimeout) && handshakeTimeout > 0)) {
-    throw new TypeError(`${name}: encryption.handshakeTimeout must be a positive integer`);
+    throw new ConfigError(`${name}: encryption.handshakeTimeout must be a positive integer`);
   }
   if (!(Number.isInteger(rekeyAfter) && rekeyAfter >= 0)) {
-    throw new TypeError(`${name}: encryption.rekeyAfter must be a non-negative integer`);
+    throw new ConfigError(`${name}: encryption.rekeyAfter must be a non-negative integer`);
   }
   const patterns = listOf(value.patterns, PATTERN_NAMES, DEFAULT_PATTERNS, `${name}: encryption.patterns`);
   const ciphers = listOf(value.ciphers, ALGORITHMS, ALGORITHMS, `${name}: encryption.ciphers`);
   const sharedKey = psk === null ? null : parseKey(psk, `${name}: encryption.psk`);
   if (patterns.includes('NNpsk0') && sharedKey === null) {
-    throw new TypeError(`${name}: encryption.patterns lists NNpsk0, which needs encryption.psk`);
+    throw new ConfigError(`${name}: encryption.patterns lists NNpsk0, which needs encryption.psk`);
   }
   const keys = normalizeKeys(value.keys, `${name}: encryption.keys`);
   const dh = x25519();

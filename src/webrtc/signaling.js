@@ -46,6 +46,7 @@ const { isSignalMessage, SIGNAL_MESSAGE_TYPES } = require('./signaler.js');
 const { normalizeFingerprint } = require('./assertions.js');
 const { createAssertionIssuer } = require('./assertionIssuer.js');
 const { MAX_ID_LENGTH, isPeerId } = require('./ids.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const DEFAULT_NAME = 'signaling';
 const DEFAULT_PREFIX = 'rtc:';
@@ -58,7 +59,7 @@ const refusal = (message, code) => Object.assign(new Error(message), { code });
 // address a prototype when used as an object key downstream.
 const checkRoom = (room) => {
   if (typeof room !== 'string' || room.length === 0 || room.length > MAX_ROOM_LENGTH) {
-    throw new TypeError(`room must be a non-empty string of at most ${MAX_ROOM_LENGTH} characters`);
+    throw new ArgumentError(`room must be a non-empty string of at most ${MAX_ROOM_LENGTH} characters`);
   }
   return room;
 };
@@ -68,7 +69,9 @@ const checkRoom = (room) => {
 const isId = isPeerId;
 
 const checkId = (value, what) => {
-  if (!isId(value)) throw new TypeError(`${what} must be a non-empty string of at most ${MAX_ID_LENGTH} characters`);
+  if (!isId(value)) {
+    throw new ArgumentError(`${what} must be a non-empty string of at most ${MAX_ID_LENGTH} characters`);
+  }
   return value;
 };
 
@@ -91,7 +94,7 @@ const dataFor = (rtc, room) => {
 };
 
 const inputRoom = (args) => {
-  if (typeof args !== 'object' || args === null) throw new TypeError('expected { room }');
+  if (typeof args !== 'object' || args === null) throw new ArgumentError('expected { room }');
   return { room: checkRoom(args.room) };
 };
 
@@ -105,21 +108,21 @@ const inputJoin = (args) => {
   const data = args.data === undefined ? null : args.data;
   if (data !== null && typeof data === 'object') {
     const taken = RESERVED_JOIN_DATA.find((key) => Object.hasOwn(data, key));
-    if (taken !== undefined) throw new TypeError(`data.${taken} is reserved`);
+    if (taken !== undefined) throw new ArgumentError(`data.${taken} is reserved`);
   }
   return { room, data };
 };
 
 const inputWhoami = (args) => {
   if (args === undefined || args === null) return { proposed: null, instance: null };
-  if (typeof args !== 'object') throw new TypeError('expected { id?, instance? }');
+  if (typeof args !== 'object') throw new ArgumentError('expected { id?, instance? }');
   return { proposed: optionalId(args.id, 'id'), instance: optionalId(args.instance, 'instance') };
 };
 
 const inputAssert = (args) => {
-  if (typeof args !== 'object' || args === null) throw new TypeError('expected { fingerprint }');
+  if (typeof args !== 'object' || args === null) throw new ArgumentError('expected { fingerprint }');
   const fingerprint = normalizeFingerprint(args.fingerprint);
-  if (fingerprint === null) throw new TypeError("fingerprint must look like 'sha-256 AB:CD:...'");
+  if (fingerprint === null) throw new ArgumentError("fingerprint must look like 'sha-256 AB:CD:...'");
   return { fingerprint };
 };
 
@@ -135,14 +138,14 @@ const MAX_LOOKUPS = 256;
 const normalizeLimits = (limits) => {
   if (limits === null || limits === undefined) return { ...DEFAULT_LIMITS };
   if (typeof limits !== 'object' || Array.isArray(limits)) {
-    throw new TypeError('createSignalingUnit: limits must be an object');
+    throw new ConfigError('createSignalingUnit: limits must be an object');
   }
   const out = { ...DEFAULT_LIMITS };
   for (const key of Object.keys(DEFAULT_LIMITS)) {
     const value = limits[key];
     if (value === undefined) continue;
     if (value !== false && !(Number.isInteger(value) && value > 0)) {
-      throw new TypeError(`createSignalingUnit: limits.${key} must be a positive integer or false`);
+      throw new ConfigError(`createSignalingUnit: limits.${key} must be a positive integer or false`);
     }
     out[key] = value;
   }
@@ -187,10 +190,12 @@ const tooLarge = (value, limit) => {
 };
 
 const inputSignal = (args) => {
-  if (typeof args !== 'object' || args === null) throw new TypeError('expected { to, room, message }');
+  if (typeof args !== 'object' || args === null) throw new ArgumentError('expected { to, room, message }');
   const { to, message } = args;
   checkId(to, 'to');
-  if (!isSignalMessage(message)) throw new TypeError(`message.type must be one of ${SIGNAL_MESSAGE_TYPES.join(', ')}`);
+  if (!isSignalMessage(message)) {
+    throw new ArgumentError(`message.type must be one of ${SIGNAL_MESSAGE_TYPES.join(', ')}`);
+  }
   const room = args.room === undefined || args.room === null ? null : checkRoom(args.room);
   return { to, address: optionalId(args.address, 'address'), room, message };
 };
@@ -232,27 +237,27 @@ const createSignalingUnit = (options = {}) => {
   } = options;
   const limits = normalizeLimits(options.limits);
   if (typeof name !== 'string' || name.length === 0 || name.includes('/') || name.includes('.')) {
-    throw new TypeError('createSignalingUnit: name must be a unit name without "/" or "."');
+    throw new ConfigError('createSignalingUnit: name must be a unit name without "/" or "."');
   }
   if (access !== 'session' && access !== 'public') {
-    throw new TypeError("createSignalingUnit: access must be 'session' or 'public'");
+    throw new ConfigError("createSignalingUnit: access must be 'session' or 'public'");
   }
   if (identity !== null && typeof identity !== 'function') {
-    throw new TypeError('createSignalingUnit: identity must be a function');
+    throw new ConfigError('createSignalingUnit: identity must be a function');
   }
   if (!DUPLICATE.includes(duplicate)) {
-    throw new TypeError(`createSignalingUnit: duplicate must be one of ${DUPLICATE.join(', ')}`);
+    throw new ConfigError(`createSignalingUnit: duplicate must be one of ${DUPLICATE.join(', ')}`);
   }
   if (authorize !== null && typeof authorize !== 'function') {
-    throw new TypeError('createSignalingUnit: authorize must be a function');
+    throw new ConfigError('createSignalingUnit: authorize must be a function');
   }
-  if (relay !== 'room' && relay !== 'any') throw new TypeError("createSignalingUnit: relay must be 'room' or 'any'");
-  if (typeof prefix !== 'string') throw new TypeError('createSignalingUnit: prefix must be a string');
+  if (relay !== 'room' && relay !== 'any') throw new ConfigError("createSignalingUnit: relay must be 'room' or 'any'");
+  if (typeof prefix !== 'string') throw new ConfigError('createSignalingUnit: prefix must be a string');
   if (assertions !== null && (typeof assertions !== 'object' || Array.isArray(assertions))) {
-    throw new TypeError('createSignalingUnit: assertions must be an object');
+    throw new ConfigError('createSignalingUnit: assertions must be an object');
   }
   if (assertions !== null && assertions.claims !== undefined && typeof assertions.claims !== 'function') {
-    throw new TypeError('createSignalingUnit: assertions.claims must be a function');
+    throw new ConfigError('createSignalingUnit: assertions.claims must be a function');
   }
   const issuer =
     assertions === null
@@ -617,8 +622,10 @@ const createSignalingUnit = (options = {}) => {
  */
 const createSignalingHooks = (options = {}) => {
   const { name = DEFAULT_NAME, prefix = DEFAULT_PREFIX } = options;
-  if (typeof name !== 'string' || name.length === 0) throw new TypeError('createSignalingHooks: name must be a string');
-  if (typeof prefix !== 'string') throw new TypeError('createSignalingHooks: prefix must be a string');
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new ConfigError('createSignalingHooks: name must be a string');
+  }
+  if (typeof prefix !== 'string') throw new ConfigError('createSignalingHooks: prefix must be a string');
   const leave = `${name}/leave`;
   return {
     onDisconnect: (client, payload) => {

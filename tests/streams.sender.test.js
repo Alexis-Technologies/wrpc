@@ -86,11 +86,15 @@ test('writeAll() refuses what it cannot write, instead of writing nothing or for
   const client = await connectClient(t, url);
   await client.load('files');
   const writable = client.createStream('checked.bin', 8);
-  const wrong = { name: 'TypeError', message: 'writeAll: data must be a Uint8Array' };
+  const wrong = { name: 'ArgumentError', code: 'ALX_ERR_ARGUMENT', message: 'writeAll: data must be a Uint8Array' };
   await assert.rejects(writable.writeAll(new ArrayBuffer(8)), wrong);
   await assert.rejects(writable.writeAll(new DataView(new ArrayBuffer(8))), wrong);
   await assert.rejects(writable.writeAll('12345678'), wrong);
-  const size = { name: 'TypeError', message: 'writeAll: chunkSize must be a positive integer of bytes' };
+  const size = {
+    name: 'ArgumentError',
+    code: 'ALX_ERR_ARGUMENT',
+    message: 'writeAll: chunkSize must be a positive integer of bytes',
+  };
   for (const chunkSize of [0, -1, 1.5, '4', NaN]) await assert.rejects(writable.writeAll(bytes(8), chunkSize), size);
   // A Buffer is a Uint8Array, and the default piece is still there.
   assert.strictEqual(await writable.writeAll(Buffer.alloc(4)), true);
@@ -125,8 +129,8 @@ test('createStream() refuses a name or a size that is none, on both ends, where 
   const escalated = [];
   client.on('error', (error) => escalated.push(error));
   await client.load('files');
-  const nameError = 'TypeError: createStream: name must be a non-empty string';
-  const sizeError = 'TypeError: createStream: size must be a non-negative integer of bytes';
+  const nameError = 'ArgumentError: createStream: name must be a non-empty string';
+  const sizeError = 'ArgumentError: createStream: size must be a non-negative integer of bytes';
   const cases = [
     ['x', -1, sizeError],
     ['x', '10', sizeError],

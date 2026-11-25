@@ -3,6 +3,7 @@
 const { jsonParse, backoffDelay } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { hasBytes, encodeAttachments } = require('../attachments.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // Rooms: named groups of clients, layered on top of the existing
 // `{ type: 'event' }` packets — no new wire type is needed, a room broadcast
@@ -32,7 +33,7 @@ const EMPTY = new Set();
 
 const checkRoom = (room) => {
   if (typeof room !== 'string' || room.length === 0) {
-    throw new TypeError('Room name must be a non-empty string');
+    throw new ArgumentError('Room name must be a non-empty string');
   }
   return room;
 };
@@ -247,7 +248,7 @@ class Broadcast {
    */
   emit(name, data, options = null) {
     if (typeof name !== 'string' || name.length === 0) {
-      throw new TypeError('Event name must be a non-empty string');
+      throw new ArgumentError('Event name must be a non-empty string');
     }
     const unreliable = options?.unreliable === true;
     // Narrowed to no rooms at all: nobody here, nobody anywhere — so there
@@ -344,7 +345,7 @@ class Broadcast {
    */
   ask(name, data, options = {}) {
     if (typeof name !== 'string' || name.length === 0) {
-      throw new TypeError('Event name must be a non-empty string');
+      throw new ArgumentError('Event name must be a non-empty string');
     }
     // Narrowed to no rooms at all: nobody here, nobody anywhere — the same
     // short-circuit emit() has, extended to the cluster leg. Without it the
@@ -489,7 +490,7 @@ class RoomsBackplane {
     maxTracked = DEFAULT_MAX_TRACKED,
   }) {
     if (!Number.isInteger(maxTracked) || maxTracked < 1) {
-      throw new TypeError('RoomsBackplane: maxTracked must be a positive integer');
+      throw new ConfigError('RoomsBackplane: maxTracked must be a positive integer');
     }
     this.#backplane = backplane;
     this.#instance = instance;

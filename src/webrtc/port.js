@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError } = require('../errors.js');
+
 // The WebRTC port: what the peer-to-peer transport is written against.
 //
 // It is wrpc's OWN structural contract, not a binding to any library — a
@@ -87,7 +89,7 @@ const isRtcDataChannel = (value) => hasMethods(value, CHANNEL_METHODS) && typeof
  */
 const createW3cAdapter = ({ RTCPeerConnection } = globalThis) => {
   if (typeof RTCPeerConnection !== 'function') {
-    throw new TypeError(
+    throw new ConfigError(
       'createW3cAdapter: an RTCPeerConnection constructor is required — ' +
         'a browser has one; in Node inject one, e.g. createW3cAdapter(require("node-datachannel/polyfill"))',
     );
@@ -97,7 +99,7 @@ const createW3cAdapter = ({ RTCPeerConnection } = globalThis) => {
     createPeerConnection(configuration = {}) {
       const pc = new RTCPeerConnection(configuration);
       if (!isRtcPeerConnection(pc)) {
-        throw new TypeError('createW3cAdapter: the constructor did not produce an RTCPeerConnection-shaped object');
+        throw new ConfigError('createW3cAdapter: the constructor did not produce an RTCPeerConnection-shaped object');
       }
       return pc;
     },

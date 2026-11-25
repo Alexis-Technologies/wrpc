@@ -1,6 +1,8 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
 import { trace as otelTrace } from '@opentelemetry/api';
 import * as wrpc from '../index.js';
+import { ConfigError, ArgumentError } from '../index.js';
+import type { ErrorCode } from '../index.js';
 
 // A type only: the wt transport is reached through WrpcClient.transport.wt.
 expectError(wrpc.ClientWtTransport);
@@ -966,3 +968,10 @@ expectAssignable<object | null | undefined>(clientWs.encryption);
   expectType<1 | 2>(peer.revision);
   expectType<boolean>(peer.attachments);
 }
+
+// The errors a program's own mistakes are thrown as: TypeErrors with a string code.
+declare const configError: ConfigError;
+expectType<'ALX_ERR_CONFIG'>(configError.code);
+expectAssignable<TypeError>(configError);
+expectType<'ALX_ERR_ARGUMENT'>(new ArgumentError('x', { cause: configError }).code);
+expectAssignable<ErrorCode>(configError.code);

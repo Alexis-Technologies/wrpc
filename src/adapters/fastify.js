@@ -17,6 +17,7 @@ const {
 } = require('./common.js');
 const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
 // fastify is actually running on:
@@ -44,7 +45,7 @@ const resolveEngine = (fastify, options) => {
   const { engine } = options;
   if (engine) {
     if (!isEngine(engine)) {
-      throw new TypeError('wrpcFastify: options.engine does not implement the Engine contract');
+      throw new ConfigError('wrpcFastify: options.engine does not implement the Engine contract');
     }
     return engine;
   }
@@ -61,7 +62,7 @@ const resolveEngine = (fastify, options) => {
   if (server && typeof server.on === 'function' && typeof server.listen === 'function') {
     return createNodeEngine(options.ws);
   }
-  throw new TypeError(
+  throw new ConfigError(
     'wrpcFastify: could not detect a WebSocket backend for this fastify instance — ' +
       'pass one explicitly via options.engine',
   );
@@ -206,12 +207,12 @@ const registerRestRoutes = (fastify, rpc, options) => {
         headers: request.headers,
         setHeader: (name, value) => {
           if (RESERVED_HEADERS.has(String(name).toLowerCase())) {
-            throw new TypeError(`setHeader: '${name}' is owned by the transport`);
+            throw new ArgumentError(`setHeader: '${name}' is owned by the transport`);
           }
           // The same rule the core's seam applies: fastify over uws writes
           // what it is given.
           const text = String(value);
-          checkHeader(name, text, 'setHeader');
+          checkHeader(name, text, 'setHeader', ArgumentError);
           reply.header(name, text);
         },
         status: (code) => void reply.code(code),
@@ -311,7 +312,7 @@ const wrpcFastify = async (fastify, options = {}) => {
   // JSON and ships msgpack — the core hosts serve binary REST natively.
   // Checked on the resolved rpc so the options.rpc path is covered too.
   if (rpc.codec?.rest && rpc.router.hasRestRoutes) {
-    throw new TypeError(
+    throw new ConfigError(
       'wrpcFastify: codec.rest and delegated REST routes (procedures with http mappings) are mutually exclusive — ' +
         'serve binary REST from a core host, or drop the http mappings under this plugin',
     );

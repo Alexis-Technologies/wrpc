@@ -44,6 +44,7 @@ const {
   DEFAULT_MAX_BACKPRESSURE,
   DEFAULT_CLOSE_TIMEOUT,
 } = require('./channel.js');
+const { ConfigError } = require('../errors.js');
 
 // Datagrams handed to the session and not yet taken by it. On the hosts
 // wrpc is run against the sink is synchronous and this never passes one;
@@ -117,7 +118,7 @@ class WtSocket extends EventEmitter {
     this.#log = log;
     this.remoteAddress = remoteAddress;
     if (!Number.isInteger(closeTimeout) || closeTimeout < 0) {
-      throw new TypeError('WtSocket: options.closeTimeout must be a non-negative integer of milliseconds');
+      throw new ConfigError('WtSocket: options.closeTimeout must be a non-negative integer of milliseconds');
     }
     this.#idle = idleTimeout;
     this.#channel = new WtChannel(

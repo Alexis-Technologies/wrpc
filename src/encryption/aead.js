@@ -18,6 +18,7 @@
 
 const { createCipheriv, createDecipheriv, createSecretKey } = require('node:crypto');
 const { OpenError } = require('./contracts.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const DEFAULT_ID = 'aes-256-gcm';
 const KEY_LENGTH = 32;
@@ -29,14 +30,14 @@ const ALGORITHMS = Object.freeze([DEFAULT_ID, 'chacha20-poly1305']);
 
 const checkKey = (raw) => {
   if (!(raw instanceof Uint8Array) || raw.length !== KEY_LENGTH) {
-    throw new TypeError(`encryption: a key is ${KEY_LENGTH} bytes`);
+    throw new ArgumentError(`encryption: a key is ${KEY_LENGTH} bytes`);
   }
 };
 
 const checkNonce = (nonce) => {
   // GCM takes an IV of any length without complaint, and two ends that
   // disagree on it would simply never open each other's messages.
-  if (nonce.length !== NONCE_LENGTH) throw new TypeError(`encryption: a nonce is ${NONCE_LENGTH} bytes`);
+  if (nonce.length !== NONCE_LENGTH) throw new ArgumentError(`encryption: a nonce is ${NONCE_LENGTH} bytes`);
 };
 
 const cipherKey = (algorithm, raw) => {
@@ -81,7 +82,7 @@ const cipherKey = (algorithm, raw) => {
  */
 const aead = ({ algorithm = DEFAULT_ID } = {}) => {
   if (!ALGORITHMS.includes(algorithm)) {
-    throw new TypeError(`encryption: unknown cipher ${JSON.stringify(algorithm)} — ${ALGORITHMS.join(' or ')}`);
+    throw new ConfigError(`encryption: unknown cipher ${JSON.stringify(algorithm)} — ${ALGORITHMS.join(' or ')}`);
   }
   return Object.freeze({
     id: algorithm,

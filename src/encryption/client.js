@@ -40,17 +40,18 @@ const {
   MAX_HELD,
   MAX_HELD_BYTES,
 } = require('./session.js');
+const { ConfigError } = require('../errors.js');
 
 const resolveCipher = (value) => {
   if (value === undefined || value === null) return aead();
   if (typeof value === 'string') return aead({ algorithm: value });
-  if (!isCipher(value)) throw new TypeError('createEncryption: cipher must be a cipher name or a Cipher');
+  if (!isCipher(value)) throw new ConfigError('createEncryption: cipher must be a cipher name or a Cipher');
   return value;
 };
 
 const keyBytes = (value, name) => {
   if (!(value instanceof Uint8Array) || value.length !== 32) {
-    throw new TypeError(`createEncryption: ${name} must be 32 bytes`);
+    throw new ConfigError(`createEncryption: ${name} must be 32 bytes`);
   }
   return value;
 };
@@ -68,22 +69,22 @@ const createEncryption = (options = {}) => {
   const pattern = options.pattern ?? (pinned === null ? null : 'NK');
   if (!PATTERN_NAMES.includes(pattern)) {
     // NN authenticates nobody, so it is never what a missing option means.
-    throw new TypeError(`createEncryption: a serverKey, or an explicit pattern — ${PATTERN_NAMES.join(', ')}`);
+    throw new ConfigError(`createEncryption: a serverKey, or an explicit pattern — ${PATTERN_NAMES.join(', ')}`);
   }
-  if (pattern === 'NK' && pinned === null) throw new TypeError('createEncryption: NK needs the serverKey it pins');
+  if (pattern === 'NK' && pinned === null) throw new ConfigError('createEncryption: NK needs the serverKey it pins');
   if (pattern === 'XX') {
     keyBytes(staticKey, 'staticKey (XX)');
     if (pinned === null && typeof verifyServer !== 'function') {
       // Trust on first use is a decision, so it is spelled: verifyServer.
-      throw new TypeError('createEncryption: XX needs a serverKey to pin, or verifyServer(publicKey)');
+      throw new ConfigError('createEncryption: XX needs a serverKey to pin, or verifyServer(publicKey)');
     }
   }
   if (pattern === 'NNpsk0') keyBytes(psk, 'psk (NNpsk0)');
   if (!(Number.isInteger(rekeyAfter) && rekeyAfter >= 0)) {
-    throw new TypeError('createEncryption: rekeyAfter must be a non-negative integer');
+    throw new ConfigError('createEncryption: rekeyAfter must be a non-negative integer');
   }
   const dh = options.dh ?? x25519();
-  if (!isDh(dh)) throw new TypeError('createEncryption: dh must be a Dh');
+  if (!isDh(dh)) throw new ConfigError('createEncryption: dh must be a Dh');
   const cipher = resolveCipher(options.cipher);
   const kdf = createKdf();
   const noise = createNoise({ pattern, dh, cipher, kdf });

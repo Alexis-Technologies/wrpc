@@ -63,7 +63,7 @@ test('bytes: the CSPRNG or a refusal — never Math.random', () => {
   for (const missing of [null, {}, { getRandomValues: true }]) {
     assert.throws(() => bytes.randomSource(missing), /crypto\.getRandomValues is required/);
   }
-  assert.throws(() => bytes.requireSubtle(undefined, 'x25519'), /^TypeError: x25519: WebCrypto/);
+  assert.throws(() => bytes.requireSubtle(undefined, 'x25519'), /^ConfigError: x25519: WebCrypto/);
   const subtle = globalThis.crypto.subtle;
   assert.strictEqual(bytes.requireSubtle(subtle, 'x'), subtle);
 });

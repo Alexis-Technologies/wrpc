@@ -21,6 +21,7 @@ const { attachBrokerRpc } = require('./rpc/server.js');
 const { createBrokerSealing } = require('./sealing.js');
 // Registers WrpcClient.transport.broker as a side effect.
 const { ClientBrokerTransport } = require('./rpc/client.js');
+const { ArgumentError } = require('../errors.js');
 
 /**
  * Opens one sealed log entry or delivery by hand — a dead letter, a row
@@ -35,9 +36,9 @@ const openSealedMessage = (encryption, { topic, headers, body } = {}) => {
     replay: false,
     text: true,
   });
-  if (sealing === null) throw new TypeError('openSealedMessage: encryption is required');
+  if (sealing === null) throw new ArgumentError('openSealedMessage: encryption is required');
   if (typeof topic !== 'string' || topic.length === 0) {
-    throw new TypeError('openSealedMessage: topic must be the queue or topic the message was sealed for');
+    throw new ArgumentError('openSealedMessage: topic must be the queue or topic the message was sealed for');
   }
   const opened = sealing.open(topic, { headers: toHeaders(headers), body });
   if (opened.refused !== undefined) return opened;

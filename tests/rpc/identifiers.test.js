@@ -95,7 +95,7 @@ for (const { label, build } of CONSTRUCTORS) {
 
   for (const [what, value] of REJECTED) {
     test(`generateId: ${label} refuses ${what}`, () => {
-      assert.throws(() => build(value), new RegExp(`^TypeError: ${label}: generateId `));
+      assert.throws(() => build(value), new RegExp(`^ConfigError: ${label}: generateId `));
     });
   }
 }

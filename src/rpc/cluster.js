@@ -8,6 +8,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 const { hasBytes, encodeAttachments, ENVELOPE_DEPTH } = require('../attachments.js');
 const { ReplayWindow, DEFAULT_REPLAY_WINDOW } = require('../encryption/envelope.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // Cluster: presence, introspection and node-to-node messaging across every
 // wrpc instance sharing a backplane. Built ON TOP of the pub/sub contract
@@ -194,10 +195,10 @@ class Cluster extends Emitter {
     // than the lenient fallback the 1.0 options above keep.
     const { replay = 'strict', maxSkew = DEFAULT_MAX_SKEW } = options;
     if (replay !== 'strict' && replay !== 'accept') {
-      throw new TypeError("RpcServer: options.cluster.replay must be 'strict' or 'accept'");
+      throw new ConfigError("RpcServer: options.cluster.replay must be 'strict' or 'accept'");
     }
     if (!(Number.isFinite(maxSkew) && maxSkew > 0)) {
-      throw new TypeError('RpcServer: options.cluster.maxSkew must be a positive number of milliseconds');
+      throw new ConfigError('RpcServer: options.cluster.maxSkew must be a positive number of milliseconds');
     }
     this.#strict = replay === 'strict';
     this.#maxSkew = maxSkew;
@@ -714,7 +715,7 @@ class Cluster extends Emitter {
   /** Fire-and-forget to every OTHER node's `cluster.on(name, ...)`. */
   sendEvent(name, data) {
     if (typeof name !== 'string' || name.length === 0) {
-      throw new TypeError('Event name must be a non-empty string');
+      throw new ArgumentError('Event name must be a non-empty string');
     }
     if (!this.#backplane || this.#closed) return;
     this.#post(CLUSTER_CHANNEL, { t: 'e', name, data }, data);
@@ -728,7 +729,7 @@ class Cluster extends Emitter {
    */
   ask(name, data, options = {}) {
     if (typeof name !== 'string' || name.length === 0) {
-      throw new TypeError('Event name must be a non-empty string');
+      throw new ArgumentError('Event name must be a non-empty string');
     }
     return this.#request('emit', { name, data }, options.timeout ?? this.#requestTimeout).then(
       ({ payloads, incomplete }) => {
@@ -749,7 +750,7 @@ class Cluster extends Emitter {
    */
   respond(name, handler) {
     if (typeof handler !== 'function') {
-      throw new TypeError('Cluster.respond: handler must be a function');
+      throw new ArgumentError('Cluster.respond: handler must be a function');
     }
     if (this.#responders.has(name)) {
       throw new Error(`Duplicate responder for '${name}'`);
@@ -824,10 +825,10 @@ class Cluster extends Emitter {
    */
   send(clientId, name, data, options = {}) {
     if (typeof clientId !== 'string' || clientId.length === 0) {
-      throw new TypeError('Cluster.send: clientId must be a non-empty string');
+      throw new ArgumentError('Cluster.send: clientId must be a non-empty string');
     }
     if (typeof name !== 'string' || name.length === 0) {
-      throw new TypeError('Event name must be a non-empty string');
+      throw new ArgumentError('Event name must be a non-empty string');
     }
     const room = typeof options.room === 'string' ? options.room : undefined;
     return this.#command('event', clientId, { name, data }, room);

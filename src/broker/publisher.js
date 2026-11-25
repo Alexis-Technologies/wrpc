@@ -19,6 +19,7 @@ const { capabilityOf, brokerName, isBrokerLog, isBrokerQueue } = require('./port
 const { codedError } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
 const { rpcOf } = require('./host.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const isValidatorShape = (value) =>
   typeof value === 'function' || (typeof value === 'object' && value !== null && '~standard' in value);
@@ -26,7 +27,7 @@ const isValidatorShape = (value) =>
 const createPublisher = (server, broker, table = {}, options = {}) => {
   const rpc = rpcOf(server, 'createPublisher');
   if (typeof table !== 'object' || table === null || Array.isArray(table)) {
-    throw new TypeError('createPublisher: the event table must be an object');
+    throw new ConfigError('createPublisher: the event table must be an object');
   }
   const { strict = true, encryption = null } = options;
   // Off by default. On, what rests in the topic is sealed under the shared
@@ -41,7 +42,7 @@ const createPublisher = (server, broker, table = {}, options = {}) => {
   const hasLog = isBrokerLog(broker) || isBrokerLog(broker?.log);
   const hasQueue = isBrokerQueue(broker) || isBrokerQueue(broker?.queue);
   if (!hasLog && !hasQueue) {
-    throw new TypeError('createPublisher: the broker has neither a log nor a queue capability');
+    throw new ConfigError('createPublisher: the broker has neither a log nor a queue capability');
   }
   const system = brokerName(broker);
   const declared = rpc.router.introspect(null, { schemas: false });
@@ -50,31 +51,31 @@ const createPublisher = (server, broker, table = {}, options = {}) => {
   for (const name of Object.keys(table)) {
     const label = `createPublisher: '${name}'`;
     const slash = name.indexOf('/');
-    if (slash <= 0 || slash === name.length - 1) throw new TypeError(`${label}: an event name is 'unit/event'`);
+    if (slash <= 0 || slash === name.length - 1) throw new ConfigError(`${label}: an event name is 'unit/event'`);
     const unitKey = name.slice(0, slash);
     const event = name.slice(slash + 1);
     if (strict && !Object.hasOwn(declared[unitKey]?.emits ?? {}, event)) {
-      throw new TypeError(`${label}: the router declares no such event in ${unitKey}.emits`);
+      throw new ConfigError(`${label}: the router declares no such event in ${unitKey}.emits`);
     }
     const entry = table[name] ?? {};
     const { topic = `${unitKey}.${event}`, to = hasLog ? 'log' : 'queue', key = null, validate = null } = entry;
     if (typeof topic !== 'string' || topic.length === 0) {
-      throw new TypeError(`${label}: topic must be a non-empty string`);
+      throw new ConfigError(`${label}: topic must be a non-empty string`);
     }
-    if (to !== 'log' && to !== 'queue') throw new TypeError(`${label}: to must be 'log' or 'queue'`);
+    if (to !== 'log' && to !== 'queue') throw new ConfigError(`${label}: to must be 'log' or 'queue'`);
     const target = capabilityOf(broker, to, label);
     if (key !== null && typeof key !== 'string' && typeof key !== 'function') {
-      throw new TypeError(`${label}: key must be a string or a (data) => string function`);
+      throw new ConfigError(`${label}: key must be a string or a (data) => string function`);
     }
     if (validate !== null && !isValidatorShape(validate)) {
-      throw new TypeError(`${label}: validate must be a function or a Standard Schema`);
+      throw new ConfigError(`${label}: validate must be a function or a Standard Schema`);
     }
     events.set(name, { topic, to, target, key, validate });
   }
 
   const publish = async (name, data, { headers = null, key: keyOverride = null } = {}) => {
     const event = events.get(name);
-    if (!event) throw new TypeError(`createPublisher: '${name}' is not in this publisher's table`);
+    if (!event) throw new ArgumentError(`createPublisher: '${name}' is not in this publisher's table`);
     const { topic, to, target, validate } = event;
     const otel = rpc.otel;
     const attributes = {

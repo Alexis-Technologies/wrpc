@@ -35,6 +35,7 @@ const { dictionaryId, DICTIONARY_ID_PREFIX, isPromise } = require('./ids.js');
 // The ordering queue is a leaf of its own (the encryption entry needs it
 // without this file's negotiation); it stays an export of this one.
 const { Sequencer, INFLIGHT_LIMIT } = require('../sequencer.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_THRESHOLD = 1024;
 
@@ -76,11 +77,11 @@ const normalizeAsync = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   const options = value === true ? {} : value;
   if (typeof options !== 'object' || Array.isArray(options)) {
-    throw new TypeError(`${name}: async must be true, false or { threshold }`);
+    throw new ConfigError(`${name}: async must be true, false or { threshold }`);
   }
   const threshold = options.threshold ?? DEFAULT_ASYNC_THRESHOLD;
   if (!(Number.isInteger(threshold) && threshold > 0)) {
-    throw new TypeError(`${name}: async.threshold must be a positive integer`);
+    throw new ConfigError(`${name}: async.threshold must be a positive integer`);
   }
   return threshold;
 };
@@ -92,13 +93,13 @@ const normalizeAsync = (value, name) => {
 const resolveCodec = (value, async, optional, name) => {
   if (typeof value === 'string') return nativeCompressor({ algorithm: value, async, optional });
   if (!isCompressor(value)) {
-    throw new TypeError(
+    throw new ConfigError(
       `${name}: compression.codec must provide an id, encode(bytes) and decode(bytes, maxOutput), or name an algorithm`,
     );
   }
   // An id travels in a comma-separated header and a space-free marker.
   if (/[,\s]/.test(value.id)) {
-    throw new TypeError(`${name}: compression.codec id must not contain a comma or whitespace`);
+    throw new ConfigError(`${name}: compression.codec id must not contain a comma or whitespace`);
   }
   return value;
 };
@@ -107,31 +108,31 @@ const normalizeCompression = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   const options = value === true ? {} : value;
   if (typeof options !== 'object' || Array.isArray(options)) {
-    throw new TypeError(`${name}: compression must be true, false or an options object`);
+    throw new ConfigError(`${name}: compression must be true, false or an options object`);
   }
   // `async` shapes the platform codecs; an injected codec decides that for
   // itself (the codec factories take the same option).
   const async = normalizeAsync(options.async, `${name}: compression`);
   const asked = options.codec ?? null;
   const list = Array.isArray(asked);
-  if (list && asked.length === 0) throw new TypeError(`${name}: compression.codec must not be an empty list`);
+  if (list && asked.length === 0) throw new ConfigError(`${name}: compression.codec must not be an empty list`);
   const wanted = list ? asked : [asked ?? NATIVE_ID];
   if (async !== null && !wanted.some((entry) => typeof entry === 'string')) {
-    throw new TypeError(`${name}: compression.async applies to the platform codec — set it on the codec's factory`);
+    throw new ConfigError(`${name}: compression.async applies to the platform codec — set it on the codec's factory`);
   }
   const override = options.threshold;
   if (override !== undefined && !(Number.isInteger(override) && override >= 0)) {
-    throw new TypeError(`${name}: compression.threshold must be a non-negative integer`);
+    throw new ConfigError(`${name}: compression.threshold must be a non-negative integer`);
   }
   const codecs = [];
   const ids = [];
   for (const entry of wanted) {
     const codec = resolveCodec(entry, async, list, name);
     if (codec === null) continue;
-    if (ids.includes(codec.id)) throw new TypeError(`${name}: compression.codec names ${codec.id} twice`);
+    if (ids.includes(codec.id)) throw new ConfigError(`${name}: compression.codec names ${codec.id} twice`);
     const threshold = override ?? codec.threshold ?? DEFAULT_THRESHOLD;
     if (!(Number.isInteger(threshold) && threshold >= 0)) {
-      throw new TypeError(`${name}: compression.threshold must be a non-negative integer`);
+      throw new ConfigError(`${name}: compression.threshold must be a non-negative integer`);
     }
     ids.push(codec.id);
     codecs.push(Object.freeze({ codec, id: codec.id, threshold }));

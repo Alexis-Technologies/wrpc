@@ -3,6 +3,7 @@
 const { WrpcClient, ClientTransport, metaHeaders } = require('../client.js');
 const { refusedStatus } = require('../client/core.js');
 const { CHANNEL_HEADER } = require('./constants.js');
+const { ConfigError } = require('../errors.js');
 
 // The client half of the SSE transport. Browser-safe: `fetch`, streams and
 // TextDecoder only — no node builtins, and deliberately not `EventSource`,
@@ -181,7 +182,7 @@ class ClientSseTransport extends ClientTransport {
     const { encryption = null } = options;
     if (encryption !== null) {
       if (typeof encryption.fetch !== 'function') {
-        throw new TypeError('options.encryption has no serverKey to seal a request to — the sse transport needs one');
+        throw new ConfigError('options.encryption has no serverKey to seal a request to — the sse transport needs one');
       }
       this.#fetch = encryption.fetch(this.#fetch, this.url);
     }
@@ -319,7 +320,7 @@ class ClientSseTransport extends ClientTransport {
     if (!this.active || this.#channel === null) throw new Error('Not connected');
     // Only a binary packet codec gets here with bytes: revision 1 sends a
     // packet's bytes as JSON.
-    if (typeof data !== 'string') throw new TypeError('SSE carries text only: a binary codec needs a WebSocket');
+    if (typeof data !== 'string') throw new ConfigError('SSE carries text only: a binary codec needs a WebSocket');
     const headers = {
       ...this.#headers,
       ...this.#meta,

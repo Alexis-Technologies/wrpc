@@ -29,6 +29,7 @@ const { aead } = require('./aead.js');
 const { isCipher, OpenError } = require('./contracts.js');
 const { normalizeKeys } = require('./keyring.js');
 const { isPromise } = require('../compression/ids.js');
+const { ConfigError } = require('../errors.js');
 
 const VERSION = 1;
 const SALT_LENGTH = 16;
@@ -51,28 +52,28 @@ const SUITES = Object.freeze({ __proto__: null, 'aes-256-gcm': SUITE_AES, 'chach
 const resolveCipher = (value, name) => {
   if (value === undefined || value === null || value === true) return { cipher: aead(), injected: false };
   if (typeof value === 'string') return { cipher: aead({ algorithm: value }), injected: false };
-  if (!isCipher(value)) throw new TypeError(`${name}: cipher must be a cipher name or a Cipher`);
+  if (!isCipher(value)) throw new ConfigError(`${name}: cipher must be a cipher name or a Cipher`);
   // The nonce is the message counter, 64 bits at its end.
-  if (value.nonceLength < 8) throw new TypeError(`${name}: cipher needs a nonce of 8 bytes or more`);
+  if (value.nonceLength < 8) throw new ConfigError(`${name}: cipher needs a nonce of 8 bytes or more`);
   // Probed where it is built, like a codec in normalizeSyncCompression: a
   // cipher over crypto.subtle answers promises, and nothing here can wait.
   // A round trip under a random key, so a cipher that seals but cannot
   // open — or opens anything — fails at boot, not in a log line later.
   const synchronous = `${name}: cipher must answer synchronously on this carrier`;
   const key = value.key(crypto.randomBytes(value.keyLength));
-  if (isPromise(key)) throw new TypeError(synchronous);
+  if (isPromise(key)) throw new ConfigError(synchronous);
   const nonce = new Uint8Array(value.nonceLength);
   const sealed = key.seal(nonce, Buffer.from('probe'), null);
-  if (isPromise(sealed)) throw new TypeError(synchronous);
+  if (isPromise(sealed)) throw new ConfigError(synchronous);
   let opened = null;
   try {
     opened = key.open(nonce, sealed, null);
   } catch {
     opened = null;
   }
-  if (isPromise(opened)) throw new TypeError(synchronous);
+  if (isPromise(opened)) throw new ConfigError(synchronous);
   if (opened === null || Buffer.from(opened).toString() !== 'probe') {
-    throw new TypeError(`${name}: cipher does not open what it sealed`);
+    throw new ConfigError(`${name}: cipher does not open what it sealed`);
   }
   return { cipher: value, injected: true };
 };
@@ -89,7 +90,7 @@ const resolveCipher = (value, name) => {
 const normalizeEnvelopeEncryption = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   if (typeof value !== 'object' || Array.isArray(value) || value.keys === undefined) {
-    throw new TypeError(
+    throw new ConfigError(
       `${name}: encryption must be { keys, cipher?, seal?, acceptPlaintext?, replayWindow?, maxSenders? }`,
     );
   }
@@ -99,18 +100,18 @@ const normalizeEnvelopeEncryption = (value, name) => {
     replayWindow = DEFAULT_REPLAY_WINDOW,
     maxSenders = MAX_SENDERS,
   } = value;
-  if (typeof seal !== 'boolean') throw new TypeError(`${name}: encryption.seal must be a boolean`);
+  if (typeof seal !== 'boolean') throw new ConfigError(`${name}: encryption.seal must be a boolean`);
   if (typeof acceptPlaintext !== 'boolean') {
-    throw new TypeError(`${name}: encryption.acceptPlaintext must be a boolean`);
+    throw new ConfigError(`${name}: encryption.acceptPlaintext must be a boolean`);
   }
   if (replayWindow !== false && !(Number.isInteger(replayWindow) && replayWindow > 0 && replayWindow <= 65536)) {
-    throw new TypeError(`${name}: encryption.replayWindow must be false or an integer from 1 to 65536`);
+    throw new ConfigError(`${name}: encryption.replayWindow must be false or an integer from 1 to 65536`);
   }
   if (!(Number.isInteger(maxSenders) && maxSenders > 0 && maxSenders <= 1048576)) {
-    throw new TypeError(`${name}: encryption.maxSenders must be an integer from 1 to 1048576`);
+    throw new ConfigError(`${name}: encryption.maxSenders must be an integer from 1 to 1048576`);
   }
   if (!seal && !acceptPlaintext) {
-    throw new TypeError(`${name}: encryption with seal: false must accept plaintext — it sends nothing else`);
+    throw new ConfigError(`${name}: encryption with seal: false must accept plaintext — it sends nothing else`);
   }
   const { cipher, injected } = resolveCipher(value.cipher, `${name}: encryption`);
   return Object.freeze({

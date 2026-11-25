@@ -43,6 +43,7 @@
 // messages — for all three families alike.
 
 const zlib = require('node:zlib');
+const { ConfigError } = require('../errors.js');
 
 const ID = 'deflate-raw';
 const THRESHOLD = 1024;
@@ -126,15 +127,15 @@ const families = {
  */
 const nativeCompressor = ({ algorithm = ID, level, async = null, optional = false, zlib: lib = zlib } = {}) => {
   if (typeof algorithm !== 'string' || !(algorithm in LEVELS)) {
-    throw new TypeError(`compression: unknown algorithm ${JSON.stringify(algorithm)} — deflate-raw, brotli or zstd`);
+    throw new ConfigError(`compression: unknown algorithm ${JSON.stringify(algorithm)} — deflate-raw, brotli or zstd`);
   }
   const [standard, lowest, highest] = LEVELS[algorithm];
   if (level !== undefined && !(Number.isInteger(level) && level >= lowest && level <= highest)) {
-    throw new TypeError(`compression: ${algorithm} level must be an integer from ${lowest} to ${highest}`);
+    throw new ConfigError(`compression: ${algorithm} level must be an integer from ${lowest} to ${highest}`);
   }
   if (algorithm === 'zstd' && !hasZstd(lib)) {
     if (optional) return null;
-    throw new TypeError('compression: this Node has no zstd in node:zlib (22.15+ / 23.8+)');
+    throw new ConfigError('compression: this Node has no zstd in node:zlib (22.15+ / 23.8+)');
   }
   const { encode, decode } = families[algorithm](lib, level ?? standard, async);
   return { id: algorithm, threshold: THRESHOLD, async, encode, decode };

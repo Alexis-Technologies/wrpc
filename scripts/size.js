@@ -312,7 +312,12 @@ const ENTRIES = [
   // `timeout` bounded, peer text escaped before it reaches a log line, the
   // lines a peer can cause said once and then at debug, and the signaling
   // lookups counted per connection. Measured 63,308 B against 62,464.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'src/webrtc/browser.js', platform: 'browser', budget: 62 },
+  // 62 -> 63 for the error classes of alexiskills 1.1 (2026-11-25): the
+  // ConfigError and ArgumentError every refusal of an option or an argument
+  // now throws, with its ALX_ERR_ code, instead of a bare TypeError — a
+  // longer identifier at every such site this entry bundles, and the
+  // require of src/errors.js in each file. Measured 63,706 B against 63,308.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'src/webrtc/browser.js', platform: 'browser', budget: 63 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'src/webrtc/index.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

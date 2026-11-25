@@ -4,6 +4,7 @@ const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { parseCookies } = require('../transport.js');
 const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // TokenTransport — where the session token lives on the wire, injected like
 // a codec or a logger and checked structurally:
@@ -225,24 +226,24 @@ const SAME_SITE = new Set(['Strict', 'Lax', 'None']);
 
 const buildCookie = (name, value, options) => {
   if (!COOKIE_NAME.test(name)) {
-    throw new TypeError(`buildCookie: invalid cookie name`);
+    throw new ArgumentError(`buildCookie: invalid cookie name`);
   }
   if (typeof value !== 'string' || !COOKIE_VALUE.test(value)) {
-    throw new TypeError('buildCookie: the value contains characters RFC 6265 forbids in a cookie');
+    throw new ArgumentError('buildCookie: the value contains characters RFC 6265 forbids in a cookie');
   }
   if (typeof options.path !== 'string' || !COOKIE_PATH.test(options.path)) {
-    throw new TypeError('buildCookie: invalid Path attribute');
+    throw new ArgumentError('buildCookie: invalid Path attribute');
   }
   const parts = [`${name}=${value}`, `Path=${options.path}`];
   if (options.maxAge !== null && options.maxAge !== undefined) {
-    if (!Number.isSafeInteger(options.maxAge)) throw new TypeError('buildCookie: maxAge must be an integer');
+    if (!Number.isSafeInteger(options.maxAge)) throw new ArgumentError('buildCookie: maxAge must be an integer');
     parts.push(`Max-Age=${options.maxAge}`);
   }
   if (options.httpOnly) parts.push('HttpOnly');
   if (options.secure) parts.push('Secure');
   if (options.sameSite) {
     if (!SAME_SITE.has(options.sameSite)) {
-      throw new TypeError(`buildCookie: sameSite must be one of ${[...SAME_SITE].join(', ')}`);
+      throw new ArgumentError(`buildCookie: sameSite must be one of ${[...SAME_SITE].join(', ')}`);
     }
     parts.push(`SameSite=${options.sameSite}`);
   }
@@ -268,7 +269,7 @@ class SessionManager {
     // The injected token carrier; the cookie default keeps the behaviour
     // wrpc always had, byte for byte.
     if (transport !== undefined && !isTokenTransport(transport)) {
-      throw new TypeError('SessionManager: sessions.transport must provide read(request) and write(token)');
+      throw new ConfigError('SessionManager: sessions.transport must provide read(request) and write(token)');
     }
     this.transport = transport ?? cookieTokenTransport(this);
   }

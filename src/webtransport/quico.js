@@ -13,6 +13,7 @@
 const { Readable, Writable } = require('node:stream');
 
 const { isWtStream } = require('./port.js');
+const { ConfigError } = require('../errors.js');
 
 // A readable whose controller stays reachable — what a node event source
 // is pushed into, and what a close ends.
@@ -54,10 +55,10 @@ const toWtStream = (duplex) => {
  */
 const fromQuico = (req, res, { accept = true, maxDatagramSize = 1200 } = {}) => {
   if (typeof req?.on !== 'function' || typeof res?.writeHead !== 'function') {
-    throw new TypeError('fromQuico: a quico request and response are required');
+    throw new ConfigError('fromQuico: a quico request and response are required');
   }
   if (req.headers?.[':protocol'] !== 'webtransport') {
-    throw new TypeError("fromQuico: not a WebTransport request (':protocol' is not 'webtransport')");
+    throw new ConfigError("fromQuico: not a WebTransport request (':protocol' is not 'webtransport')");
   }
   if (accept) res.writeHead(200);
   const bidi = source();

@@ -101,6 +101,7 @@
 //   or a Uint8Array, as sent.
 
 const { isBackplane } = require('../scaling/index.js');
+const { ConfigError } = require('../errors.js');
 
 const isObject = (value) => typeof value === 'object' && value !== null;
 const hasFunctions = (value, names) => isObject(value) && names.every((name) => typeof value[name] === 'function');
@@ -140,7 +141,7 @@ const capabilityOf = (value, name, label) => {
   if (check(value)) return value;
   if (isObject(value) && check(value[name])) return value[name];
   const what = isObject(value) && typeof value.name === 'string' ? `the '${value.name}' broker` : 'the given broker';
-  throw new TypeError(`${label}: ${what} has no '${name}' capability`);
+  throw new ConfigError(`${label}: ${what} has no '${name}' capability`);
 };
 
 // The broker's name for metric labels and log fields; 'custom' for a bare

@@ -60,6 +60,7 @@ const {
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
 const { readDeclared, normalizeDeclaredHeaders } = require('./handshake.js');
 const { AMBIENT_HEADERS } = require('./reserved.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // After this long an unsettled onConnect chain logs a warning: a hook that
 // never resolves holds the client's dispatch (see #addClient), and the warn
@@ -113,9 +114,9 @@ const DEFAULT_BASE_PATH = '/api';
 const CORS_OPTION_KEYS = ['origins', 'credentials', 'headers', 'metaHeaders', 'methods'];
 const checkCors = (cors, log) => {
   if (cors === null || cors === undefined) return null;
-  if (typeof cors !== 'object') throw new TypeError('RpcServer: options.cors must be an object');
+  if (typeof cors !== 'object') throw new ConfigError('RpcServer: options.cors must be an object');
   if (Object.hasOwn(cors, 'origin')) {
-    throw new TypeError('RpcServer: options.cors.origin is not an option — the allowlist is `origins`');
+    throw new ConfigError('RpcServer: options.cors.origin is not an option — the allowlist is `origins`');
   }
   const { origins } = cors;
   const valid =
@@ -124,7 +125,9 @@ const checkCors = (cors, log) => {
     typeof origins === 'function' ||
     typeof origins === 'string' ||
     (Array.isArray(origins) && origins.every((origin) => typeof origin === 'string'));
-  if (!valid) throw new TypeError('RpcServer: options.cors.origins must be an origin, an array of them or a function');
+  if (!valid) {
+    throw new ConfigError('RpcServer: options.cors.origins must be an origin, an array of them or a function');
+  }
   for (const key of Object.keys(cors)) {
     if (!CORS_OPTION_KEYS.includes(key)) log.warn({ event: 'cors.option', key });
   }
@@ -269,20 +272,22 @@ class RpcServer extends Emitter {
     this.#declared = normalizeDeclaredHeaders(declaredHeaders, 'RpcServer: options');
     this.#encryption = normalizeServerEncryption(encryption, 'RpcServer: options');
     if (!router || typeof router.getProcedure !== 'function') {
-      throw new TypeError('RpcServer: options.router (a Router from defineRouter) is required');
+      throw new ConfigError('RpcServer: options.router (a Router from defineRouter) is required');
     }
     if (backplane && !isBackplane(backplane)) {
-      throw new TypeError('RpcServer: options.backplane does not implement the backplane contract');
+      throw new ConfigError('RpcServer: options.backplane does not implement the backplane contract');
     }
     // Pluggable query-string codec (qs and friends). Structural: anything
     // with parse(str) -> object. The default is the prototype-safe
     // URLSearchParams path in parseParams; an injected parser takes over
     // prototype-pollution responsibility (documented).
     if (querystring !== null && typeof querystring.parse !== 'function') {
-      throw new TypeError('RpcServer: options.querystring must provide a parse(text) function');
+      throw new ConfigError('RpcServer: options.querystring must provide a parse(text) function');
     }
     if (codec !== null && !isCodec(codec)) {
-      throw new TypeError('RpcServer: options.codec must provide encode(packet)/decode(text), a rest section, or both');
+      throw new ConfigError(
+        'RpcServer: options.codec must provide encode(packet)/decode(text), a rest section, or both',
+      );
     }
     this.#log = createLoggerWriter(logger);
     this.#otel = createServerTelemetry(telemetry);
@@ -340,10 +345,10 @@ class RpcServer extends Emitter {
     // option that actually produced it.
     if (String(this.#instance).includes('.')) {
       const source = instanceId === null ? 'generateId must not return' : 'options.instanceId must not contain';
-      throw new TypeError(`RpcServer: ${source} "."`);
+      throw new ConfigError(`RpcServer: ${source} "."`);
     }
     this.#querystring = querystring;
-    if (typeof http !== 'object' || http === null) throw new TypeError('RpcServer: options.http must be an object');
+    if (typeof http !== 'object' || http === null) throw new ConfigError('RpcServer: options.http must be an object');
     // gzip on packet-mode and REST answers for peers that ask for it — off
     // unless the app turns it on; the SSE half has its own under `sse`.
     this.#compression = normalizeCompression(http.compression, 'RpcServer: options.http');
@@ -382,7 +387,7 @@ class RpcServer extends Emitter {
     // (codec.rest is compatible: the fast path serializes envelopes, and
     // REST bodies never carry envelopes.)
     if (this.#codec && this.#router.hasSerializers) {
-      throw new TypeError('RpcServer: options.codec and compiled response serializers are mutually exclusive');
+      throw new ConfigError('RpcServer: options.codec and compiled response serializers are mutually exclusive');
     }
     this.#initRooms(backplane, cluster, rooms);
     // A channel's client is built from the GET that opened the stream, so it
@@ -459,7 +464,7 @@ class RpcServer extends Emitter {
     // if it worked (the backplane is a top-level option) and did nothing.
     if (roomsOptions !== null && typeof roomsOptions === 'object') {
       if (roomsOptions.backplane !== undefined) {
-        throw new TypeError(
+        throw new ConfigError(
           'RpcServer: options.rooms.backplane is not an option — pass the backplane as options.backplane',
         );
       }
@@ -647,10 +652,10 @@ class RpcServer extends Emitter {
    */
   sendTo(clientId, name, data, options = {}) {
     if (typeof clientId !== 'string' || clientId.length === 0) {
-      throw new TypeError('sendTo: clientId must be a non-empty string');
+      throw new ArgumentError('sendTo: clientId must be a non-empty string');
     }
     if (typeof name !== 'string' || name.length === 0) {
-      throw new TypeError('Event name must be a non-empty string');
+      throw new ArgumentError('Event name must be a non-empty string');
     }
     const room = typeof options.room === 'string' ? options.room : undefined;
     const client = this.#byId.get(clientId);
@@ -1212,22 +1217,22 @@ class RpcServer extends Emitter {
     }
     if (persistent === false) {
       if (!hasTransportShape(transport)) {
-        throw new TypeError('RpcServer.attach: a transport with write/send/error/close/on/once/off is required');
+        throw new ConfigError('RpcServer.attach: a transport with write/send/error/close/on/once/off is required');
       }
       transport.connection = null;
     } else if (!isInboundTransport(transport)) {
-      throw new TypeError(
+      throw new ConfigError(
         'RpcServer.attach: a persistent transport (connection set) with write/send/error/close/on/once/off is required',
       );
     }
     if (session !== null && (typeof session !== 'object' || Array.isArray(session))) {
-      throw new TypeError('RpcServer.attach: options.session must be an object');
+      throw new ConfigError('RpcServer.attach: options.session must be an object');
     }
     if (session !== null && request !== null) {
-      throw new TypeError('RpcServer.attach: options.session and options.request are mutually exclusive');
+      throw new ConfigError('RpcServer.attach: options.session and options.request are mutually exclusive');
     }
     if (given !== null && (typeof given !== 'object' || Array.isArray(given))) {
-      throw new TypeError('RpcServer.attach: options.meta must be an object');
+      throw new ConfigError('RpcServer.attach: options.meta must be an object');
     }
     // What the application observed is normalized like every other entry
     // point's meta — frozen, its headers a null-prototype bag — whether it
@@ -1240,7 +1245,7 @@ class RpcServer extends Emitter {
         return Promise.resolve(true);
       };
     } else if (request !== null) {
-      if (typeof request !== 'object') throw new TypeError('RpcServer.attach: options.request must be an object');
+      if (typeof request !== 'object') throw new ConfigError('RpcServer.attach: options.request must be an object');
       const identity = this.#identify({
         headers: request.headers ?? {},
         url: request.url ?? '',

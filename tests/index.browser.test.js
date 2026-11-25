@@ -8,6 +8,8 @@ const { generateUUID } = require('../src/runtime/browser.js');
 
 test('browser barrel exposes only browser-safe exports', () => {
   assert.deepStrictEqual(Object.keys(wrpcBrowser).sort(), [
+    'ArgumentError',
+    'ConfigError',
     'Emitter',
     'EventStream',
     'WrpcClient',

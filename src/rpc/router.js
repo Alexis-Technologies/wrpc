@@ -11,6 +11,7 @@ const {
   collectRestRoutes,
   publicHttp,
 } = require('./rest.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_VERSION = '*';
 // The version token of a unit key: 'auth.v1' -> 'v1'. Closed on purpose —
@@ -121,7 +122,7 @@ const toHookList = (value, phase, label) => {
   const list = Array.isArray(value) ? value : [value];
   for (const fn of list) {
     if (typeof fn !== 'function') {
-      throw new TypeError(`${label}: hooks.${phase} must be a function or an array of functions`);
+      throw new ConfigError(`${label}: hooks.${phase} must be a function or an array of functions`);
     }
   }
   return list;
@@ -131,9 +132,9 @@ const toHookList = (value, phase, label) => {
 // authorization check that silently never runs.
 const normalizeHooks = (hooks, allowed, label) => {
   if (hooks === undefined || hooks === null) hooks = {};
-  if (typeof hooks !== 'object') throw new TypeError(`${label}: hooks must be an object of phase handlers`);
+  if (typeof hooks !== 'object') throw new ConfigError(`${label}: hooks must be an object of phase handlers`);
   for (const key of Object.keys(hooks)) {
-    if (!allowed.includes(key)) throw new TypeError(`${label}: unknown hook phase '${key}'`);
+    if (!allowed.includes(key)) throw new ConfigError(`${label}: unknown hook phase '${key}'`);
   }
   const result = {};
   for (const phase of allowed) result[phase] = toHookList(hooks[phase], phase, label);
@@ -189,10 +190,10 @@ const SCHEMA_PARTS = ['params', 'querystring', 'body', 'headers', 'response'];
 const normalizeSchema = (schema, label) => {
   if (schema === null || schema === undefined) return null;
   if (typeof schema !== 'object' || Array.isArray(schema)) {
-    throw new TypeError(`${label} schema must be an object (fastify route schema shape)`);
+    throw new ConfigError(`${label} schema must be an object (fastify route schema shape)`);
   }
   if (schema.query !== undefined && schema.querystring !== undefined && schema.query !== schema.querystring) {
-    throw new TypeError(`${label} schema has both 'query' and 'querystring' and they differ — use one`);
+    throw new ConfigError(`${label} schema has both 'query' and 'querystring' and they differ — use one`);
   }
   const normalized = {};
   for (const key of Object.keys(schema)) {
@@ -203,7 +204,7 @@ const normalizeSchema = (schema, label) => {
   for (const part of SCHEMA_PARTS) {
     const value = normalized[part];
     if (value !== undefined && (typeof value !== 'object' || value === null)) {
-      throw new TypeError(`${label} schema.${part} must be an object`);
+      throw new ConfigError(`${label} schema.${part} must be an object`);
     }
   }
   return normalized;
@@ -240,23 +241,23 @@ class Procedure {
       consume = null,
     } = options;
     if (typeof handler !== 'function') {
-      throw new TypeError('procedure() requires a handler function');
+      throw new ConfigError('procedure() requires a handler function');
     }
     // Anything but the two known levels used to silently mean 'session' —
     // an access model that LOOKS custom but is not is an auth bug waiting.
     // Custom policies are hooks' job (preValidation reads proc.meta).
     if (access !== 'public' && access !== 'session') {
-      throw new TypeError(`procedure() access must be 'public' or 'session', got '${access}'`);
+      throw new ConfigError(`procedure() access must be 'public' or 'session', got '${access}'`);
     }
     if (input !== null && !isValidator(input)) {
-      throw new TypeError('procedure() input must be a function or a Standard Schema');
+      throw new ConfigError('procedure() input must be a function or a Standard Schema');
     }
     if (output !== null && !isValidator(output)) {
-      throw new TypeError('procedure() output must be a function or a Standard Schema');
+      throw new ConfigError('procedure() output must be a function or a Standard Schema');
     }
     this.kind = kind ?? (isGeneratorHandler(handler) ? SUBSCRIPTION : CALL);
     if (this.kind !== CALL && this.kind !== SUBSCRIPTION) {
-      throw new TypeError(`procedure() kind must be '${CALL}' or '${SUBSCRIPTION}'`);
+      throw new ConfigError(`procedure() kind must be '${CALL}' or '${SUBSCRIPTION}'`);
     }
     // The procedure's own slice of the pipeline; router and unit levels are
     // merged in front of these when the router is built.
@@ -272,7 +273,7 @@ class Procedure {
     // Milliseconds a timer can hold, or 0 for none: anything else became a
     // deadline of NaN (never) or of one millisecond with a warning per call.
     if (!(typeof timeout === 'number' && timeout >= 0 && timeout < 2 ** 31)) {
-      throw new TypeError('procedure: timeout must be a number of milliseconds from 0 to 2^31 - 1');
+      throw new ConfigError('procedure: timeout must be a number of milliseconds from 0 to 2^31 - 1');
     }
     this.timeout = timeout;
     this.meta = meta;
@@ -282,31 +283,31 @@ class Procedure {
     // One declarative source of truth per direction: a schema beside a
     // programmatic validator would leave "which one ran?" ambiguous.
     if (this.schema && (input || output)) {
-      throw new TypeError('procedure() schema and input/output are mutually exclusive');
+      throw new ConfigError('procedure() schema and input/output are mutually exclusive');
     }
     if (queue && !(Number.isInteger(queue.concurrency) && queue.concurrency > 0)) {
-      throw new TypeError('procedure() queue.concurrency must be a positive integer');
+      throw new ConfigError('procedure() queue.concurrency must be a positive integer');
     }
     // A subscription lives until it is cancelled, so both of these would
     // mean something different from what they mean for a call — and quietly
     // meaning something else is worse than refusing.
     if (this.kind === SUBSCRIPTION && (queue || timeout)) {
-      throw new TypeError('procedure.subscription() does not support queue or timeout');
+      throw new ConfigError('procedure.subscription() does not support queue or timeout');
     }
     // A subscription is already refused on plain HTTP (400), so an HTTP
     // route mapping could never mean anything for one.
     if (this.kind === SUBSCRIPTION && this.http) {
-      throw new TypeError('procedure.subscription() does not support http');
+      throw new ConfigError('procedure.subscription() does not support http');
     }
     this.semaphore = queue ? new Semaphore(queue) : null;
     // A queue-consumer procedure's delivery policy (see the unit's reserved
     // `consumes` key). Plain data, shape-checked here; the broker binding
     // owns what the values mean.
     if (consume !== null && (typeof consume !== 'object' || Array.isArray(consume))) {
-      throw new TypeError('procedure() consume must be an object');
+      throw new ConfigError('procedure() consume must be an object');
     }
     if (consume && (this.kind === SUBSCRIPTION || this.http)) {
-      throw new TypeError('procedure() consume cannot be combined with a subscription or an http mapping');
+      throw new ConfigError('procedure() consume cannot be combined with a subscription or an http mapping');
     }
     this.consume = consume ? Object.freeze({ ...consume }) : null;
   }
@@ -509,7 +510,7 @@ procedure.subscription = (options) => {
 // `consume` is a consumer's policy: on a callable method or an event handler
 // it would silently do nothing, so it is refused where it cannot apply.
 const rejectConsume = (proc, label) => {
-  if (proc.consume) throw new TypeError(`${label}: consume is only valid inside a unit's consumes block`);
+  if (proc.consume) throw new ConfigError(`${label}: consume is only valid inside a unit's consumes block`);
   return proc;
 };
 
@@ -519,7 +520,7 @@ const toProcedure = (value, unitKey, methodName) => {
   if (typeof value === 'object' && value !== null && typeof value.handler === 'function') {
     return new Procedure(value);
   }
-  throw new TypeError(
+  throw new ConfigError(
     `Router definition ${unitKey}/${methodName} must be a procedure, a handler function, or an options object`,
   );
 };
@@ -558,14 +559,14 @@ const concatHooks = (base, extra, phases) => {
 const normalizeValidation = (validation) => {
   if (validation === null || validation === undefined) return null;
   if (typeof validation !== 'object') {
-    throw new TypeError('defineRouter: options.validation must be an object');
+    throw new ConfigError('defineRouter: options.validation must be an object');
   }
   const { ajv = null, serializer = null } = validation;
   if (ajv !== null && typeof ajv.compile !== 'function') {
-    throw new TypeError('defineRouter: validation.ajv must provide compile(schema)');
+    throw new ConfigError('defineRouter: validation.ajv must provide compile(schema)');
   }
   if (serializer !== null && typeof serializer.compile !== 'function') {
-    throw new TypeError('defineRouter: validation.serializer must provide compile(schema)');
+    throw new ConfigError('defineRouter: validation.serializer must provide compile(schema)');
   }
   if (!ajv && !serializer) return null;
   return { ajv, serializer };
@@ -591,7 +592,7 @@ const compileInput = (ajv, schema, label) => {
     try {
       validate = ajv.compile(schema[part]);
     } catch (error) {
-      throw new TypeError(`${label}: schema.${part} failed to compile: ${error.message}`);
+      throw new ConfigError(`${label}: schema.${part} failed to compile: ${error.message}`, { cause: error });
     }
     parts.push({ part, argsKey, validate });
   }
@@ -603,7 +604,7 @@ const compileInput = (ajv, schema, label) => {
     try {
       headersValidate = ajv.compile(schema.headers);
     } catch (error) {
-      throw new TypeError(`${label}: schema.headers failed to compile: ${error.message}`);
+      throw new ConfigError(`${label}: schema.headers failed to compile: ${error.message}`, { cause: error });
     }
   }
   if (parts.length === 0 && !headersValidate) return null;
@@ -659,7 +660,7 @@ const compileOutput = (ajv, schema, label) => {
   try {
     validate = ajv.compile(schema);
   } catch (error) {
-    throw new TypeError(`${label}: schema.response failed to compile: ${error.message}`);
+    throw new ConfigError(`${label}: schema.response failed to compile: ${error.message}`, { cause: error });
   }
   return (result) => {
     if (validate(result)) return result;
@@ -717,7 +718,7 @@ class Router {
   addUnit(unitKey, definition) {
     const [unit, version = DEFAULT_VERSION] = String(unitKey).split('.');
     if (this.#units.get(unit)?.has(version)) {
-      throw new TypeError(`addUnit: unit '${unitKey}' is already registered`);
+      throw new ConfigError(`addUnit: unit '${unitKey}' is already registered`);
     }
     this.#addUnit(unitKey, definition);
     this.#rebuildChains();
@@ -727,9 +728,9 @@ class Router {
   /** Adds a router-level hook after construction. Returns the router. */
   addHook(name, fn) {
     if (!ROUTER_PHASES.includes(name)) {
-      throw new TypeError(`addHook: unknown hook phase '${name}'`);
+      throw new ConfigError(`addHook: unknown hook phase '${name}'`);
     }
-    if (typeof fn !== 'function') throw new TypeError('addHook: the hook must be a function');
+    if (typeof fn !== 'function') throw new ConfigError('addHook: the hook must be a function');
     this.#hooks[name] = [...this.#hooks[name], fn];
     this.#rebuildChains();
     return this;
@@ -808,7 +809,7 @@ class Router {
     if (!hasInput && !success) return null; // passthrough-only schema (tags, ...)
     const ajv = this.#validation?.ajv ?? null;
     if (!ajv) {
-      throw new TypeError(
+      throw new ConfigError(
         `Router: ${label} declares schema validation but no validation.ajv compiler was injected — ` +
           'pass defineRouter(units, { validation: { ajv } })',
       );
@@ -823,7 +824,9 @@ class Router {
         try {
           artifacts.serialize = serializer.compile(success);
         } catch (error) {
-          throw new TypeError(`Router: ${label} schema.response failed to compile a serializer: ${error.message}`);
+          throw new ConfigError(`Router: ${label} schema.response failed to compile a serializer: ${error.message}`, {
+            cause: error,
+          });
         }
       }
     }
@@ -862,7 +865,7 @@ class Router {
       typeof definition !== 'object' ||
       definition === null
     ) {
-      throw new TypeError(`Invalid router unit definition: ${unitKey} (a unit key is 'unit' or 'unit.vN')`);
+      throw new ConfigError(`Invalid router unit definition: ${unitKey} (a unit key is 'unit' or 'unit.vN')`);
     }
     const version = rawVersion ?? DEFAULT_VERSION;
     let versions = this.#units.get(unit);
@@ -886,7 +889,7 @@ class Router {
       }
       if (name === EMITS_KEY) {
         if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-          throw new TypeError(`Router definition ${unitKey}.emits must be an object of event descriptors`);
+          throw new ConfigError(`Router definition ${unitKey}.emits must be an object of event descriptors`);
         }
         entry.emits = entry.emits ? { ...entry.emits, ...value } : { ...value };
         continue;
@@ -902,12 +905,12 @@ class Router {
 
   #addConsumers(unitKey, consumes, definition) {
     if (typeof definition !== 'object' || definition === null || Array.isArray(definition)) {
-      throw new TypeError(`Router definition ${unitKey}.consumes must be an object of consumer procedures`);
+      throw new ConfigError(`Router definition ${unitKey}.consumes must be an object of consumer procedures`);
     }
     for (const [name, value] of Object.entries(definition)) {
       const proc = toProcedure(value, unitKey, `consumes.${name}`);
       if (proc.subscription) {
-        throw new TypeError(`Router definition ${unitKey}.consumes.${name} cannot be a subscription`);
+        throw new ConfigError(`Router definition ${unitKey}.consumes.${name} cannot be a subscription`);
       }
       consumes.set(name, proc);
     }
@@ -917,7 +920,7 @@ class Router {
   // answers, so access control, input validation and queueing come for free.
   #addEvents(unitKey, events, definition) {
     if (typeof definition !== 'object' || definition === null) {
-      throw new TypeError(`Router definition ${unitKey}.on must be an object of event handlers`);
+      throw new ConfigError(`Router definition ${unitKey}.on must be an object of event handlers`);
     }
     for (const [name, value] of Object.entries(definition)) {
       events.set(name, rejectConsume(toProcedure(value, unitKey, `on.${name}`), `${unitKey}/on.${name}`));

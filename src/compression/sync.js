@@ -10,6 +10,7 @@
 // a receiver can tell from JSON at a glance.
 
 const { normalizeCompression, negotiate, codecById, isPromise } = require('./index.js');
+const { ConfigError } = require('../errors.js');
 
 // The inflated-size cap, the same 16 MiB the WebTransport and WebRTC
 // carriers bound one message at.
@@ -29,12 +30,12 @@ const normalizeSyncCompression = (value, name) => {
   if (normalized === null) return null;
   for (const { codec } of normalized.codecs) {
     if (codec.async !== undefined && codec.async !== null) {
-      throw new TypeError(
+      throw new ConfigError(
         `${name}: compression.codec declares async — this carrier has no ordering queue for a promise`,
       );
     }
     if (isPromise(codec.encode(EMPTY))) {
-      throw new TypeError(`${name}: compression.codec must answer synchronously on this carrier`);
+      throw new ConfigError(`${name}: compression.codec must answer synchronously on this carrier`);
     }
   }
   return normalized;
@@ -61,7 +62,7 @@ const headerNegotiator = (local) => {
 
 const maxMessageOf = (value, name) => {
   if (value === undefined || value === null) return DEFAULT_MAX_MESSAGE;
-  if (!(Number.isInteger(value) && value > 0)) throw new TypeError(`${name}: maxMessage must be a positive integer`);
+  if (!(Number.isInteger(value) && value > 0)) throw new ConfigError(`${name}: maxMessage must be a positive integer`);
   return value;
 };
 

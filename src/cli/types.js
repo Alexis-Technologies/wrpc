@@ -70,7 +70,15 @@ Examples:
   wrpc types http://localhost:8000/api --out api.d.ts --schema api.static.js
   wrpc types http://localhost:8000/api --out -`;
 
-class CliError extends Error {}
+// What the command refuses: a bad argument, an answer it cannot use. The
+// shim in bin/wrpc.js prints the message and exits 1.
+class CliError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'CliError';
+    this.code = 'ALX_ERR_CLI';
+  }
+}
 
 // What goes to the terminal carries text the SERVER chose — a unit name, a
 // type name, an error message — and a terminal obeys what it is sent: an

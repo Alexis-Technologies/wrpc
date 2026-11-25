@@ -22,6 +22,7 @@ const { x25519 } = require('./dh.js');
 const { createKdf } = require('./hkdf.js');
 const { createHpke, dhKem } = require('./hpke.js');
 const { utf8, concat, randomSource } = require('./bytes.js');
+const { ArgumentError } = require('../errors.js');
 
 const DEFAULT_INFO = utf8('wrpc e2ee v1');
 const KEY_LENGTH = 32;
@@ -38,7 +39,7 @@ const infoOf = (info) => (info === undefined || info === null ? DEFAULT_INFO : c
 
 const checkKey = (value, name) => {
   if (!(value instanceof Uint8Array) || value.length !== KEY_LENGTH) {
-    throw new TypeError(`e2ee: ${name} must be ${KEY_LENGTH} bytes`);
+    throw new ArgumentError(`e2ee: ${name} must be ${KEY_LENGTH} bytes`);
   }
   return value;
 };
@@ -85,7 +86,9 @@ const createSealer = (options = {}) => {
  */
 const createOpener = (options = {}) => {
   const { keyPair } = options;
-  if (!keyPair || !(keyPair.publicKey instanceof Uint8Array)) throw new TypeError('e2ee: keyPair must be an identity');
+  if (!keyPair || !(keyPair.publicKey instanceof Uint8Array)) {
+    throw new ArgumentError('e2ee: keyPair must be an identity');
+  }
   const senderPublicKey =
     options.senderPublicKey === undefined || options.senderPublicKey === null
       ? null
@@ -95,7 +98,7 @@ const createOpener = (options = {}) => {
   return Object.freeze({
     async open(sealed, aad = null) {
       if (!(sealed instanceof Uint8Array) || sealed.length <= hpke.encLength) {
-        throw new TypeError('e2ee: a sealed message is bytes');
+        throw new ArgumentError('e2ee: a sealed message is bytes');
       }
       const context = await hpke.setupRecipient(sealed.subarray(0, hpke.encLength), keyPair, setup);
       return context.open(aad === null ? null : asBytes(aad), sealed.subarray(hpke.encLength));

@@ -100,12 +100,7 @@ export declare function createW3cAdapter(source?: { RTCPeerConnection?: unknown 
 export declare const KIND_TEXT: 0;
 export declare const KIND_BINARY: 1;
 
-export declare class FramingError extends Error {
-  name: 'FramingError';
-  /** 'empty' | 'reserved' | 'kind' | 'too-large' | 'fragments' | 'utf8' | 'message-size' | 'inflate' */
-  code: string;
-  constructor(message: string, code: string);
-}
+export { FramingError, FramingErrorCode } from '../errors.js';
 
 /** Fragment sink: the frame is valid only for the duration of the call. */
 export type FrameSink = (frame: Uint8Array) => void;

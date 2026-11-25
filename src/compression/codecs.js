@@ -13,10 +13,11 @@
 
 const { normalizeAsync } = require('./index.js');
 const { nativeCompressor } = require('./native.js');
+const { ConfigError } = require('../errors.js');
 
 const build = (name, algorithm, level, { threshold, async: asyncOption } = {}) => {
   if (threshold !== undefined && !(Number.isInteger(threshold) && threshold >= 0)) {
-    throw new TypeError(`${name}: threshold must be a non-negative integer`);
+    throw new ConfigError(`${name}: threshold must be a non-negative integer`);
   }
   const codec = nativeCompressor({ algorithm, level, async: normalizeAsync(asyncOption, name) });
   if (threshold !== undefined) codec.threshold = threshold;

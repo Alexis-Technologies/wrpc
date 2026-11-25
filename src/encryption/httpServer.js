@@ -25,6 +25,7 @@ const {
   RESPONSE_NONCE,
   INFO,
 } = require('./http.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_MAX_SKEW = 5 * 60 * 1000;
 const DEFAULT_REPLAY_ENTRIES = 100000;
@@ -58,10 +59,10 @@ const createReplayCache = ({
   overflow = 'refuse',
   onOverflow = null,
 } = {}) => {
-  if (!Number.isInteger(max) || max <= 0) throw new TypeError('createReplayCache: max must be a positive integer');
-  if (!OVERFLOW.includes(overflow)) throw new TypeError("createReplayCache: overflow must be 'refuse' or 'evict'");
+  if (!Number.isInteger(max) || max <= 0) throw new ConfigError('createReplayCache: max must be a positive integer');
+  if (!OVERFLOW.includes(overflow)) throw new ConfigError("createReplayCache: overflow must be 'refuse' or 'evict'");
   if (onOverflow !== null && typeof onOverflow !== 'function') {
-    throw new TypeError('createReplayCache: onOverflow must be a function');
+    throw new ConfigError('createReplayCache: onOverflow must be a function');
   }
   const entries = new Map();
   return {

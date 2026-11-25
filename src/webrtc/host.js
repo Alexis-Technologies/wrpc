@@ -42,6 +42,7 @@ const {
 const { dispatchMessage, dispatchBinary } = require('../rpc/dispatcher.js');
 const { DEFAULT_META_MAX } = require('../rpc/meta.js');
 const { isInboundTransport } = require('../rpc/serverTransport.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const TRUST = ['link', 'assertion', 'none'];
 const ONCONNECT_STALL_MS = 5000;
@@ -82,14 +83,14 @@ class PeerHost extends Emitter {
   } = {}) {
     super();
     if (!router || typeof router.getProcedure !== 'function') {
-      throw new TypeError('PeerHost: options.router (a Router from defineRouter) is required');
+      throw new ConfigError('PeerHost: options.router (a Router from defineRouter) is required');
     }
     if (codec !== null && !isCodec(codec)) {
-      throw new TypeError('PeerHost: options.codec must provide encode(packet)/decode(text)');
+      throw new ConfigError('PeerHost: options.codec must provide encode(packet)/decode(text)');
     }
-    if (!TRUST.includes(trust)) throw new TypeError(`PeerHost: options.trust must be one of ${TRUST.join(', ')}`);
+    if (!TRUST.includes(trust)) throw new ConfigError(`PeerHost: options.trust must be one of ${TRUST.join(', ')}`);
     if (instanceId !== null && (typeof instanceId !== 'string' || instanceId.includes('.') || instanceId === '')) {
-      throw new TypeError('PeerHost: options.instanceId must be a non-empty string without "."');
+      throw new ConfigError('PeerHost: options.instanceId must be a non-empty string without "."');
     }
     this.#log = createLoggerWriter(logger);
     // The same server-side writer RpcServer uses: spans for the calls this
@@ -122,11 +123,11 @@ class PeerHost extends Emitter {
         instanceId === null || instanceId === undefined
           ? 'generateId must not return'
           : 'options.instanceId must not contain';
-      throw new TypeError(`PeerHost: ${source} "."`);
+      throw new ConfigError(`PeerHost: ${source} "."`);
     }
     this.#router = this.#withIntrospection(router, introspection);
     if (this.#codec && this.#router.hasSerializers) {
-      throw new TypeError('PeerHost: options.codec and compiled response serializers are mutually exclusive');
+      throw new ConfigError('PeerHost: options.codec and compiled response serializers are mutually exclusive');
     }
   }
 
@@ -172,18 +173,18 @@ class PeerHost extends Emitter {
    */
   attach(transport, { peer, room = null, data = null, claims = null } = {}) {
     if (!isInboundTransport(transport)) {
-      throw new TypeError(
+      throw new ConfigError(
         'PeerHost.attach: a persistent transport (connection set) with write/send/error/close/on/once/off is required',
       );
     }
     if (typeof peer !== 'string' || peer.length === 0) {
-      throw new TypeError('PeerHost.attach: peer must be a non-empty string');
+      throw new ArgumentError('PeerHost.attach: peer must be a non-empty string');
     }
     if (claims !== null && (typeof claims !== 'object' || Array.isArray(claims))) {
-      throw new TypeError('PeerHost.attach: claims must be an object');
+      throw new ArgumentError('PeerHost.attach: claims must be an object');
     }
     if (this.#trust === 'assertion' && claims === null) {
-      throw new TypeError("PeerHost.attach: trust 'assertion' requires the peer's verified claims");
+      throw new ArgumentError("PeerHost.attach: trust 'assertion' requires the peer's verified claims");
     }
     if (this.#codec) transport.codec = this.#codec;
     // Fields, not setRevision: a transport here is structural (attach).

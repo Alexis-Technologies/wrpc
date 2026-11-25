@@ -17,6 +17,7 @@
 
 const { utf8, toBase64Url, fromBase64 } = require('./bytes.js');
 const { isKid } = require('./keyring.js');
+const { ConfigError } = require('../errors.js');
 
 const EMPTY = new Uint8Array(0);
 const NOISE_LABEL = utf8('wrpc noise static v1');
@@ -55,7 +56,7 @@ const parseBundle = (value, name = 'serverKey') => {
   }
   const isKey = (key) => key instanceof Uint8Array && key.length === 32;
   if (!isKid(kid) || !isKey(noise) || !isKey(hpke)) {
-    throw new TypeError(`encryption: ${name} must be a key bundle — "<kid>:<noise key>:<hpke key>"`);
+    throw new ConfigError(`encryption: ${name} must be a key bundle — "<kid>:<noise key>:<hpke key>"`);
   }
   return { kid, noise, hpke };
 };

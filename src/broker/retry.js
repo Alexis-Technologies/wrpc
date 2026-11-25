@@ -5,6 +5,7 @@
 // procedure's failure means the same thing on Redis and on Kafka.
 
 const { backoffDelay } = require('../utils.js');
+const { ConfigError } = require('../errors.js');
 
 // Transient by default — 500 included: a queue's 500 is usually a
 // dependency that fell over (a database blip), and at-least-once already
@@ -23,18 +24,18 @@ const nonNegative = (value) => typeof value === 'number' && Number.isFinite(valu
 const normalizeRetry = (options, label) => {
   if (options === undefined || options === null) return DEFAULT_RETRY;
   if (options === false) return Object.freeze({ ...DEFAULT_RETRY, attempts: 1 });
-  if (typeof options !== 'object') throw new TypeError(`${label}: retry must be an object or false`);
+  if (typeof options !== 'object') throw new ConfigError(`${label}: retry must be an object or false`);
   const { attempts = DEFAULT_RETRY.attempts, backoff = {}, retryOn = DEFAULT_RETRY_ON } = options;
-  if (!positiveInteger(attempts)) throw new TypeError(`${label}: retry.attempts must be a positive integer`);
+  if (!positiveInteger(attempts)) throw new ConfigError(`${label}: retry.attempts must be a positive integer`);
   if (typeof backoff !== 'object' || backoff === null) {
-    throw new TypeError(`${label}: retry.backoff must be an object`);
+    throw new ConfigError(`${label}: retry.backoff must be an object`);
   }
   const merged = { ...DEFAULT_RETRY.backoff, ...backoff };
   if (!nonNegative(merged.base) || !nonNegative(merged.max) || !(merged.factor > 0)) {
-    throw new TypeError(`${label}: retry.backoff needs non-negative base/max and a positive factor`);
+    throw new ConfigError(`${label}: retry.backoff needs non-negative base/max and a positive factor`);
   }
   if (!Array.isArray(retryOn) || !retryOn.every((code) => Number.isInteger(code))) {
-    throw new TypeError(`${label}: retry.retryOn must be an array of status codes`);
+    throw new ConfigError(`${label}: retry.retryOn must be an array of status codes`);
   }
   return Object.freeze({ attempts, backoff: Object.freeze(merged), retryOn: Object.freeze([...retryOn]) });
 };

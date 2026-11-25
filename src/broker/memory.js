@@ -33,6 +33,7 @@ const { ATTEMPT_HEADER, DEAD_REASON_HEADER, DEFAULT_PREFETCH, checkConsume, prod
 // that stopped — which is why the head index that is enough for a topic's
 // entries (`#compact`) is not enough here.
 const { Deque } = require('../deque.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const DEFAULT_LOG_ENTRIES = 10_000;
 const MAX_ID_LENGTH = 128;
@@ -40,7 +41,7 @@ const LOG_ID = /^[A-Za-z0-9_-]{1,64}\.\d{1,16}$/;
 
 const requireName = (value, what, label) => {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new TypeError(`${label}: ${what} must be a non-empty string`);
+    throw new ArgumentError(`${label}: ${what} must be a non-empty string`);
   }
 };
 
@@ -73,11 +74,11 @@ class MemoryBroker {
           : resolveGenerateId(generateId, 'MemoryBroker').first
         : String(epoch);
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(this.#epoch)) {
-      throw new TypeError('MemoryBroker: epoch must be 1-64 characters of [A-Za-z0-9_-]');
+      throw new ConfigError('MemoryBroker: epoch must be 1-64 characters of [A-Za-z0-9_-]');
     }
     const maxEntries = retention.maxEntries ?? DEFAULT_LOG_ENTRIES;
     if (!Number.isInteger(maxEntries) || maxEntries <= 0) {
-      throw new TypeError('MemoryBroker: retention.maxEntries must be a positive integer');
+      throw new ConfigError('MemoryBroker: retention.maxEntries must be a positive integer');
     }
     this.#maxEntries = maxEntries;
     this.#log = createLoggerWriter(logger).child({ component: 'broker', broker: 'memory' });
@@ -182,7 +183,7 @@ class MemoryBroker {
   #read(topic, { after = null, from = 'latest', signal = null } = {}) {
     requireName(topic, 'topic', 'MemoryBroker.log.read');
     if (from !== 'latest' && from !== 'earliest') {
-      throw new TypeError("MemoryBroker.log.read: from must be 'latest' or 'earliest'");
+      throw new ArgumentError("MemoryBroker.log.read: from must be 'latest' or 'earliest'");
     }
     const state = this.#topic(topic);
     let position = 0;
@@ -404,7 +405,7 @@ class MemoryBroker {
   #listen(address, onMessage, { group = null } = {}) {
     requireName(address, 'address', 'MemoryBroker.direct.listen');
     if (typeof onMessage !== 'function') {
-      throw new TypeError('MemoryBroker.direct.listen: onMessage must be a function');
+      throw new ArgumentError('MemoryBroker.direct.listen: onMessage must be a function');
     }
     if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
     let entry = this.#addresses.get(address);

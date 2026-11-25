@@ -46,6 +46,7 @@
 
 const { Emitter, resolveGenerateId } = require('../utils.js');
 const { isPeerId: isId } = require('./ids.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close', 'connect']);
 
@@ -77,7 +78,7 @@ const isWrpcClientLike = (client) =>
   isFunction(client.off);
 
 const checkRoom = (room) => {
-  if (typeof room !== 'string' || room.length === 0) throw new TypeError('room must be a non-empty string');
+  if (typeof room !== 'string' || room.length === 0) throw new ArgumentError('room must be a non-empty string');
   return room;
 };
 
@@ -101,12 +102,12 @@ class WrpcSignaler extends Emitter {
   constructor(client, options = {}) {
     super();
     if (!isWrpcClientLike(client)) {
-      throw new TypeError('wrpcSignaler: client must be a WrpcClient (call, sendEvent, use, on, off)');
+      throw new ConfigError('wrpcSignaler: client must be a WrpcClient (call, sendEvent, use, on, off)');
     }
     const { unit = 'signaling', identity = null, generateId = null } = options;
-    if (typeof unit !== 'string' || unit.length === 0) throw new TypeError('wrpcSignaler: unit must be a unit name');
+    if (typeof unit !== 'string' || unit.length === 0) throw new ConfigError('wrpcSignaler: unit must be a unit name');
     if (identity !== null && !isId(identity) && !isFunction(identity)) {
-      throw new TypeError('wrpcSignaler: identity must be a non-empty string or a function');
+      throw new ConfigError('wrpcSignaler: identity must be a non-empty string or a function');
     }
     const { first: instance } = resolveGenerateId(generateId, 'wrpcSignaler');
     this.#client = client;
@@ -219,7 +220,7 @@ class WrpcSignaler extends Emitter {
     const identity = this.#identity;
     const proposed = isFunction(identity) ? await identity() : identity;
     if (proposed !== null && proposed !== undefined && !isId(proposed)) {
-      throw new TypeError('wrpcSignaler: identity must produce a non-empty string');
+      throw new ConfigError('wrpcSignaler: identity must produce a non-empty string');
     }
     const args = { instance: this.#instance };
     if (isId(proposed)) args.id = proposed;
@@ -234,9 +235,9 @@ class WrpcSignaler extends Emitter {
   }
 
   send(to, message, options = {}) {
-    if (!isId(to)) throw new TypeError('send: to must be a peer id');
+    if (!isId(to)) throw new ArgumentError('send: to must be a peer id');
     if (!isSignalMessage(message)) {
-      throw new TypeError('send: message.type must be description, candidate, close or connect');
+      throw new ArgumentError('send: message.type must be description, candidate, close or connect');
     }
     if (this.#replaced) throw new Error('Signaler was replaced');
     const room = options.room === undefined ? null : checkRoom(options.room);
@@ -276,7 +277,7 @@ class WrpcSignaler extends Emitter {
   /** A trust assertion binding this peer's id to one of its certificates: `<unit>/assert`. */
   async assert({ fingerprint } = {}) {
     if (typeof fingerprint !== 'string' || fingerprint.length === 0) {
-      throw new TypeError('assert: fingerprint must be a non-empty string');
+      throw new ArgumentError('assert: fingerprint must be a non-empty string');
     }
     await this.ready();
     const result = await this.#client.call(`${this.#unit}/assert`, { fingerprint });

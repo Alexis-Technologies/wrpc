@@ -28,6 +28,7 @@ const zlib = require('node:zlib');
 
 const { hasZstd } = require('./compression/native.js');
 const { normalizeAsync } = require('./compression/index.js');
+const { ConfigError } = require('./errors.js');
 
 const DEFAULT_THRESHOLD = 1024;
 // The threadpool hand-off costs a fixed amount per call: the same shape as
@@ -48,10 +49,10 @@ const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 //                         as it is written (SSE), or null
 const gzipEncoder = ({ level, memLevel }, name) => {
   if (level !== undefined && !integerIn(level, -1, 9)) {
-    throw new TypeError(`${name}: gzip level must be an integer from -1 to 9`);
+    throw new ConfigError(`${name}: gzip level must be an integer from -1 to 9`);
   }
   if (memLevel !== undefined && !integerIn(memLevel, 1, 9)) {
-    throw new TypeError(`${name}: gzip memLevel must be an integer from 1 to 9`);
+    throw new ConfigError(`${name}: gzip memLevel must be an integer from 1 to 9`);
   }
   const options = {};
   if (level !== undefined) options.level = level;
@@ -65,7 +66,7 @@ const gzipEncoder = ({ level, memLevel }, name) => {
 };
 
 const brotliEncoder = ({ quality = DEFAULT_BROTLI_QUALITY }, name) => {
-  if (!integerIn(quality, 0, 11)) throw new TypeError(`${name}: br quality must be an integer from 0 to 11`);
+  if (!integerIn(quality, 0, 11)) throw new ConfigError(`${name}: br quality must be an integer from 0 to 11`);
   const { BROTLI_PARAM_QUALITY, BROTLI_PARAM_MODE, BROTLI_MODE_TEXT, BROTLI_PARAM_SIZE_HINT } = zlib.constants;
   const optionsOf = (body) => ({
     params: {
@@ -87,8 +88,8 @@ const brotliEncoder = ({ quality = DEFAULT_BROTLI_QUALITY }, name) => {
 };
 
 const zstdEncoder = ({ level = DEFAULT_ZSTD_LEVEL }, name, lib) => {
-  if (!integerIn(level, 1, 22)) throw new TypeError(`${name}: zstd level must be an integer from 1 to 22`);
-  if (!hasZstd(lib)) throw new TypeError(`${name}: this Node has no zstd in node:zlib (22.15+ / 23.8+)`);
+  if (!integerIn(level, 1, 22)) throw new ConfigError(`${name}: zstd level must be an integer from 1 to 22`);
+  if (!hasZstd(lib)) throw new ConfigError(`${name}: this Node has no zstd in node:zlib (22.15+ / 23.8+)`);
   const params = { [lib.constants.ZSTD_c_compressionLevel]: level };
   return {
     token: 'zstd',
@@ -105,9 +106,9 @@ const zstdEncoder = ({ level = DEFAULT_ZSTD_LEVEL }, name, lib) => {
 // answers only, and an SSE option refuses it.
 const customEncoder = (entry, name) => {
   const { encoding, encode, createStream = null } = entry;
-  if (typeof encode !== 'function') throw new TypeError(`${name}: a custom encoding must provide encode(bytes)`);
+  if (typeof encode !== 'function') throw new ConfigError(`${name}: a custom encoding must provide encode(bytes)`);
   if (createStream !== null && typeof createStream !== 'function') {
-    throw new TypeError(`${name}: a custom encoding's createStream must be a function`);
+    throw new ConfigError(`${name}: a custom encoding's createStream must be a function`);
   }
   return { token: encoding.toLowerCase(), encode, encodeAsync: null, createStream };
 };
@@ -115,15 +116,15 @@ const customEncoder = (entry, name) => {
 const toEncoder = (entry, name, lib) => {
   const options = typeof entry === 'string' ? { encoding: entry } : entry;
   if (typeof options !== 'object' || options === null || typeof options.encoding !== 'string') {
-    throw new TypeError(`${name}: an encoding is 'gzip', 'br', 'zstd' or an object with \`encoding\``);
+    throw new ConfigError(`${name}: an encoding is 'gzip', 'br', 'zstd' or an object with \`encoding\``);
   }
-  if (!TOKEN.test(options.encoding)) throw new TypeError(`${name}: encoding must be an HTTP token`);
+  if (!TOKEN.test(options.encoding)) throw new ConfigError(`${name}: encoding must be an HTTP token`);
   if (options.encode !== undefined) return customEncoder(options, name);
   const token = options.encoding.toLowerCase();
   if (token === 'gzip') return gzipEncoder(options, name);
   if (token === 'br') return brotliEncoder(options, name);
   if (token === 'zstd') return zstdEncoder(options, name, lib);
-  throw new TypeError(
+  throw new ConfigError(
     `${name}: unknown encoding ${JSON.stringify(options.encoding)} — gzip, br, zstd, or one with encode()`,
   );
 };
@@ -138,32 +139,32 @@ const normalizeCompression = (value, name, { streaming = false, zlib: lib = zlib
   if (value === undefined || value === null || value === false) return null;
   const options = value === true ? {} : value;
   if (typeof options !== 'object' || Array.isArray(options)) {
-    throw new TypeError(`${name}: compression must be true, false or an options object`);
+    throw new ConfigError(`${name}: compression must be true, false or an options object`);
   }
   const { threshold = DEFAULT_THRESHOLD, filter = null, encodings = ['gzip'], async: asyncOption = null } = options;
   if (!(Number.isInteger(threshold) && threshold >= 0)) {
-    throw new TypeError(`${name}: compression.threshold must be a non-negative integer`);
+    throw new ConfigError(`${name}: compression.threshold must be a non-negative integer`);
   }
   if (filter !== null && typeof filter !== 'function') {
-    throw new TypeError(`${name}: compression.filter must be a function`);
+    throw new ConfigError(`${name}: compression.filter must be a function`);
   }
   if (options.level !== undefined || options.memLevel !== undefined) {
-    throw new TypeError(
+    throw new ConfigError(
       `${name}: compression.level / memLevel belong to the coding — encodings: [{ encoding: 'gzip', level }]`,
     );
   }
   if (!Array.isArray(encodings) || encodings.length === 0 || encodings.length > 8) {
-    throw new TypeError(`${name}: compression.encodings must be a list of one to eight encodings`);
+    throw new ConfigError(`${name}: compression.encodings must be a list of one to eight encodings`);
   }
   const encoders = encodings.map((entry) => toEncoder(entry, `${name}: compression.encodings`, lib));
   for (let i = 0; i < encoders.length; i++) {
     const { token } = encoders[i];
-    if (token === 'identity' || token === '*') throw new TypeError(`${name}: ${token} is not an encoding to apply`);
+    if (token === 'identity' || token === '*') throw new ConfigError(`${name}: ${token} is not an encoding to apply`);
     if (encoders.findIndex((other) => other.token === token) !== i) {
-      throw new TypeError(`${name}: compression.encodings names ${token} twice`);
+      throw new ConfigError(`${name}: compression.encodings names ${token} twice`);
     }
     if (streaming && encoders[i].createStream === null) {
-      throw new TypeError(`${name}: the ${token} encoding has no createStream() — an SSE response needs one`);
+      throw new ConfigError(`${name}: the ${token} encoding has no createStream() — an SSE response needs one`);
     }
   }
   // The one strict normalizer every `async` knob shares (src/compression):

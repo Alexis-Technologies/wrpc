@@ -25,6 +25,7 @@
 
 const { concat, utf8, counterNonce, fromBase64, toBase64Url } = require('./bytes.js');
 const { OpenError } = require('./contracts.js');
+const { ArgumentError } = require('../errors.js');
 
 const CONTENT_TYPE = 'application/wrpc-sealed';
 const VERSION = 1;
@@ -76,7 +77,7 @@ const bodyBytes = (body) => {
   if (typeof body === 'string') return utf8(body);
   if (body instanceof Uint8Array) return body;
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
-  throw new TypeError('encryption: a sealed request body is a string or bytes');
+  throw new ArgumentError('encryption: a sealed request body is a string or bytes');
 };
 
 // The response key: derived from a secret only the two ends of THIS request

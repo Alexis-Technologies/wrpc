@@ -69,7 +69,7 @@ test('keys: strict — every malformed ring is a TypeError where it is built', (
     [{ current: 'k1', ring: { k1: new Uint8Array(31) } }, /keys\.ring\.k1 must be 32 bytes/],
   ];
   for (const [value, pattern] of cases) assert.throws(() => normalizeKeys(value), pattern);
-  assert.throws(() => normalizeKeys(null, 'rooms.encryption.keys'), /^TypeError: rooms\.encryption\.keys must be/);
+  assert.throws(() => normalizeKeys(null, 'rooms.encryption.keys'), /^ConfigError: rooms\.encryption\.keys must be/);
 });
 
 test('keys: a provider is read live, and only ever answers 32 bytes for a well-formed kid', () => {

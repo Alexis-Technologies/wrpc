@@ -50,6 +50,7 @@ const {
   maxMessageOf,
   encodeIfSmaller,
 } = require('../../compression/sync.js');
+const { ConfigError } = require('../../errors.js');
 
 const DEFAULT_IDLE_TIMEOUT = 90_000; // 3x the client's 30 s heartbeat
 const DEFAULT_HIGH_WATER_MARK = 1024;
@@ -221,23 +222,23 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   // sender sealed; 'carrier' answers where the carrier says.
   const replyMode = encryption?.reply ?? 'sealed';
   if (replyMode !== 'sealed' && replyMode !== 'carrier') {
-    throw new TypeError("attachBrokerRpc: encryption.reply must be 'sealed' or 'carrier'");
+    throw new ConfigError("attachBrokerRpc: encryption.reply must be 'sealed' or 'carrier'");
   }
   const sealedReplies = replyMode === 'sealed';
   if (sealing !== null && !(Number.isFinite(maxSkew) && maxSkew > 0)) {
-    throw new TypeError('attachBrokerRpc: encryption.maxSkew must be a positive number of milliseconds');
+    throw new ConfigError('attachBrokerRpc: encryption.maxSkew must be a positive number of milliseconds');
   }
   if (replay !== null && typeof replay?.seen !== 'function') {
-    throw new TypeError('attachBrokerRpc: encryption.replay must be { seen(id, ttl) } or null');
+    throw new ConfigError('attachBrokerRpc: encryption.replay must be { seen(id, ttl) } or null');
   }
   if (!(Number.isFinite(idleTimeout) && idleTimeout > 0)) {
-    throw new TypeError('attachBrokerRpc: idleTimeout must be a positive number of milliseconds');
+    throw new ConfigError('attachBrokerRpc: idleTimeout must be a positive number of milliseconds');
   }
   if (!Number.isInteger(highWaterMark) || highWaterMark <= 0) {
-    throw new TypeError('attachBrokerRpc: highWaterMark must be a positive integer');
+    throw new ConfigError('attachBrokerRpc: highWaterMark must be a positive integer');
   }
   if (!Number.isInteger(maxSessions) || maxSessions < 0) {
-    throw new TypeError('attachBrokerRpc: maxSessions must be a non-negative integer (0 for no limit)');
+    throw new ConfigError('attachBrokerRpc: maxSessions must be a non-negative integer (0 for no limit)');
   }
   const system = brokerName(broker) === 'custom' ? brokerName(direct) : brokerName(broker);
   // The server's writer, not the console: a pino-configured server used to

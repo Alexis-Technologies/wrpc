@@ -20,6 +20,7 @@ const { generateUUID } = require('../runtime/node.js');
 const { resolveGenerateId } = require('../utils.js');
 const { crashDelay, positiveInteger } = require('./retry.js');
 const { lineLevels } = require('../rpc/errors.js');
+const { ArgumentError } = require('../errors.js');
 
 // Carried by a delivery an adapter re-published: the attempt it is on (the
 // counter is the ADAPTER's — RabbitMQ 4 does not count a requeue, Kafka has
@@ -171,18 +172,18 @@ const guardedRead = (inner, { guard = null, mapId = null } = {}) => {
 
 /** What every `queue.consume` checks first; `label` is `'<broker> queue.consume'`. */
 const checkConsume = (label, onDelivery, prefetch, deadLetter) => {
-  if (typeof onDelivery !== 'function') throw new TypeError(`${label}: onDelivery must be a function`);
-  if (!positiveInteger(prefetch)) throw new TypeError(`${label}: prefetch must be a positive integer`);
+  if (typeof onDelivery !== 'function') throw new ArgumentError(`${label}: onDelivery must be a function`);
+  if (!positiveInteger(prefetch)) throw new ArgumentError(`${label}: prefetch must be a positive integer`);
   if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
-    throw new TypeError(`${label}: deadLetter must be a queue name or null`);
+    throw new ArgumentError(`${label}: deadLetter must be a queue name or null`);
   }
 };
 
 /** What every `direct.listen` checks first; `label` is `'<broker> direct.listen'`. */
 const checkListen = (label, address, onMessage) => {
-  if (typeof onMessage !== 'function') throw new TypeError(`${label}: onMessage must be a function`);
+  if (typeof onMessage !== 'function') throw new ArgumentError(`${label}: onMessage must be a function`);
   if (typeof address !== 'string' || address.length === 0) {
-    throw new TypeError(`${label}: address must be a non-empty string`);
+    throw new ArgumentError(`${label}: address must be a non-empty string`);
   }
 };
 

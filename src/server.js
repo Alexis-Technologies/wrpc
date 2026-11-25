@@ -16,6 +16,7 @@ const {
   MAX_BODY_SIZE,
 } = require('./adapters/common.js');
 const { createLoggerWriter } = require('./logging.js');
+const { ConfigError } = require('./errors.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
 const DEFAULT_BIND_TIMEOUT = 2000;
@@ -41,7 +42,7 @@ class Server extends Emitter {
     super();
     const { cors = null, logger = globalThis.console, engine = createNodeEngine(), ws = {} } = options;
     if (!isEngine(engine)) {
-      throw new TypeError('Server: options.engine does not implement the Engine contract');
+      throw new ConfigError('Server: options.engine does not implement the Engine contract');
     }
     this.#options = options;
     this.#log = createLoggerWriter(logger);

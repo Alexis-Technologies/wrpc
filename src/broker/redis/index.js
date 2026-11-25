@@ -47,6 +47,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
+const { ConfigError, ArgumentError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const token = tokenEncoder({ maxLength: 200 });
@@ -107,7 +108,7 @@ const decodeEntry = (id, fields) => {
 
 const checkClient = (client, label) => {
   if (!client || !isFunction(client.xadd) || !isFunction(client.publish) || !isFunction(client.xreadgroup)) {
-    throw new TypeError(`${label}: options.client must be an ioredis-shaped client (xadd/xreadgroup/publish/...)`);
+    throw new ConfigError(`${label}: options.client must be an ioredis-shaped client (xadd/xreadgroup/publish/...)`);
   }
   return client;
 };
@@ -134,22 +135,22 @@ const createRedisBroker = (options = {}) => {
   // environment variable compares as a number in each of these places and
   // does the wrong thing silently.
   if (!positiveInteger(blockMs)) {
-    throw new TypeError('createRedisBroker: options.blockMs must be a positive integer of milliseconds');
+    throw new ConfigError('createRedisBroker: options.blockMs must be a positive integer of milliseconds');
   }
   if (!positiveInteger(claimIdleMs)) {
-    throw new TypeError('createRedisBroker: options.claimIdleMs must be a positive integer of milliseconds');
+    throw new ConfigError('createRedisBroker: options.claimIdleMs must be a positive integer of milliseconds');
   }
   if (!Number.isInteger(maxLen) || maxLen < 0) {
-    throw new TypeError('createRedisBroker: options.maxLen must be a non-negative integer (0 for unbounded)');
+    throw new ConfigError('createRedisBroker: options.maxLen must be a non-negative integer (0 for unbounded)');
   }
   if (!positiveInteger(inboxTtl)) {
-    throw new TypeError('createRedisBroker: options.inboxTtl must be a positive integer of milliseconds');
+    throw new ConfigError('createRedisBroker: options.inboxTtl must be a positive integer of milliseconds');
   }
   if (connect !== null && !isFunction(connect)) {
-    throw new TypeError('createRedisBroker: options.connect must be a function returning a new client');
+    throw new ConfigError('createRedisBroker: options.connect must be a function returning a new client');
   }
   if (connect === null && !isFunction(client.duplicate)) {
-    throw new TypeError('createRedisBroker: options.client must support duplicate(), or pass options.connect');
+    throw new ConfigError('createRedisBroker: options.client must support duplicate(), or pass options.connect');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'redis' });
   const owned = new Set();
@@ -310,7 +311,7 @@ const createRedisBroker = (options = {}) => {
   const read = (topic, options = {}) => {
     const { after = null, from = 'latest', signal = null } = options;
     if (from !== 'latest' && from !== 'earliest') {
-      throw new TypeError("redis log.read: from must be 'latest' or 'earliest'");
+      throw new ArgumentError("redis log.read: from must be 'latest' or 'earliest'");
     }
     if (after === null || after === undefined) return tails.read(topic, { from, signal });
     if (parseId(after) === null) {

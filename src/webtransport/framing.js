@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError, ArgumentError, FramingError } = require('../errors.js');
+
 // Framing for a WebTransport stream: how wrpc packets and stream chunks ride
 // a QUIC stream, which is a byte stream with no message boundaries.
 //
@@ -53,19 +55,11 @@ const TEXT_ENCODER = new TextEncoder();
 // U+FFFD the JSON parser then trips over one layer up.
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
-class FramingError extends Error {
-  constructor(message, code) {
-    super(message);
-    this.name = 'FramingError';
-    this.code = code;
-  }
-}
-
 const toBytes = (input) => {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new TypeError('framing: expected an ArrayBuffer or an ArrayBufferView');
+  throw new ArgumentError('framing: expected an ArrayBuffer or an ArrayBufferView');
 };
 
 /** A packet's bytes as text — the parser's own decode, for a packet inflated after parsing. */
@@ -193,9 +187,9 @@ class StreamParser {
 
   constructor({ maxMessage = DEFAULT_MAX_MESSAGE, onMessage } = {}) {
     if (!Number.isInteger(maxMessage) || maxMessage <= 0) {
-      throw new TypeError('framing: maxMessage must be a positive integer');
+      throw new ConfigError('framing: maxMessage must be a positive integer');
     }
-    if (typeof onMessage !== 'function') throw new TypeError('framing: onMessage must be a function');
+    if (typeof onMessage !== 'function') throw new ConfigError('framing: onMessage must be a function');
     this.#max = maxMessage;
     this.#onMessage = onMessage;
   }

@@ -40,6 +40,7 @@ const {
 } = require('./frames.js');
 const { createBrokerSealing } = require('../sealing.js');
 const { normalizeSyncCompression, headerNegotiator, maxMessageOf } = require('../../compression/sync.js');
+const { ConfigError } = require('../../errors.js');
 
 const DEFAULT_REQUEST_TIMEOUT = 30_000;
 const DEFAULT_HIGH_WATER_MARK = 1024;
@@ -102,7 +103,7 @@ class ClientBrokerTransport extends ClientTransport {
     if (this.active) return;
     const mode = options.mode ?? 'stateless';
     if (mode !== 'stateless' && mode !== 'session') {
-      throw new TypeError("broker transport: mode must be 'stateless' or 'session'");
+      throw new ConfigError("broker transport: mode must be 'stateless' or 'session'");
     }
     this.#direct = capabilityOf(options.broker, 'direct', 'broker transport');
     this.#address = serviceAddress(serviceOf(this.url), options.address, 'broker transport');

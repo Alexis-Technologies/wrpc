@@ -27,6 +27,7 @@
 
 const { concat, utf8, isZero } = require('./bytes.js');
 const { isPromise } = require('../compression/ids.js');
+const { ConfigError } = require('../errors.js');
 
 const EMPTY = new Uint8Array(0);
 const KEY_LENGTH = 32;
@@ -390,7 +391,7 @@ class HandshakeState {
 
 const checkKey = (value, name) => {
   if (!(value instanceof Uint8Array) || value.length !== KEY_LENGTH) {
-    throw new TypeError(`noise: ${name} must be 32 bytes`);
+    throw new ConfigError(`noise: ${name} must be 32 bytes`);
   }
 };
 
@@ -405,13 +406,13 @@ const checkKey = (value, name) => {
  */
 const createNoise = ({ pattern, dh, cipher, kdf }) => {
   if (!(pattern in PATTERNS)) {
-    throw new TypeError(`noise: unknown pattern ${JSON.stringify(pattern)} — ${Object.keys(PATTERNS).join(', ')}`);
+    throw new ConfigError(`noise: unknown pattern ${JSON.stringify(pattern)} — ${Object.keys(PATTERNS).join(', ')}`);
   }
   const name = `Noise_${pattern}_${dh.id}_${cipherName(cipher)}_${kdf.id}`;
   const noise = { pattern, dh, cipher, kdf };
   const start = (initiator, options = {}) => {
     const needsStatic = pattern === 'XX' || (pattern === 'NK' && !initiator);
-    if (needsStatic && !options.staticKey) throw new TypeError(`noise: ${pattern} needs a staticKey on this side`);
+    if (needsStatic && !options.staticKey) throw new ConfigError(`noise: ${pattern} needs a staticKey on this side`);
     if (pattern === 'NK' && initiator) checkKey(options.remoteStatic, 'remoteStatic');
     if (PATTERNS[pattern].psk) checkKey(options.psk, 'psk');
     return new HandshakeState(noise, initiator, options).initialize(name, options.prologue ?? EMPTY);

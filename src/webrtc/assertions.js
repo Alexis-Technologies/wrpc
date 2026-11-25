@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError } = require('../errors.js');
+
 // Trust assertions: the token a signaling server issues to a peer and the
 // other peers verify — browser-safe, require-free, over WebCrypto only.
 //
@@ -178,20 +180,20 @@ const createAssertionVerifier = ({
   clock = Date.now,
 } = {}) => {
   if (!subtle || typeof subtle.verify !== 'function') {
-    throw new TypeError('createAssertionVerifier: WebCrypto (crypto.subtle) is required');
+    throw new ConfigError('createAssertionVerifier: WebCrypto (crypto.subtle) is required');
   }
   if (!Number.isInteger(refreshInterval) || refreshInterval < 0) {
-    throw new TypeError('createAssertionVerifier: refreshInterval must be a non-negative integer (ms)');
+    throw new ConfigError('createAssertionVerifier: refreshInterval must be a non-negative integer (ms)');
   }
   if (!Number.isInteger(maxAge) || maxAge < 0) {
-    throw new TypeError('createAssertionVerifier: maxAge must be a non-negative integer (ms, 0 = never)');
+    throw new ConfigError('createAssertionVerifier: maxAge must be a non-negative integer (ms, 0 = never)');
   }
-  if (typeof clock !== 'function') throw new TypeError('createAssertionVerifier: clock must be a function');
+  if (typeof clock !== 'function') throw new ConfigError('createAssertionVerifier: clock must be a function');
   if (typeof keys !== 'function' && !isJwk(keys) && !(Array.isArray(keys) && keys.every(isJwk))) {
-    throw new TypeError('createAssertionVerifier: keys must be an EC P-256 JWK, an array of them, or a function');
+    throw new ConfigError('createAssertionVerifier: keys must be an EC P-256 JWK, an array of them, or a function');
   }
   if (issuer !== null && (typeof issuer !== 'string' || issuer.length === 0)) {
-    throw new TypeError('createAssertionVerifier: issuer must be a non-empty string');
+    throw new ConfigError('createAssertionVerifier: issuer must be a non-empty string');
   }
   let imported = new Map(); // kid -> Promise<CryptoKey>
   // A lone key with no kid of its own is a wildcard: it answers any kid a
@@ -216,7 +218,7 @@ const createAssertionVerifier = ({
     (inflight ??= (async () => {
       const list = typeof keys === 'function' ? await keys() : Array.isArray(keys) ? keys : [keys];
       if (!Array.isArray(list) || list.length === 0 || !list.every(isJwk)) {
-        throw new TypeError('assertion keys: expected a non-empty array of EC P-256 JWKs');
+        throw new ConfigError('assertion keys: expected a non-empty array of EC P-256 JWKs');
       }
       const fresh = new Map();
       for (const jwk of list) {

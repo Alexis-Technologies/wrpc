@@ -18,6 +18,7 @@
 
 const { toText, toBytes } = require('../ids.js');
 const { codecById, encodeIfSmaller, decodeOrNull } = require('../../compression/sync.js');
+const { ConfigError } = require('../../errors.js');
 
 const HEADER_KIND = 'wrpc-kind';
 const HEADER_SEQ = 'wrpc-seq';
@@ -67,12 +68,12 @@ const DEFAULT_PREFIX = 'wrpc';
 const serviceAddress = (service, address, label) => {
   if (address !== undefined && address !== null) {
     if (typeof address !== 'string' || address.length === 0) {
-      throw new TypeError(`${label}: address must be a non-empty string`);
+      throw new ConfigError(`${label}: address must be a non-empty string`);
     }
     return address;
   }
   if (typeof service !== 'string' || service.length === 0) {
-    throw new TypeError(`${label}: service must be a non-empty string`);
+    throw new ConfigError(`${label}: service must be a non-empty string`);
   }
   return `${DEFAULT_PREFIX}.${service}`;
 };

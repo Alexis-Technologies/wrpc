@@ -138,6 +138,8 @@ export interface CompressionOptions {
   async?: boolean | { threshold?: number };
 }
 
+export { ConfigError, ArgumentError, ErrorCode } from './errors.js';
+
 export class WrpcError extends Error {
   code: number;
   /** Structured issue lists the server attached; an optional wire field. */

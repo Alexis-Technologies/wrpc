@@ -42,6 +42,7 @@ const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
 const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError } = require('./assertions.js');
 const { normalizeCompression } = require('../compression/index.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 class WrpcPeer extends Emitter {
   #signaler;
@@ -102,26 +103,28 @@ class WrpcPeer extends Emitter {
       logger = false,
       telemetry = null,
     } = options;
-    if (!isSignaler(signaler)) throw new TypeError('WrpcPeer: options.signaler must satisfy the Signaler contract');
+    if (!isSignaler(signaler)) throw new ConfigError('WrpcPeer: options.signaler must satisfy the Signaler contract');
     if (assertions !== null && (typeof assertions !== 'object' || Array.isArray(assertions))) {
-      throw new TypeError('WrpcPeer: options.assertions must be an object');
+      throw new ConfigError('WrpcPeer: options.assertions must be an object');
     }
     const adapter = rtc ?? createW3cAdapter();
-    if (!isRtcAdapter(adapter)) throw new TypeError('WrpcPeer: options.rtc must satisfy the RtcAdapter contract');
+    if (!isRtcAdapter(adapter)) throw new ConfigError('WrpcPeer: options.rtc must satisfy the RtcAdapter contract');
     if (accept !== null && typeof accept !== 'function') {
-      throw new TypeError('WrpcPeer: options.accept must be a function');
+      throw new ConfigError('WrpcPeer: options.accept must be a function');
     }
     if (typeof client !== 'object' || client === null) {
-      throw new TypeError('WrpcPeer: options.client must be an object');
+      throw new ConfigError('WrpcPeer: options.client must be an object');
     }
-    if (typeof host !== 'object' || host === null) throw new TypeError('WrpcPeer: options.host must be an object');
+    if (typeof host !== 'object' || host === null) throw new ConfigError('WrpcPeer: options.host must be an object');
     if (assertions !== null) {
       if (typeof signaler.assert !== 'function') {
-        throw new TypeError('WrpcPeer: options.assertions needs a signaler with assert() — the server must issue them');
+        throw new ConfigError(
+          'WrpcPeer: options.assertions needs a signaler with assert() — the server must issue them',
+        );
       }
       const keys = assertions.keys ?? (typeof signaler.keys === 'function' ? () => signaler.keys() : null);
       if (keys === null) {
-        throw new TypeError('WrpcPeer: options.assertions.keys is required when the signaler has no keys()');
+        throw new ConfigError('WrpcPeer: options.assertions.keys is required when the signaler has no keys()');
       }
       this.#verifier = createAssertionVerifier({
         keys,
@@ -131,7 +134,7 @@ class WrpcPeer extends Emitter {
       });
     }
     if (host.trust === 'assertion' && this.#verifier === null) {
-      throw new TypeError("WrpcPeer: host.trust 'assertion' needs options.assertions");
+      throw new ConfigError("WrpcPeer: host.trust 'assertion' needs options.assertions");
     }
     this.#signaler = signaler;
     this.#adapter = adapter;
@@ -263,7 +266,7 @@ class WrpcPeer extends Emitter {
    */
   async connect(remoteId, options = {}) {
     if (!isPeerId(remoteId)) {
-      throw new TypeError('WrpcPeer.connect: remoteId must be a non-empty string of at most 256 characters');
+      throw new ArgumentError('WrpcPeer.connect: remoteId must be a non-empty string of at most 256 characters');
     }
     await this.start();
     if (remoteId === this.id) throw new Error('WrpcPeer.connect: cannot connect to self');
@@ -304,7 +307,7 @@ class WrpcPeer extends Emitter {
   join(room, options = {}) {
     const { Mesh } = require('./mesh.js');
     if (typeof room !== 'string' || room.length === 0) {
-      throw new TypeError('WrpcPeer.join: room must be a non-empty string');
+      throw new ArgumentError('WrpcPeer.join: room must be a non-empty string');
     }
     const existing = this.#meshes.get(room);
     if (existing) return existing;

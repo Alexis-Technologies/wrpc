@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError } = require('../errors.js');
+
 // The declarative REST bridge, split out of router.js: the http-mapping
 // normalizer, the rest.version strategy, and the per-verb segment trie the
 // dispatcher matches requests against. Everything here is COLD by the
@@ -31,26 +33,28 @@ const RESERVED_HEADERS = new Set(['content-length', 'set-cookie', 'wrpc-version'
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 
-const checkHeader = (name, value, label) => {
+// A header set at definition is a ConfigError, one set by a handler while
+// it runs (`setHeader`) an ArgumentError: the caller names the class.
+const checkHeader = (name, value, label, Failure = ConfigError) => {
   if (typeof name !== 'string' || !HEADER_NAME.test(name)) {
-    throw new TypeError(`${label}: '${String(name)}' is not a header name`);
+    throw new Failure(`${label}: '${String(name)}' is not a header name`);
   }
   if (typeof value !== 'string' || !HEADER_VALUE.test(value)) {
-    throw new TypeError(`${label}: the value of '${name}' holds a character a header cannot carry`);
+    throw new Failure(`${label}: the value of '${name}' holds a character a header cannot carry`);
   }
 };
 
 const normalizeHeaders = (headers) => {
   if (headers === undefined || headers === null) return null;
   if (typeof headers !== 'object' || Array.isArray(headers)) {
-    throw new TypeError('procedure() http.headers must be an object of header name -> value');
+    throw new ConfigError('procedure() http.headers must be an object of header name -> value');
   }
   const result = {};
   for (const name of Object.keys(headers)) {
     const value = headers[name];
-    if (typeof value !== 'string') throw new TypeError(`procedure() http.headers['${name}'] must be a string`);
+    if (typeof value !== 'string') throw new ConfigError(`procedure() http.headers['${name}'] must be a string`);
     if (RESERVED_HEADERS.has(name.toLowerCase())) {
-      throw new TypeError(`procedure() http.headers may not set '${name}': the transport owns it`);
+      throw new ConfigError(`procedure() http.headers may not set '${name}': the transport owns it`);
     }
     checkHeader(name, value, 'procedure() http.headers');
     result[name] = value;
@@ -63,17 +67,17 @@ const normalizeHeaders = (headers) => {
 const normalizeCache = (cache, method) => {
   if (cache === undefined || cache === null) return null;
   if (typeof cache !== 'object' || Array.isArray(cache)) {
-    throw new TypeError('procedure() http.cache must be an object');
+    throw new ConfigError('procedure() http.cache must be an object');
   }
   if (method !== 'GET' && method !== 'HEAD') {
-    throw new TypeError('procedure() http.cache is only valid on GET and HEAD');
+    throw new ConfigError('procedure() http.cache is only valid on GET and HEAD');
   }
   const { maxAge, public: isPublic = false, staleWhileRevalidate = null, etag = true } = cache;
   if (!(Number.isInteger(maxAge) && maxAge >= 0)) {
-    throw new TypeError('procedure() http.cache.maxAge must be an integer >= 0 (seconds)');
+    throw new ConfigError('procedure() http.cache.maxAge must be an integer >= 0 (seconds)');
   }
   if (staleWhileRevalidate !== null && !(Number.isInteger(staleWhileRevalidate) && staleWhileRevalidate >= 0)) {
-    throw new TypeError('procedure() http.cache.staleWhileRevalidate must be an integer >= 0 (seconds)');
+    throw new ConfigError('procedure() http.cache.staleWhileRevalidate must be an integer >= 0 (seconds)');
   }
   return { maxAge, public: isPublic === true, staleWhileRevalidate, etag: etag !== false };
 };
@@ -97,22 +101,22 @@ const STATIC_SEGMENT = /^[^/:*]+$/;
 
 const normalizeHttp = (http) => {
   if (http === null || http === undefined) return null;
-  if (typeof http !== 'object') throw new TypeError('procedure() http must be an object');
+  if (typeof http !== 'object') throw new ConfigError('procedure() http must be an object');
   const { method, path, status = null, headers, cache } = http;
   if (!HTTP_METHODS.includes(method)) {
-    throw new TypeError(`procedure() http.method must be one of ${HTTP_METHODS.join(', ')}`);
+    throw new ConfigError(`procedure() http.method must be one of ${HTTP_METHODS.join(', ')}`);
   }
   if (typeof path !== 'string' || !path.startsWith('/')) {
-    throw new TypeError("procedure() http.path must be a string starting with '/'");
+    throw new ConfigError("procedure() http.path must be a string starting with '/'");
   }
   const segments = path === '/' ? [] : path.slice(1).split('/');
   for (const segment of segments) {
     if (!PARAM_SEGMENT.test(segment) && !STATIC_SEGMENT.test(segment)) {
-      throw new TypeError(`procedure() http.path has an invalid segment '${segment}' in '${path}'`);
+      throw new ConfigError(`procedure() http.path has an invalid segment '${segment}' in '${path}'`);
     }
   }
   if (status !== null && !(Number.isInteger(status) && status >= 200 && status <= 599)) {
-    throw new TypeError('procedure() http.status must be an integer HTTP status (200-599)');
+    throw new ConfigError('procedure() http.status must be an integer HTTP status (200-599)');
   }
   return { method, path, status, headers: normalizeHeaders(headers), cache: normalizeCache(cache, method) };
 };
@@ -122,12 +126,12 @@ const normalizeHttp = (http) => {
 const normalizeRestOptions = (rest) => {
   if (rest === undefined || rest === null) return null;
   if (typeof rest !== 'object' || Array.isArray(rest)) {
-    throw new TypeError('defineRouter: rest must be an options object');
+    throw new ConfigError('defineRouter: rest must be an options object');
   }
   const { version } = rest;
   if (version === undefined) return null;
   if (version !== 'path' && typeof version !== 'function') {
-    throw new TypeError("defineRouter: rest.version must be 'path' or a function (version, path) => path");
+    throw new ConfigError("defineRouter: rest.version must be 'path' or a function (version, path) => path");
   }
   return { version };
 };
@@ -156,7 +160,7 @@ const effectiveHttp = (http, version, restOptions) => {
   const path =
     typeof spec === 'function' ? spec(version, http.path) : `/${version}${http.path === '/' ? '' : http.path}`;
   if (typeof path !== 'string' || !path.startsWith('/')) {
-    throw new TypeError(`rest.version must produce a path starting with '/', got ${JSON.stringify(path)}`);
+    throw new ConfigError(`rest.version must produce a path starting with '/', got ${JSON.stringify(path)}`);
   }
   return { ...http, path };
 };
@@ -189,7 +193,7 @@ const buildRestTrees = (units, restOptions) => {
           if (segment.startsWith(':')) {
             const name = segment.slice(1);
             if (node.param && node.param.name !== name) {
-              throw new TypeError(
+              throw new ConfigError(
                 `REST route conflict: ${method} ':${node.param.name}' and ':${name}' at the same position ` +
                   `(${unitKey}/${methodName} vs an earlier route)`,
               );
@@ -208,7 +212,7 @@ const buildRestTrees = (units, restOptions) => {
         }
         if (node.terminal) {
           const existing = node.terminal;
-          throw new TypeError(
+          throw new ConfigError(
             `REST route conflict: ${method} ${path} is declared by both ` +
               `${existing.unitKey}/${existing.methodName} and ${unitKey}/${methodName}`,
           );

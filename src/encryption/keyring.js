@@ -14,6 +14,7 @@
 
 const { isKeyProvider } = require('./contracts.js');
 const { fromBase64, fromHex, randomSource } = require('./bytes.js');
+const { ConfigError } = require('../errors.js');
 
 const KEY_LENGTH = 32;
 const KID = /^[A-Za-z0-9._-]{1,32}$/;
@@ -34,13 +35,13 @@ const parseKey = (value, name) => {
   if (value instanceof Uint8Array) bytes = Uint8Array.from(value);
   else if (typeof value === 'string') bytes = value.length === KEY_LENGTH * 2 ? fromHex(value) : fromBase64(value);
   if (bytes === null || bytes.length !== KEY_LENGTH) {
-    throw new TypeError(`${name} must be ${KEY_LENGTH} bytes — a Uint8Array, 64 hex characters or base64`);
+    throw new ConfigError(`${name} must be ${KEY_LENGTH} bytes — a Uint8Array, 64 hex characters or base64`);
   }
   return bytes;
 };
 
 const checkedKid = (value, name) => {
-  if (!isKid(value)) throw new TypeError(`${name} must be a key id: 1-32 of A-Z a-z 0-9 . _ -`);
+  if (!isKid(value)) throw new ConfigError(`${name} must be a key id: 1-32 of A-Z a-z 0-9 . _ -`);
   return value;
 };
 
@@ -72,7 +73,7 @@ const normalizeKeys = (value, name = 'keys') => {
   const ring = new Map();
   let current = DEFAULT_KID;
   if (isObject(value) && !(value instanceof Uint8Array)) {
-    if (!isObject(value.ring)) throw new TypeError(`${name}.ring must be an object of kid → key`);
+    if (!isObject(value.ring)) throw new ConfigError(`${name}.ring must be an object of kid → key`);
     for (const kid of Object.keys(value.ring)) {
       ring.set(
         checkedKid(kid, `${name}.ring: ${JSON.stringify(kid)}`),
@@ -80,7 +81,7 @@ const normalizeKeys = (value, name = 'keys') => {
       );
     }
     current = checkedKid(value.current, `${name}.current`);
-    if (!ring.has(current)) throw new TypeError(`${name}.current names a key the ring does not hold`);
+    if (!ring.has(current)) throw new ConfigError(`${name}.current names a key the ring does not hold`);
   } else {
     ring.set(current, parseKey(value, name));
   }

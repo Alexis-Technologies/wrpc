@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError } = require('../errors.js');
+
 // The platform's own per-message codecs, browser half: CompressionStream /
 // DecompressionStream, which is all a page has — asynchronous, no level, no
 // flush control, no preset dictionary (a dictionary needs the codec of
@@ -60,14 +62,14 @@ const through = async (stream, bytes, maxOutput) => {
 // injected.
 const nativeCompressor = ({ algorithm = ID, optional = false } = {}) => {
   if (algorithm !== ID && algorithm !== 'brotli' && algorithm !== 'zstd') {
-    throw new TypeError(`compression: unknown algorithm ${JSON.stringify(algorithm)} — deflate-raw, brotli or zstd`);
+    throw new ConfigError(`compression: unknown algorithm ${JSON.stringify(algorithm)} — deflate-raw, brotli or zstd`);
   }
   try {
     void new CompressionStream(algorithm);
     void new DecompressionStream(algorithm);
   } catch {
     if (optional || algorithm === ID) return null;
-    throw new TypeError(`compression: this platform's CompressionStream has no ${algorithm}`);
+    throw new ConfigError(`compression: this platform's CompressionStream has no ${algorithm}`);
   }
   return {
     id: algorithm,

@@ -53,12 +53,20 @@ test('procedure definitions', async (t) => {
   await t.test('definitions without a handler throw TypeError', () => {
     assert.throws(() => procedure({}), TypeError);
     assert.throws(() => procedure({ handler: 42 }), TypeError);
-    assert.throws(() => defineRouter({ unit: { m: {} } }), { name: 'TypeError', message: /must be a procedure/ });
+    assert.throws(() => defineRouter({ unit: { m: {} } }), {
+      name: 'ConfigError',
+      code: 'ALX_ERR_CONFIG',
+      message: /must be a procedure/,
+    });
     assert.throws(() => defineRouter({ unit: { m: 'nope' } }), TypeError);
   });
 
   await t.test('bad unit values throw TypeError', () => {
-    assert.throws(() => defineRouter({ unit: null }), { name: 'TypeError', message: /Invalid router unit/ });
+    assert.throws(() => defineRouter({ unit: null }), {
+      name: 'ConfigError',
+      code: 'ALX_ERR_CONFIG',
+      message: /Invalid router unit/,
+    });
     assert.throws(() => defineRouter({ unit: 42 }), TypeError);
   });
 

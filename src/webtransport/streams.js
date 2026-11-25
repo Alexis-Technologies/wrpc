@@ -32,6 +32,7 @@
 // the hot path.
 
 const { chunkEncode } = require('../chunks.js');
+const { ConfigError } = require('../errors.js');
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
@@ -146,13 +147,13 @@ class StreamMux {
     },
   ) {
     if (!Number.isInteger(maxHeldStreams) || maxHeldStreams <= 0) {
-      throw new TypeError('StreamMux: maxHeldStreams must be a positive integer');
+      throw new ConfigError('StreamMux: maxHeldStreams must be a positive integer');
     }
     if (!Number.isInteger(holdTimeout) || holdTimeout <= 0) {
-      throw new TypeError('StreamMux: holdTimeout must be a positive integer (ms)');
+      throw new ConfigError('StreamMux: holdTimeout must be a positive integer (ms)');
     }
     if (!Number.isInteger(openTimeout) || openTimeout <= 0) {
-      throw new TypeError('StreamMux: openTimeout must be a positive integer (ms)');
+      throw new ConfigError('StreamMux: openTimeout must be a positive integer (ms)');
     }
     this.#session = session;
     this.#emitPacket = emitPacket;

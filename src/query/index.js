@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError, ArgumentError } = require('../errors.js');
+
 // TanStack Query bindings, in the shape tRPC v11 settled on: not hooks, but
 // OPTION FACTORIES. `wq.queryOptions(['chat', 'list'], args)` hands back the
 // `{ queryKey, queryFn }` a user spreads into their own `useQuery`, so this
@@ -25,13 +27,13 @@ const isFunction = (value) => typeof value === 'function';
 
 const requireClient = (client) => {
   if (!client || typeof client.api !== 'object' || client.api === null) {
-    throw new TypeError('createQueryUtils(client): client must be a WrpcClient (an object with an `api`)');
+    throw new ConfigError('createQueryUtils(client): client must be a WrpcClient (an object with an `api`)');
   }
 };
 
 const requireQueryClient = (queryClient, where) => {
   if (!queryClient || !isFunction(queryClient.setQueryData)) {
-    throw new TypeError(`${where}: pass a queryClient with a setQueryData() method (TanStack QueryClient)`);
+    throw new ConfigError(`${where}: pass a queryClient with a setQueryData() method (TanStack QueryClient)`);
   }
 };
 
@@ -43,16 +45,16 @@ const replace = (_previous, data) => data;
 const createQueryUtils = (client, options = {}) => {
   requireClient(client);
   const { prefix = [], queryClient: defaultQueryClient = null } = options;
-  if (!Array.isArray(prefix)) throw new TypeError('createQueryUtils: prefix must be an array');
+  if (!Array.isArray(prefix)) throw new ConfigError('createQueryUtils: prefix must be an array');
   if (defaultQueryClient !== null) requireQueryClient(defaultQueryClient, 'createQueryUtils');
 
   const checkPath = (path) => {
     if (!Array.isArray(path) || path.length !== 2) {
-      throw new TypeError(`wrpc/query: a path is [unit, method], got ${JSON.stringify(path)}`);
+      throw new ArgumentError(`wrpc/query: a path is [unit, method], got ${JSON.stringify(path)}`);
     }
     const [unit, method] = path;
     if (typeof unit !== 'string' || typeof method !== 'string') {
-      throw new TypeError(`wrpc/query: a path is [unit, method] of strings, got ${JSON.stringify(path)}`);
+      throw new ArgumentError(`wrpc/query: a path is [unit, method] of strings, got ${JSON.stringify(path)}`);
     }
     return [unit, method];
   };
@@ -142,7 +144,7 @@ const createQueryUtils = (client, options = {}) => {
       checkPath(path);
       const { cursorKey = 'cursor', ...rest } = extra;
       if (typeof cursorKey !== 'string' || cursorKey.length === 0) {
-        throw new TypeError('wrpc/query: infiniteQueryOptions cursorKey must be a non-empty string');
+        throw new ArgumentError('wrpc/query: infiniteQueryOptions cursorKey must be a non-empty string');
       }
       return {
         ...rest,
@@ -191,7 +193,7 @@ const createQueryUtils = (client, options = {}) => {
         lastEventId,
       } = handlerOptions;
       requireQueryClient(queryClient, `wrpc/query: subscriptionHandler(${unit}/${method})`);
-      if (!isFunction(update)) throw new TypeError('wrpc/query: subscriptionHandler update must be a function');
+      if (!isFunction(update)) throw new ArgumentError('wrpc/query: subscriptionHandler update must be a function');
       const subscription = resolveSubscription(path);
       return subscription.subscribe(args ?? {}, {
         lastEventId,

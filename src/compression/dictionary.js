@@ -18,6 +18,7 @@ const zlib = require('node:zlib');
 
 const { dictionaryId, normalizeAsync, DICTIONARY_ID_PREFIX: ID_PREFIX } = require('./index.js');
 const { deflateEncoder } = require('./native.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_THRESHOLD = 64;
 
@@ -25,7 +26,7 @@ const toBuffer = (dictionary) => {
   if (Buffer.isBuffer(dictionary)) return dictionary;
   if (dictionary instanceof Uint8Array) return Buffer.from(dictionary.buffer, dictionary.byteOffset, dictionary.length);
   if (typeof dictionary === 'string') return Buffer.from(dictionary);
-  throw new TypeError('dictionaryCompressor: dictionary must be bytes or a string');
+  throw new ConfigError('dictionaryCompressor: dictionary must be bytes or a string');
 };
 
 /**
@@ -39,12 +40,12 @@ const toBuffer = (dictionary) => {
  */
 const dictionaryCompressor = (dictionary, { level, threshold = DEFAULT_THRESHOLD, async: asyncOption } = {}) => {
   const dict = toBuffer(dictionary);
-  if (dict.length === 0) throw new TypeError('dictionaryCompressor: dictionary must not be empty');
+  if (dict.length === 0) throw new ConfigError('dictionaryCompressor: dictionary must not be empty');
   if (!(Number.isInteger(threshold) && threshold >= 0)) {
-    throw new TypeError('dictionaryCompressor: threshold must be a non-negative integer');
+    throw new ConfigError('dictionaryCompressor: threshold must be a non-negative integer');
   }
   if (level !== undefined && !(Number.isInteger(level) && level >= -1 && level <= 9)) {
-    throw new TypeError('dictionaryCompressor: level must be an integer from -1 to 9');
+    throw new ConfigError('dictionaryCompressor: level must be an integer from -1 to 9');
   }
   const async = normalizeAsync(asyncOption, 'dictionaryCompressor');
   const deflate = { dictionary: dict };

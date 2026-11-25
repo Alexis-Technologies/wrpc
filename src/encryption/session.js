@@ -25,6 +25,7 @@
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../wire.js');
 const { concat, utf8 } = require('./bytes.js');
 const { isPromise } = require('../compression/ids.js');
+const { ConfigError } = require('../errors.js');
 
 const HELLO_VERSION = 1;
 const INNER_TEXT = 0;
@@ -47,7 +48,9 @@ const encoder = new TextEncoder();
 const helloHeader = (name, kid) => {
   const nameBytes = utf8(name);
   const kidBytes = utf8(kid);
-  if (nameBytes.length > 255 || kidBytes.length > 255) throw new TypeError('encryption: protocol name or kid too long');
+  if (nameBytes.length > 255 || kidBytes.length > 255) {
+    throw new ConfigError('encryption: protocol name or kid too long');
+  }
   return concat(Uint8Array.of(HELLO_VERSION, nameBytes.length), nameBytes, Uint8Array.of(kidBytes.length), kidBytes);
 };
 

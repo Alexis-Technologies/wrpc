@@ -151,29 +151,34 @@ test('adapter: checkConsume and checkListen say which broker and what was wrong'
   assert.doesNotThrow(() => checkConsume('x queue.consume', ok, 16, null));
   assert.doesNotThrow(() => checkConsume('x queue.consume', ok, 1, 'dead'));
   assert.throws(() => checkConsume('x queue.consume', null, 16, null), {
-    name: 'TypeError',
+    name: 'ArgumentError',
+    code: 'ALX_ERR_ARGUMENT',
     message: 'x queue.consume: onDelivery must be a function',
   });
   for (const prefetch of [0, -1, 1.5, '16', Infinity]) {
     assert.throws(() => checkConsume('x queue.consume', ok, prefetch, null), {
-      name: 'TypeError',
+      name: 'ArgumentError',
+      code: 'ALX_ERR_ARGUMENT',
       message: 'x queue.consume: prefetch must be a positive integer',
     });
   }
   for (const deadLetter of ['', 7, undefined, {}]) {
     assert.throws(() => checkConsume('x queue.consume', ok, 16, deadLetter), {
-      name: 'TypeError',
+      name: 'ArgumentError',
+      code: 'ALX_ERR_ARGUMENT',
       message: 'x queue.consume: deadLetter must be a queue name or null',
     });
   }
   assert.doesNotThrow(() => checkListen('x direct.listen', 'svc', ok));
   assert.throws(() => checkListen('x direct.listen', 'svc', 'nope'), {
-    name: 'TypeError',
+    name: 'ArgumentError',
+    code: 'ALX_ERR_ARGUMENT',
     message: 'x direct.listen: onMessage must be a function',
   });
   for (const address of ['', null, 7]) {
     assert.throws(() => checkListen('x direct.listen', address, ok), {
-      name: 'TypeError',
+      name: 'ArgumentError',
+      code: 'ALX_ERR_ARGUMENT',
       message: 'x direct.listen: address must be a non-empty string',
     });
   }

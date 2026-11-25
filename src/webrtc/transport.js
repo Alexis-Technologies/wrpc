@@ -44,6 +44,7 @@ const {
   checkMessageSize,
 } = require('./framing.js');
 const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -66,7 +67,7 @@ const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
 const normalizeBackpressure = (value, label) => {
   if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
   if (!Number.isInteger(value) || value < 0) {
-    throw new TypeError(`${label}: maxBackpressure must be a non-negative integer of bytes (0 = off)`);
+    throw new ConfigError(`${label}: maxBackpressure must be a non-negative integer of bytes (0 = off)`);
   }
   return value;
 };
@@ -76,14 +77,14 @@ const normalizeBackpressure = (value, label) => {
 // low mark above the high one used to mean a 'drain' that never came.
 const normalizeWaterMarks = (highWaterMark, lowWaterMark, label) => {
   if (highWaterMark !== undefined && !positiveInteger(highWaterMark)) {
-    throw new TypeError(`${label}: highWaterMark must be a positive integer of bytes`);
+    throw new ConfigError(`${label}: highWaterMark must be a positive integer of bytes`);
   }
   if (lowWaterMark !== undefined && !positiveInteger(lowWaterMark)) {
-    throw new TypeError(`${label}: lowWaterMark must be a positive integer of bytes`);
+    throw new ConfigError(`${label}: lowWaterMark must be a positive integer of bytes`);
   }
   const high = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
   if (lowWaterMark === undefined) return { high, low: Math.min(DEFAULT_LOW_WATER_MARK, high) };
-  if (lowWaterMark > high) throw new TypeError(`${label}: lowWaterMark must not exceed highWaterMark`);
+  if (lowWaterMark > high) throw new ConfigError(`${label}: lowWaterMark must not exceed highWaterMark`);
   return { high, low: lowWaterMark };
 };
 
@@ -91,7 +92,7 @@ const toBytes = (data) => {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  throw new TypeError('write() takes a string or bytes');
+  throw new ArgumentError('write() takes a string or bytes');
 };
 
 const CLOSED_CHANNEL = 'The data channel is closed; pass a factory as `channel` to reconnect';
@@ -475,7 +476,7 @@ class ClientRtcTransport extends ClientTransport {
     } = {},
   ) {
     super(url);
-    if (link && channel) throw new TypeError('ClientRtcTransport: link and channel are mutually exclusive');
+    if (link && channel) throw new ConfigError('ClientRtcTransport: link and channel are mutually exclusive');
     checkMessageSize(maxMessageSize, 'ClientRtcTransport: options');
     this.#maxBackpressure = normalizeBackpressure(maxBackpressure, 'ClientRtcTransport: options');
     this.#link = link;
@@ -565,7 +566,7 @@ class ClientRtcTransport extends ClientTransport {
       throw new Error('Connection terminated');
     }
     if (!isRtcDataChannel(channel)) {
-      throw new TypeError('WebRTC transport: channel must be a data channel, or a factory returning one');
+      throw new ConfigError('WebRTC transport: channel must be a data channel, or a factory returning one');
     }
     this.#channel = channel;
     await waitChannelOpen(channel);
@@ -739,7 +740,7 @@ class RtcPeerTransport extends ServerTransport {
     // A channel that is closing or closed never opens again: refused here,
     // not discovered at the first write.
     if (raw && (channel.readyState === 'closing' || channel.readyState === 'closed')) {
-      throw new TypeError(`RtcPeerTransport: the data channel is ${channel.readyState}`);
+      throw new ConfigError(`RtcPeerTransport: the data channel is ${channel.readyState}`);
     }
     super(raw ? (peer ?? (channel.label || 'data channel')) : peer);
     // Over a link the size is the link's (negotiated); the option is a raw

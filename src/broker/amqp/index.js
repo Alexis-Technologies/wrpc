@@ -51,6 +51,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
+const { ConfigError, ArgumentError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_INBOX_TTL = 60_000;
@@ -94,20 +95,20 @@ const createAmqpBroker = (options = {}) => {
   // Ids: an injected generator is used verbatim — see idFactory.
   const { nextId } = idFactory(generateId, 'createAmqpBroker');
   if (!connection || !isFunction(connection.createChannel) || !isFunction(connection.createConfirmChannel)) {
-    throw new TypeError('createAmqpBroker: options.connection must be an amqplib connection');
+    throw new ConfigError('createAmqpBroker: options.connection must be an amqplib connection');
   }
   // Strict, at construction: these become queue ARGUMENTS, and RabbitMQ
   // refuses a redeclaration with different ones with a channel-level error
   // long after the typo — a `queueType` it does not know, an `inboxTtl`
   // read as a string.
   if (queueType !== 'quorum' && queueType !== 'classic') {
-    throw new TypeError("createAmqpBroker: options.queueType must be 'quorum' or 'classic'");
+    throw new ConfigError("createAmqpBroker: options.queueType must be 'quorum' or 'classic'");
   }
   if (!positiveInteger(inboxTtl)) {
-    throw new TypeError('createAmqpBroker: options.inboxTtl must be a positive integer of milliseconds');
+    throw new ConfigError('createAmqpBroker: options.inboxTtl must be a positive integer of milliseconds');
   }
   if (!Number.isInteger(streamMaxBytes) || streamMaxBytes < 0) {
-    throw new TypeError('createAmqpBroker: options.streamMaxBytes must be a non-negative integer (0 for unbounded)');
+    throw new ConfigError('createAmqpBroker: options.streamMaxBytes must be a non-negative integer (0 for unbounded)');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'amqp' });
   const report = reporter(log);
@@ -349,7 +350,7 @@ const createAmqpBroker = (options = {}) => {
       })();
     },
     subscribe(channel, handler) {
-      if (!isFunction(handler)) throw new TypeError('amqp backplane.subscribe: handler must be a function');
+      if (!isFunction(handler)) throw new ArgumentError('amqp backplane.subscribe: handler must be a function');
       const key = token(channel);
       let set = handlers.get(key);
       if (set === undefined) {
@@ -554,7 +555,7 @@ const createAmqpBroker = (options = {}) => {
   const read = (topic, options = {}) => {
     const { after = null, from = 'latest', signal = null } = options;
     if (from !== 'latest' && from !== 'earliest') {
-      throw new TypeError("amqp log.read: from must be 'latest' or 'earliest'");
+      throw new ArgumentError("amqp log.read: from must be 'latest' or 'earliest'");
     }
     if (after === null || after === undefined) {
       return stringifyIds(tails.read(topic, from === 'earliest' ? { after: -1, signal } : { from, signal }));

@@ -13,6 +13,7 @@ const { PreparedFrames } = require('./prepared.js');
 const { DeflateContext } = require('./deflateContext.js');
 const permessageDeflate = require('./permessageDeflate.js');
 const { Deque } = require('../deque.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // The write-queue pressure signal when a socket does not say (a test
 // double): net.Socket's own default.
@@ -68,7 +69,7 @@ const turnBudgetOf = (value) => {
   if (value === true) return TURN_BUDGET;
   const valid = (mark) => mark === undefined || (Number.isInteger(mark) && mark > 0);
   if (typeof value !== 'object' || !valid(value.messages) || !valid(value.bytes)) {
-    throw new TypeError('Connection: turnBudget must be a boolean or { messages, bytes } of positive integers');
+    throw new ConfigError('Connection: turnBudget must be a boolean or { messages, bytes } of positive integers');
   }
   return { messages: value.messages ?? TURN_BUDGET.messages, bytes: value.bytes ?? TURN_BUDGET.bytes };
 };
@@ -621,7 +622,7 @@ class Connection extends EventEmitter {
   send(data, options = null) {
     if (typeof data === 'string') return this.sendText(data, options);
     if (Buffer.isBuffer(data)) return this.sendBinary(data, options);
-    throw new TypeError('send() accepts only string or Buffer');
+    throw new ArgumentError('send() accepts only string or Buffer');
   }
 
   // A message prepared for fan-out: `{ text, frames, compress }` where

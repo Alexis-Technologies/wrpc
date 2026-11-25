@@ -153,7 +153,7 @@ then gzipped):
 | `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 10.7 KB | **4.4 KB** | 5.0 KB |
 | `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.8 KB | **11.6 KB** | 12.0 KB |
 | `@alexify/wrpc/encryption` — node | 45.3 KB | 16.6 KB | — |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 189.3 KB | **61.8 KB** | 62.0 KB |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 189.1 KB | **62.2 KB** | 63.0 KB |
 | `@alexify/wrpc/webrtc` — node | 203.3 KB | 66.4 KB | — |
 | `@alexify/wrpc/wt` (WebTransport server half) | 64.3 KB | 22.8 KB | — |
 

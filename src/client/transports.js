@@ -9,6 +9,7 @@ const { jsonParse } = require('../utils.js');
 const { decodeAttachments } = require('../attachments.js');
 const { createWsCompression } = require('./wsCompression.js');
 const { openSocket } = require('./wsHandshake.js');
+const { ConfigError } = require('../errors.js');
 
 const { WebSocket } = globalThis;
 
@@ -279,7 +280,9 @@ class ClientHttpTransport extends ClientTransport {
     const { encryption = null } = options;
     if (encryption !== null) {
       if (typeof encryption.fetch !== 'function') {
-        throw new TypeError('options.encryption has no serverKey to seal a request to — the http transport needs one');
+        throw new ConfigError(
+          'options.encryption has no serverKey to seal a request to — the http transport needs one',
+        );
       }
       this.fetch = encryption.fetch(this.fetch, this.url);
     }

@@ -12,6 +12,7 @@
 
 const { OpenError } = require('./contracts.js');
 const { requireSubtle } = require('./bytes.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const DEFAULT_ID = 'aes-256-gcm';
 const KEY_LENGTH = 32;
@@ -23,7 +24,7 @@ const ALGORITHMS = Object.freeze([DEFAULT_ID, 'chacha20-poly1305']);
 const EMPTY = new Uint8Array(0);
 
 const params = (nonce, aad) => {
-  if (nonce.length !== NONCE_LENGTH) throw new TypeError(`encryption: a nonce is ${NONCE_LENGTH} bytes`);
+  if (nonce.length !== NONCE_LENGTH) throw new ArgumentError(`encryption: a nonce is ${NONCE_LENGTH} bytes`);
   return { name: 'AES-GCM', iv: nonce, additionalData: aad ?? EMPTY, tagLength: TAG_LENGTH * 8 };
 };
 
@@ -35,7 +36,7 @@ const refuse = () => {
 
 const cipherKey = async (subtle, raw) => {
   if (!(raw instanceof Uint8Array) || raw.length !== KEY_LENGTH) {
-    throw new TypeError(`encryption: a key is ${KEY_LENGTH} bytes`);
+    throw new ArgumentError(`encryption: a key is ${KEY_LENGTH} bytes`);
   }
   const key = await subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
   return {
@@ -50,11 +51,11 @@ const cipherKey = async (subtle, raw) => {
 
 const aead = ({ algorithm = DEFAULT_ID, optional = false, subtle = globalThis.crypto?.subtle } = {}) => {
   if (!ALGORITHMS.includes(algorithm)) {
-    throw new TypeError(`encryption: unknown cipher ${JSON.stringify(algorithm)} — ${ALGORITHMS.join(' or ')}`);
+    throw new ConfigError(`encryption: unknown cipher ${JSON.stringify(algorithm)} — ${ALGORITHMS.join(' or ')}`);
   }
   if (algorithm !== DEFAULT_ID) {
     if (optional) return null;
-    throw new TypeError(`encryption: ${algorithm} is not in this platform's WebCrypto — inject a Cipher`);
+    throw new ConfigError(`encryption: ${algorithm} is not in this platform's WebCrypto — inject a Cipher`);
   }
   requireSubtle(subtle, 'encryption');
   return Object.freeze({

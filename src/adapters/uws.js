@@ -5,6 +5,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { negotiateProtocol } = require('../websocket/upgrade.js');
 
 const { MAX_BODY_SIZE, statusLine, eachHeader } = require('./common.js');
+const { ConfigError } = require('../errors.js');
 
 // uWebSockets.js engine adapter. The module itself is NEVER a dependency of
 // @alexify/wrpc (zero-dependency rule) — the caller injects it:
@@ -164,13 +165,13 @@ const createUwsEngine = (engineOptions = {}) => {
   let log = createLoggerWriter(logger ?? false).child({ component: 'uws' });
 
   if (!providedApp && (typeof uws !== 'object' || uws === null || typeof uws.App !== 'function')) {
-    throw new TypeError(
+    throw new ConfigError(
       'createUwsEngine: pass the uWebSockets.js module as options.uws ' +
         '(it is injected, never a dependency of @alexify/wrpc), or an existing app as options.app',
     );
   }
   if (providedApp && !isTemplatedApp(providedApp)) {
-    throw new TypeError('createUwsEngine: options.app does not look like a uWebSockets.js TemplatedApp');
+    throw new ConfigError('createUwsEngine: options.app does not look like a uWebSockets.js TemplatedApp');
   }
 
   // Only an app we created is ours to tear down; one handed in by fastify-uws

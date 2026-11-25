@@ -30,11 +30,12 @@ const dictionaryBytes = (value) => {
   try {
     return toBytes(value, 'createDeflateCodec');
   } catch {
-    throw new TypeError('createDeflateCodec: dictionary must be bytes or a string');
+    throw new ConfigError('createDeflateCodec: dictionary must be bytes or a string');
   }
 };
 const { deflateRaw, createDeflater } = require('./deflate.js');
 const { dictionaryId, DICTIONARY_ID_PREFIX } = require('../compression/ids.js');
+const { ConfigError } = require('../errors.js');
 
 const NATIVE_ID = 'deflate-raw';
 const DEFAULT_NATIVE_ABOVE = 4096;
@@ -90,15 +91,15 @@ const createDeflateCodec = ({
   level = 6,
 } = {}) => {
   const dict = dictionary === null || dictionary === undefined ? null : dictionaryBytes(dictionary);
-  if (dict !== null && dict.length === 0) throw new TypeError('createDeflateCodec: dictionary must not be empty');
+  if (dict !== null && dict.length === 0) throw new ConfigError('createDeflateCodec: dictionary must not be empty');
   if (threshold !== undefined && !(Number.isInteger(threshold) && threshold >= 0)) {
-    throw new TypeError('createDeflateCodec: threshold must be a non-negative integer');
+    throw new ConfigError('createDeflateCodec: threshold must be a non-negative integer');
   }
   if (!(Number.isInteger(nativeAbove) && nativeAbove > 0)) {
-    throw new TypeError('createDeflateCodec: nativeAbove must be a positive integer');
+    throw new ConfigError('createDeflateCodec: nativeAbove must be a positive integer');
   }
   if (!(Number.isInteger(level) && level >= 1 && level <= 9)) {
-    throw new TypeError('createDeflateCodec: level must be an integer from 1 to 9');
+    throw new ConfigError('createDeflateCodec: level must be an integer from 1 to 9');
   }
   const useNative = (native ?? inBrowser()) && typeof CompressionStream === 'function';
   const deflate = createDeflater(dict, level);

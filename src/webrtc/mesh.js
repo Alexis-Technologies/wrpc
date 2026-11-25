@@ -28,6 +28,7 @@
 const { Emitter, backoffDelay } = require('../utils.js');
 const { hasRoster } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // How an edge to a member still in the room is dialled again once its link
 // is gone: full-jitter backoff from a second to a minute, and then every
@@ -41,7 +42,9 @@ const normalizeRelink = (value) => {
   const relink = { ...RELINK, ...value };
   const { minDelay, maxDelay } = relink;
   if (!(Number.isFinite(minDelay) && minDelay >= 0 && Number.isFinite(maxDelay) && maxDelay >= minDelay)) {
-    throw new TypeError('Mesh: relink must be false or { minDelay, maxDelay, jitter } with 0 <= minDelay <= maxDelay');
+    throw new ConfigError(
+      'Mesh: relink must be false or { minDelay, maxDelay, jitter } with 0 <= minDelay <= maxDelay',
+    );
   }
   return relink;
 };
@@ -65,7 +68,7 @@ class Mesh extends Emitter {
 
   constructor(peer, room, { data = null, relink } = {}) {
     super();
-    if (!hasRoster(peer.signaler)) throw new TypeError('Mesh: the signaler must carry a roster (join/leave)');
+    if (!hasRoster(peer.signaler)) throw new ConfigError('Mesh: the signaler must carry a roster (join/leave)');
     this.#peer = peer;
     this.#room = room;
     this.#data = data;
@@ -177,7 +180,7 @@ class Mesh extends Emitter {
 
   /** Answers asks from every member, current and future. */
   respond(name, handler) {
-    if (typeof handler !== 'function') throw new TypeError('Mesh.respond: handler must be a function');
+    if (typeof handler !== 'function') throw new ArgumentError('Mesh.respond: handler must be a function');
     this.#responders.set(name, handler);
     for (const link of this.#members.values()) link.respond(name, handler);
   }

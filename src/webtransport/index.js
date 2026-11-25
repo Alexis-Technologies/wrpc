@@ -19,6 +19,7 @@ const { fromQuico } = require('./quico.js');
 // picks for `kind: 'wt'`.
 const { ServerWtTransport } = require('./transport.js');
 const framing = require('./framing.js');
+const { ConfigError } = require('../errors.js');
 
 // How long a session may sit without opening its control stream before it
 // is refused: a client that connected and never spoke.
@@ -33,7 +34,7 @@ const DEFAULT_MAX_PENDING = 256;
 const rpcOf = (server) => {
   if (typeof server?.attachSocket === 'function') return server;
   if (typeof server?.rpc?.attachSocket === 'function') return server.rpc;
-  throw new TypeError('attachSession: a Server or RpcServer (something with attachSocket) is required');
+  throw new ConfigError('attachSession: a Server or RpcServer (something with attachSocket) is required');
 };
 
 // ONE deadline for the whole accept path — verify, the session's own
@@ -108,7 +109,7 @@ const refusals = {
 const checkSessionOptions = (options, label) => {
   const { acceptTimeout = DEFAULT_ACCEPT_TIMEOUT, maxBackpressure, closeTimeout, idleTimeout, compression } = options;
   if (!Number.isInteger(acceptTimeout) || acceptTimeout <= 0) {
-    throw new TypeError(`${label}: acceptTimeout must be a positive integer (ms)`);
+    throw new ConfigError(`${label}: acceptTimeout must be a positive integer (ms)`);
   }
   normalizeBackpressure(maxBackpressure, label);
   for (const [name, value] of [
@@ -116,7 +117,7 @@ const checkSessionOptions = (options, label) => {
     ['idleTimeout', idleTimeout],
   ]) {
     if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
-      throw new TypeError(`${label}: ${name} must be a non-negative integer (ms)`);
+      throw new ConfigError(`${label}: ${name} must be a non-negative integer (ms)`);
     }
   }
   for (const [name, value] of [
@@ -124,7 +125,7 @@ const checkSessionOptions = (options, label) => {
     ['holdTimeout', options.holdTimeout],
   ]) {
     if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
-      throw new TypeError(`${label}: ${name} must be a positive integer`);
+      throw new ConfigError(`${label}: ${name} must be a positive integer`);
     }
   }
   normalizeCompression(compression, label);
@@ -133,7 +134,7 @@ const checkSessionOptions = (options, label) => {
 const attachSession = async (server, session, options = {}) => {
   const rpc = rpcOf(server);
   if (!isWtSession(session)) {
-    throw new TypeError(
+    throw new ConfigError(
       'attachSession: a WebTransport session (incomingBidirectionalStreams, close, closed) is required',
     );
   }
@@ -233,7 +234,7 @@ const iterate = (sessions) => {
     };
   }
   const iterator = sessions?.[Symbol.asyncIterator]?.() ?? sessions?.[Symbol.iterator]?.();
-  if (!iterator) throw new TypeError('acceptSessions: a ReadableStream or an iterable of sessions is required');
+  if (!iterator) throw new ConfigError('acceptSessions: a ReadableStream or an iterable of sessions is required');
   return {
     next: () => iterator.next(),
     // Not awaited: an async generator suspended on an await it owns queues
@@ -275,7 +276,7 @@ const acceptSessions = (server, sessions, options = {}) => {
     ...rest
   } = options;
   if (!Number.isInteger(maxPending) || maxPending <= 0) {
-    throw new TypeError('acceptSessions: maxPending must be a positive integer');
+    throw new ConfigError('acceptSessions: maxPending must be a positive integer');
   }
   checkSessionOptions(rest, 'acceptSessions');
   // `onError` defaulted to null, so a session that failed to attach — a

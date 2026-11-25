@@ -1,5 +1,7 @@
 'use strict';
 
+const { ConfigError, ArgumentError, FramingError } = require('../errors.js');
+
 // Framing for an RTCDataChannel: how wrpc packets and stream chunks ride a
 // channel whose messages have a size limit.
 //
@@ -56,14 +58,6 @@ const DEFAULT_MAX_REASSEMBLY = 16 * 1024 * 1024;
 const MIN_MAX_FRAGMENTS = 1024;
 const defaultMaxFragments = (maxReassembly) => Math.max(MIN_MAX_FRAGMENTS, Math.ceil(maxReassembly / 1024));
 
-class FramingError extends Error {
-  constructor(message, code) {
-    super(message);
-    this.name = 'FramingError';
-    this.code = code;
-  }
-}
-
 /**
  * The message size to fragment at. `sctp.maxMessageSize` already reflects
  * the REMOTE side's `a=max-message-size` (W3C §5.5), so it is the
@@ -92,7 +86,7 @@ const negotiateMessageSize = (sctp, ceiling = MAX_MESSAGE_SIZE) => {
 const checkMessageSize = (value, label) => {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value < MIN_NEGOTIABLE_SIZE || value > MAX_MESSAGE_SIZE) {
-    throw new TypeError(
+    throw new ConfigError(
       `${label}: maxMessageSize must be an integer between ${MIN_NEGOTIABLE_SIZE} and ${MAX_MESSAGE_SIZE}`,
     );
   }
@@ -107,7 +101,7 @@ const toBytes = (input) => {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new TypeError('framing: expected an ArrayBuffer or an ArrayBufferView');
+  throw new ArgumentError('framing: expected an ArrayBuffer or an ArrayBufferView');
 };
 
 /** A packet's bytes as text — the decoder's own decode, for a packet inflated after decoding. */
@@ -134,7 +128,7 @@ class FrameEncoder {
 
   constructor(maxMessageSize) {
     if (!Number.isInteger(maxMessageSize) || maxMessageSize <= HEADER_BYTES) {
-      throw new TypeError(`framing: maxMessageSize must be an integer above ${HEADER_BYTES}`);
+      throw new ConfigError(`framing: maxMessageSize must be an integer above ${HEADER_BYTES}`);
     }
     this.maxMessageSize = maxMessageSize;
     this.#room = maxMessageSize - HEADER_BYTES;
@@ -229,10 +223,10 @@ class FrameDecoder {
 
   constructor({ maxReassembly = DEFAULT_MAX_REASSEMBLY, maxFragments = undefined } = {}) {
     if (!Number.isInteger(maxReassembly) || maxReassembly <= 0) {
-      throw new TypeError('framing: maxReassembly must be a positive integer');
+      throw new ConfigError('framing: maxReassembly must be a positive integer');
     }
     if (maxFragments !== undefined && (!Number.isInteger(maxFragments) || maxFragments <= 0)) {
-      throw new TypeError('framing: maxFragments must be a positive integer');
+      throw new ConfigError('framing: maxFragments must be a positive integer');
     }
     this.#maxReassembly = maxReassembly;
     this.#maxFragments = maxFragments ?? defaultMaxFragments(maxReassembly);

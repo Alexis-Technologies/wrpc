@@ -115,6 +115,48 @@ truncated exponential backoff with full jitter to the *connection*. Per-call
 retries are yours: wRPC never replays a call automatically, because it cannot
 know whether yours is idempotent.
 
+## Errors thrown to your code {#thrown}
+
+Not every error crosses the wire. A mistake of the program that calls wRPC —
+an option it cannot use, a router it cannot build, an argument a method
+refuses — is thrown where it was made, with a **string** `code`:
+
+| Code | Class | Thrown when |
+| --- | --- | --- |
+| `ALX_ERR_CONFIG` | `ConfigError` | An option, a definition (a router, a procedure, a broker binding or event table) or an injected host is missing or invalid — at construction, `defineRouter`, `procedure()`, `attach…` |
+| `ALX_ERR_ARGUMENT` | `ArgumentError` | An argument of a call made while running is invalid — `createStream(name, size)`, `setHeader`, `sendTo`, `respond`, the arguments a peer gave a signaling procedure |
+| `ALX_ERR_CLI` | `CliError` | The [`wrpc` command](../guide/cli) refuses an argument, or an answer it cannot use; it prints the message and exits 1 |
+
+`ConfigError` and `ArgumentError` extend `TypeError` — what 2.2 and older
+threw for both — so `instanceof TypeError` still holds; they are exported from
+`@alexify/wrpc`. The `ALX_ERR_` prefix is the one every Alexis library codes
+its errors with, as Fastify's start with `FST_ERR_`. A **numeric** `code` is
+never one of these: it is a wire status, of a `WrpcError` or of an error a
+handler throws.
+
+```js
+const { ConfigError } = require('@alexify/wrpc');
+
+try {
+  new RpcServer({ router, maxStreamBuffer: '1mb' });
+} catch (error) {
+  if (error.code === 'ALX_ERR_CONFIG') console.error(`bad wRPC option: ${error.message}`);
+}
+```
+
+The errors of a peer's bytes keep the codes 2.x gave them, unprefixed, until a
+major release renames them — a consumer may already match on them:
+
+| Class | `code` | Where |
+| --- | --- | --- |
+| `FramingError` | `empty`, `reserved`, `kind`, `too-large`, `fragments`, `utf8`, `message-size`, `inflate` | WebTransport and WebRTC framing — one class for both |
+| `DeflateError` | `truncated`, `huffman`, `stored`, `distance`, `block`, `too-large` | [`./deflate`](../guide/compression) |
+| `ParseError` | `MESSAGE_TOO_BIG`, `PROTOCOL_ERROR-COMMON`, `PROTOCOL_ERROR-RSV`, `PROTOCOL_ERROR-CTRL_TOO_LONG`, `INVALID_PAYLOAD` | `./ws`, the frame parser |
+| `AssertionError` | `malformed`, `typ`, `alg`, `kid`, `signature`, `subject`, `fingerprint`, `expired`, `issuer`, `missing` | WebRTC [trust assertions](../guide/webrtc-trust) |
+| `OpenError` | `open` | [`./encryption`](../guide/encryption) |
+| `EncryptionRefusedError` | `ENCRYPTION_REFUSED` | a sealed request answered in plaintext |
+| `Error` | `backpressure` | a WebTransport session or a WebRTC channel past `maxBackpressure` |
+
 ## WebSocket close codes
 
 Close codes are a different vocabulary — RFC 6455's, not HTTP's — and they end

@@ -1,5 +1,7 @@
 'use strict';
 
+const { ArgumentError } = require('../errors.js');
+
 // RFC 1951 inflate in plain JavaScript — the half of @alexify/wrpc/deflate
 // that has to be complete: whatever sits on the other end (node:zlib, a
 // browser's CompressionStream, this codec) picks its own block types, so
@@ -390,7 +392,7 @@ const toBytes = (input, label = 'inflate') => {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new TypeError(`${label}: expected bytes`);
+  throw new ArgumentError(`${label}: expected bytes`);
 };
 
 /**

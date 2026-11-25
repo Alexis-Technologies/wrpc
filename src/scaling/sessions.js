@@ -29,6 +29,7 @@
 // Session proxy as own enumerable properties).
 
 const { createLoggerWriter } = require('../logging.js');
+const { ConfigError } = require('../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc:session:';
 const DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24h, like MemorySessionStore
@@ -37,7 +38,7 @@ const isFunction = (value) => typeof value === 'function';
 
 const checkClient = (client) => {
   if (!client || !isFunction(client.get) || !isFunction(client.set) || !isFunction(client.del)) {
-    throw new TypeError(
+    throw new ConfigError(
       'createRedisSessionStore: options.client must be a Redis client with get(key), set(key, value, ...), del(key)',
     );
   }
@@ -50,8 +51,10 @@ const createRedisSessionStore = (options = {}) => {
   // rejected, so a corrupt entry would otherwise be invisible from above.
   const log = createLoggerWriter(logger).child({ component: 'sessions', store: 'redis' });
   checkClient(client);
-  if (typeof prefix !== 'string') throw new TypeError('createRedisSessionStore: options.prefix must be a string');
-  if (!(Number.isFinite(ttl) && ttl >= 0)) throw new TypeError('createRedisSessionStore: options.ttl must be >= 0 ms');
+  if (typeof prefix !== 'string') throw new ConfigError('createRedisSessionStore: options.prefix must be a string');
+  if (!(Number.isFinite(ttl) && ttl >= 0)) {
+    throw new ConfigError('createRedisSessionStore: options.ttl must be >= 0 ms');
+  }
   const key = (token) => prefix + token;
   // Sliding expiry needs PEXPIRE; a client without it keeps absolute TTLs,
   // which SessionManager treats as a valid policy (no touch()).

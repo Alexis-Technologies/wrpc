@@ -33,6 +33,7 @@ const { rpcOf } = require('./host.js');
 const { toText, reasonText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
 const { DEFAULT_PREFETCH } = require('./adapter.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // The binding's own refusals: fixed text, safe on a dead letter's outer
 // header under sealing — unlike a handler's message (settle).
@@ -116,7 +117,7 @@ const DEFAULT_STALL_AFTER = 60_000;
 
 const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
   if (policy !== undefined && policy !== null && (typeof policy !== 'object' || Array.isArray(policy))) {
-    throw new TypeError(`${label}: the binding must be an object`);
+    throw new ConfigError(`${label}: the binding must be an object`);
   }
   const {
     queue = defaultQueue,
@@ -132,46 +133,46 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
     args = parseJson,
   } = policy ?? {};
   if (typeof queue !== 'string' || queue.length === 0) {
-    throw new TypeError(`${label}: queue must be a non-empty string`);
+    throw new ConfigError(`${label}: queue must be a non-empty string`);
   }
   if (group !== null && (typeof group !== 'string' || group.length === 0)) {
-    throw new TypeError(`${label}: group must be a non-empty string`);
+    throw new ConfigError(`${label}: group must be a non-empty string`);
   }
   if (!Number.isInteger(prefetch) || prefetch <= 0) {
-    throw new TypeError(`${label}: prefetch must be a positive integer`);
+    throw new ConfigError(`${label}: prefetch must be a positive integer`);
   }
   // One client runs every delivery of the binding: past maxCalls the
   // dispatcher would answer 429 to messages the broker handed us.
   if (prefetch > maxCalls) {
-    throw new TypeError(`${label}: prefetch ${prefetch} exceeds the server's maxCalls ${maxCalls}`);
+    throw new ConfigError(`${label}: prefetch ${prefetch} exceeds the server's maxCalls ${maxCalls}`);
   }
   // How long one delivery may take (0: as long as its procedure allows — and
   // a procedure with no `timeout` of its own allows forever), and how long
   // every slot of the binding may stay taken before it stops calling itself
   // healthy.
   if (!(typeof timeout === 'number' && timeout >= 0 && timeout < 2 ** 31)) {
-    throw new TypeError(`${label}: timeout must be a number of milliseconds from 0 to 2^31 - 1`);
+    throw new ConfigError(`${label}: timeout must be a number of milliseconds from 0 to 2^31 - 1`);
   }
   if (!(typeof stallAfter === 'number' && stallAfter > 0)) {
-    throw new TypeError(`${label}: stallAfter must be a positive number of milliseconds`);
+    throw new ConfigError(`${label}: stallAfter must be a positive number of milliseconds`);
   }
   const dead = deadLetter === undefined ? `${queue}.dlq` : deadLetter;
   if (dead !== false && dead !== null && (typeof dead !== 'string' || dead.length === 0)) {
-    throw new TypeError(`${label}: deadLetter must be a queue name or false`);
+    throw new ConfigError(`${label}: deadLetter must be a queue name or false`);
   }
   // A binding on a dead-letter queue: the messages there were sealed for the
   // queue they came from (the seal binds body to queue), so that is the
   // context they open under.
   if (sealedFor !== null && (typeof sealedFor !== 'string' || sealedFor.length === 0)) {
-    throw new TypeError(`${label}: sealedFor must be the name of the queue the messages were sealed for`);
+    throw new ConfigError(`${label}: sealedFor must be the name of the queue the messages were sealed for`);
   }
   if (!identity || typeof identity !== 'object' || !TRUST.has(identity.trust)) {
-    throw new TypeError(`${label}: identity.trust must be 'none', 'service' or 'token'`);
+    throw new ConfigError(`${label}: identity.trust must be 'none', 'service' or 'token'`);
   }
   if (!Array.isArray(meta) || !meta.every((name) => typeof name === 'string')) {
-    throw new TypeError(`${label}: meta must be an array of header names`);
+    throw new ConfigError(`${label}: meta must be an array of header names`);
   }
-  if (typeof args !== 'function') throw new TypeError(`${label}: args must be a function`);
+  if (typeof args !== 'function') throw new ConfigError(`${label}: args must be a function`);
   return {
     queue,
     group: group ?? queue,
@@ -200,7 +201,7 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   const queue = capabilityOf(broker, 'queue', 'attachConsumers');
   const system = brokerName(queue) === 'custom' ? brokerName(broker) : brokerName(queue);
   if (typeof table !== 'object' || table === null || Array.isArray(table)) {
-    throw new TypeError('attachConsumers: the binding table must be an object');
+    throw new ConfigError('attachConsumers: the binding table must be an object');
   }
   const {
     auto = true,
@@ -220,24 +221,24 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     text: true,
   });
   if (onDeadLetter !== null && typeof onDeadLetter !== 'function') {
-    throw new TypeError('attachConsumers: onDeadLetter must be a function');
+    throw new ConfigError('attachConsumers: onDeadLetter must be a function');
   }
   // `tokenClients: 0` used to evict every client the moment a second token
   // arrived, and a string compared as a number never evicted at all.
   if (!Number.isInteger(tokenClients) || tokenClients <= 0) {
-    throw new TypeError('attachConsumers: tokenClients must be a positive integer');
+    throw new ConfigError('attachConsumers: tokenClients must be a positive integer');
   }
   // A cached token client is presented to the session store again once it
   // is this old, so a logout or a rotation takes effect within one ttl; 0
   // keeps a client for the life of the binding (`forget()` stays immediate).
   if (!Number.isInteger(tokenTtl) || tokenTtl < 0) {
-    throw new TypeError('attachConsumers: tokenTtl must be a non-negative integer of milliseconds (0 disables it)');
+    throw new ConfigError('attachConsumers: tokenTtl must be a non-negative integer of milliseconds (0 disables it)');
   }
   // A server that serves sealed transports only: a binding that does not
   // seal would attach clients it refuses every delivery on — and used to
   // attach them anyway, with every delivery settling nowhere.
   if (rpc.encryptionRequired === true && sealing === null) {
-    throw new TypeError(
+    throw new ConfigError(
       'attachConsumers: the server requires encryption — bind with { encryption: { keys } } (the sealed log)',
     );
   }
@@ -257,21 +258,21 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     const override = table[key] ?? {};
     const label = `attachConsumers: '${key}'`;
     if (typeof override !== 'object' || Array.isArray(override)) {
-      throw new TypeError(`${label}: the binding must be an object`);
+      throw new ConfigError(`${label}: the binding must be an object`);
     }
     const entry = declared.get(key);
     if (entry) {
-      if (override.target !== undefined) throw new TypeError(`${label}: a declared consumer cannot be retargeted`);
+      if (override.target !== undefined) throw new ConfigError(`${label}: a declared consumer cannot be retargeted`);
       plans.push({ key, entry, policy: { ...entry.procedure.consume, ...override } });
       continue;
     }
     if (typeof override.target !== 'string') {
-      throw new TypeError(`${label}: neither a declared consumer (unit/source) nor a binding with a target`);
+      throw new ConfigError(`${label}: neither a declared consumer (unit/source) nor a binding with a target`);
     }
     const { unit, version, name } = parseTarget(override.target);
     const proc = router.getProcedure(unit, version, name);
-    if (!proc) throw new TypeError(`${label}: target '${override.target}' is not a procedure`);
-    if (proc.subscription) throw new TypeError(`${label}: target '${override.target}' is a subscription`);
+    if (!proc) throw new ConfigError(`${label}: target '${override.target}' is not a procedure`);
+    if (proc.subscription) throw new ConfigError(`${label}: target '${override.target}' is a subscription`);
     const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
     const { target, ...policy } = override;
     plans.push({ key, entry: { unitKey, name, procedure: proc }, policy, queue: key, method: target });
@@ -288,7 +289,7 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     const label = `attachConsumers: '${key}'`;
     const policy = normalizePolicy(plan.policy, { label, queue: plan.queue ?? entry.name, maxCalls });
     if (entry.procedure.access !== 'public' && policy.identity.trust === 'none') {
-      throw new TypeError(
+      throw new ConfigError(
         `${label}: the procedure requires a session, so the binding needs identity.trust 'service' or 'token'`,
       );
     }
@@ -336,7 +337,7 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     // The logout hook: the next delivery under this header value attaches
     // afresh, whatever `tokenTtl` says. The value as messages carry it.
     forget: (token) => {
-      if (typeof token !== 'string') throw new TypeError('ConsumersHandle.forget: token must be a string');
+      if (typeof token !== 'string') throw new ArgumentError('ConsumersHandle.forget: token must be a string');
       let found = false;
       for (const handle of handles) found = handle.forget(token) || found;
       return found;

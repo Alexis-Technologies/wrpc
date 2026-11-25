@@ -11,6 +11,7 @@ const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
 const { chooseEncoding, markEncoded } = require('./contentEncoding.js');
 const { isPromise } = require('./compression/ids.js');
 const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachments.js');
+const { ArgumentError } = require('./errors.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
@@ -213,11 +214,13 @@ class ServerHttpTransport extends ServerTransport {
   // The `context.http.setHeader` seam: one header onto this response,
   // refused once the answer is written or for a transport-owned name.
   setHeader(name, value) {
-    if (typeof name !== 'string' || name.length === 0) throw new TypeError('setHeader: name must be a string');
-    if (RESERVED_HEADERS.has(name.toLowerCase())) throw new TypeError(`setHeader: '${name}' is owned by the transport`);
+    if (typeof name !== 'string' || name.length === 0) throw new ArgumentError('setHeader: name must be a string');
+    if (RESERVED_HEADERS.has(name.toLowerCase())) {
+      throw new ArgumentError(`setHeader: '${name}' is owned by the transport`);
+    }
     if (this.#responded) throw new Error('setHeader: the response was already sent');
     const text = String(value);
-    checkHeader(name, text, 'setHeader');
+    checkHeader(name, text, 'setHeader', ArgumentError);
     // One header per name, whatever the spelling: a second call under
     // another case replaces the first rather than sending both.
     const lower = name.toLowerCase();
@@ -230,7 +233,7 @@ class ServerHttpTransport extends ServerTransport {
   // The `context.http.status` seam: the success status of THIS response
   // (a REST route's declared status is the default). Errors keep their code.
   setStatus(code) {
-    if (!(Number.isInteger(code) && code >= 200 && code <= 599)) throw new TypeError('status: an integer 200-599');
+    if (!(Number.isInteger(code) && code >= 200 && code <= 599)) throw new ArgumentError('status: an integer 200-599');
     if (this.#responded) throw new Error('status: the response was already sent');
     this.#status = code;
   }

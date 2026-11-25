@@ -29,7 +29,8 @@ test('checkLimit: a non-negative integer, or Infinity', () => {
   for (const value of [0, 1, 2 ** 40, Infinity]) assert.strictEqual(checkLimit('X', 'limit', value), value);
   for (const value of [...WRONG, undefined, -Infinity]) {
     assert.throws(() => checkLimit('X', 'limit', value), {
-      name: 'TypeError',
+      name: 'ConfigError',
+      code: 'ALX_ERR_CONFIG',
       message: 'X: limit must be a non-negative integer or Infinity',
     });
   }
@@ -40,11 +41,13 @@ test('RpcServer and PeerHost refuse a limit that is none', () => {
     for (const value of WRONG) {
       const message = new RegExp(`: ${name} must be a non-negative integer or Infinity$`);
       assert.throws(() => new RpcServer({ router: router(), logger: false, [name]: value }), {
-        name: 'TypeError',
+        name: 'ConfigError',
+        code: 'ALX_ERR_CONFIG',
         message,
       });
       assert.throws(() => new PeerHost({ router: router(), logger: false, [name]: value }), {
-        name: 'TypeError',
+        name: 'ConfigError',
+        code: 'ALX_ERR_CONFIG',
         message,
       });
     }
@@ -58,7 +61,8 @@ test('WrpcClient refuses a stream limit that is none', async (t) => {
   for (const name of ['maxStreams', 'maxStreamBuffer', 'streamIdleTimeout']) {
     for (const value of WRONG) {
       await assert.rejects(WrpcClient.connect(url, { reconnect: false, heartbeat: false, [name]: value }), {
-        name: 'TypeError',
+        name: 'ConfigError',
+        code: 'ALX_ERR_CONFIG',
         message: `WrpcClient: ${name} must be a non-negative integer or Infinity`,
       });
     }

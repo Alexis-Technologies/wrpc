@@ -50,6 +50,7 @@ const {
   joinWatcher,
   healthWatcher,
 } = require('./shape.js');
+const { ConfigError, ArgumentError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PARTITIONS = 3;
@@ -125,29 +126,29 @@ const createKafkaBroker = (options = {}) => {
   // Ids: an injected generator is used verbatim — see idFactory.
   const { shortName } = idFactory(generateId, 'createKafkaBroker');
   if (!kafka || !isFunction(kafka.producer) || !isFunction(kafka.consumer) || !isFunction(kafka.admin)) {
-    throw new TypeError('createKafkaBroker: options.kafka must be a KafkaJS-shaped client (producer/consumer/admin)');
+    throw new ConfigError('createKafkaBroker: options.kafka must be a KafkaJS-shaped client (producer/consumer/admin)');
   }
   if (flavorOption !== null && flavorOption !== 'kafkajs' && flavorOption !== 'confluent') {
-    throw new TypeError("createKafkaBroker: options.flavor must be 'kafkajs', 'confluent' or omitted");
+    throw new ConfigError("createKafkaBroker: options.flavor must be 'kafkajs', 'confluent' or omitted");
   }
   if (!Number.isInteger(partitions) || partitions <= 0) {
-    throw new TypeError('createKafkaBroker: options.partitions must be a positive integer');
+    throw new ConfigError('createKafkaBroker: options.partitions must be a positive integer');
   }
   if (!Number.isInteger(logPartitions) || logPartitions <= 0) {
-    throw new TypeError('createKafkaBroker: options.logPartitions must be a positive integer');
+    throw new ConfigError('createKafkaBroker: options.logPartitions must be a positive integer');
   }
   // -1 is the broker's own `default.replication.factor` (KIP-464); a string
   // from the environment would be sent to createTopics as it is.
   if (!Number.isInteger(replicationFactor) || (replicationFactor !== -1 && replicationFactor < 1)) {
-    throw new TypeError(
+    throw new ConfigError(
       'createKafkaBroker: options.replicationFactor must be a positive integer, or -1 for the broker default',
     );
   }
   if (!Number.isInteger(maxCatchUp) || maxCatchUp <= 0) {
-    throw new TypeError('createKafkaBroker: options.maxCatchUp must be a positive integer');
+    throw new ConfigError('createKafkaBroker: options.maxCatchUp must be a positive integer');
   }
   if (!Number.isInteger(maxRetryDelay) || maxRetryDelay < 0) {
-    throw new TypeError('createKafkaBroker: options.maxRetryDelay must be a non-negative integer of milliseconds');
+    throw new ConfigError('createKafkaBroker: options.maxRetryDelay must be a non-negative integer of milliseconds');
   }
   const flavor = flavorOption ?? detectFlavor(kafka);
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'kafka' });
@@ -344,7 +345,7 @@ const createKafkaBroker = (options = {}) => {
         .catch((error) => report('broker.kafka.publish', error, { channel }));
     },
     subscribe(channel, handler) {
-      if (!isFunction(handler)) throw new TypeError('kafka backplane.subscribe: handler must be a function');
+      if (!isFunction(handler)) throw new ArgumentError('kafka backplane.subscribe: handler must be a function');
       let set = handlers.get(channel);
       if (!set) {
         set = new Set();
@@ -598,7 +599,7 @@ const createKafkaBroker = (options = {}) => {
   const read = (topic, options = {}) => {
     const { after = null, from = 'latest', signal = null } = options;
     if (from !== 'latest' && from !== 'earliest') {
-      throw new TypeError("kafka log.read: from must be 'latest' or 'earliest'");
+      throw new ArgumentError("kafka log.read: from must be 'latest' or 'earliest'");
     }
     if (after === null || after === undefined) {
       return encodeIds(tails.read(topic, from === 'earliest' ? { after: {}, signal } : { from, signal }), null);

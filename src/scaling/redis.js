@@ -2,6 +2,7 @@
 
 const { DEFAULT_PREFIX } = require('./memory.js');
 const { createLoggerWriter } = require('../logging.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // Redis backplane, modelled on the ioredis API — `publish(channel, message)`,
 // `subscribe(channel)` plus an `'message'(channel, message)` event, and
@@ -23,7 +24,7 @@ const isFunction = (value) => typeof value === 'function';
 
 const checkPub = (pub) => {
   if (!pub || !isFunction(pub.publish)) {
-    throw new TypeError('createRedisAdapter: options.pub must be a client with publish(channel, message)');
+    throw new ConfigError('createRedisAdapter: options.pub must be a client with publish(channel, message)');
   }
   return pub;
 };
@@ -31,7 +32,7 @@ const checkPub = (pub) => {
 const resolveSub = (pub, sub) => {
   const client = sub ?? (isFunction(pub.duplicate) ? pub.duplicate() : null);
   if (!client || !isFunction(client.subscribe) || !isFunction(client.on)) {
-    throw new TypeError(
+    throw new ConfigError(
       'createRedisAdapter: options.sub must be a client with subscribe(channel) and on(event, listener), ' +
         'or options.pub must support duplicate()',
     );
@@ -130,7 +131,7 @@ const createRedisAdapter = (options = {}) => {
 
     subscribe(channel, handler) {
       if (!isFunction(handler)) {
-        throw new TypeError('createRedisAdapter: subscribe handler must be a function');
+        throw new ArgumentError('createRedisAdapter: subscribe handler must be a function');
       }
       if (closed) return () => {};
       const name = key(channel);

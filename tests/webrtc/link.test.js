@@ -785,7 +785,11 @@ test('rtc link: a close names its reason on the wire and in the closure; an unkn
   b.start();
   await bothOpen(a, b);
   const closed = new Promise((resolve) => b.once('close', resolve));
-  assert.throws(() => a.close('bye'), { name: 'TypeError', message: /goodbye, refused, gave-up/ });
+  assert.throws(() => a.close('bye'), {
+    name: 'ArgumentError',
+    code: 'ALX_ERR_ARGUMENT',
+    message: /goodbye, refused, gave-up/,
+  });
   assert.strictEqual(a.state, 'connected', 'a refused reason closes nothing');
   assert.strictEqual(a.closure, null);
   a.close('refused');
@@ -813,7 +817,11 @@ test('rtc link: a close names its reason on the wire and in the closure; an unkn
   const before = pair.relay.log.length;
   pair.a.abandon();
   assert.deepStrictEqual(pair.a.closure, { reason: 'abandoned', remote: false });
-  assert.throws(() => pair.b.abandon('bye'), { name: 'TypeError', message: /'abandoned' or one of/ });
+  assert.throws(() => pair.b.abandon('bye'), {
+    name: 'ArgumentError',
+    code: 'ALX_ERR_ARGUMENT',
+    message: /'abandoned' or one of/,
+  });
   pair.b.abandon('gave-up');
   assert.deepStrictEqual(pair.b.closure, { reason: 'gave-up', remote: false });
   await timers.setTimeout(5);
