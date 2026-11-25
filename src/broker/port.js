@@ -104,7 +104,11 @@ const { isBackplane } = require('../scaling/index.js');
 const { ConfigError } = require('../errors.js');
 
 const isObject = (value) => typeof value === 'object' && value !== null;
-const hasFunctions = (value, names) => isObject(value) && names.every((name) => typeof value[name] === 'function');
+const hasFunctions = (value, names) => {
+  if (!isObject(value)) return false;
+  for (let i = 0; i < names.length; i++) if (typeof value[names[i]] !== 'function') return false;
+  return true;
+};
 
 const isBrokerLog = (value) => hasFunctions(value, ['append', 'read', 'parseId']);
 const isBrokerQueue = (value) => hasFunctions(value, ['produce', 'consume']);

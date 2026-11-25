@@ -32,6 +32,8 @@ const isFunction = (value) => typeof value === 'function';
 const CREATE = Object.freeze({ create: true });
 const UPDATE = Object.freeze({ create: false });
 
+const isPresent = (value) => value !== undefined && value !== null;
+
 const isRecord = (value) =>
   typeof value === 'object' &&
   value !== null &&
@@ -118,7 +120,7 @@ const sealedStore = (store, options = {}) => {
     const key = slot(kid, token);
     if (key === null) throw new Error(`sealedStore: the keyring does not hold its current key ${JSON.stringify(kid)}`);
     const { sealed } = sealer.seal(Buffer.from(JSON.stringify(data)), key);
-    let options = create ? CREATE : UPDATE;
+    let mode = create ? CREATE : UPDATE;
     if (!create) {
       // An update that finds no row under the current kid: the row may
       // still live under an older kid (or, adopting, in plaintext) — then
@@ -126,12 +128,12 @@ const sealedStore = (store, options = {}) => {
       const slots = sealedKeys(token);
       let found = false;
       for (let i = 1; i < slots.length && !found; i++) {
-        found = slots[i][1] !== null && (await store.get(slots[i][1])) != null;
+        found = slots[i][1] !== null && isPresent(await store.get(slots[i][1]));
       }
-      if (!found && acceptPlaintext) found = (await store.get(token)) != null;
-      if (found) options = CREATE;
+      if (!found && acceptPlaintext) found = isPresent(await store.get(token));
+      if (found) mode = CREATE;
     }
-    if ((await store.set(key, { v: 1, kid, s: sealed.toString('base64') }, options)) === false) return false;
+    if ((await store.set(key, { v: 1, kid, s: sealed.toString('base64') }, mode)) === false) return false;
     if (!prune) return true;
     const kids = keys.kids;
     if (kids.length < 2) return;
@@ -201,7 +203,8 @@ const sealedStore = (store, options = {}) => {
     async get(token) {
       const slots = sealedKeys(token);
       for (let i = 0; i < slots.length; i++) {
-        const [kid, key] = slots[i];
+        const kid = slots[i][0];
+        const key = slots[i][1];
         if (key === null) continue;
         const row = await store.get(key);
         if (row === null || row === undefined) continue;
@@ -233,7 +236,7 @@ const sealedStore = (store, options = {}) => {
     // Async on purpose: a keyring without its current key throws in write()
     // before the store is reached, and a SessionStore's set() answers a
     // rejection, never a throw — the session manager's flush counts on it.
-    set: async (token, data, options) => write(token, data, true, options?.create !== false),
+    set: async (token, data, setOptions) => write(token, data, true, setOptions?.create !== false),
     async delete(token) {
       const slots = sealedKeys(token);
       for (let i = 0; i < slots.length; i++) if (slots[i][1] !== null) await store.delete(slots[i][1]);

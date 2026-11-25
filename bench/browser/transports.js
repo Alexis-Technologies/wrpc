@@ -242,7 +242,7 @@ const measureKind = async (kind, config) => {
   return result;
 };
 
-globalThis.__wrpcTransports = async (config) => {
+globalThis.wrpcTransports = async (config) => {
   const results = [];
   for (const kind of config.kinds) {
     try {

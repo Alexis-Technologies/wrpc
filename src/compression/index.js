@@ -104,6 +104,12 @@ const resolveCodec = (value, async, optional, name) => {
   return value;
 };
 
+// Whether a list names a platform codec — what `async` applies to.
+const namesPlatform = (list) => {
+  for (let i = 0; i < list.length; i++) if (typeof list[i] === 'string') return true;
+  return false;
+};
+
 const normalizeCompression = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   const options = value === true ? {} : value;
@@ -117,7 +123,7 @@ const normalizeCompression = (value, name) => {
   const list = Array.isArray(asked);
   if (list && asked.length === 0) throw new ConfigError(`${name}: compression.codec must not be an empty list`);
   const wanted = list ? asked : [asked ?? NATIVE_ID];
-  if (async !== null && !wanted.some((entry) => typeof entry === 'string')) {
+  if (async !== null && !namesPlatform(wanted)) {
     throw new ConfigError(`${name}: compression.async applies to the platform codec — set it on the codec's factory`);
   }
   const override = options.threshold;
@@ -126,8 +132,8 @@ const normalizeCompression = (value, name) => {
   }
   const codecs = [];
   const ids = [];
-  for (const entry of wanted) {
-    const codec = resolveCodec(entry, async, list, name);
+  for (let i = 0; i < wanted.length; i++) {
+    const codec = resolveCodec(wanted[i], async, list, name);
     if (codec === null) continue;
     if (ids.includes(codec.id)) throw new ConfigError(`${name}: compression.codec names ${codec.id} twice`);
     const threshold = override ?? codec.threshold ?? DEFAULT_THRESHOLD;

@@ -40,7 +40,7 @@ const MAX_STREAM_BUFFER = 64 * 1024 * 1024;
 // receiver's error log with a line of the sender's own writing in it. A
 // message takes sixty-four characters of it, and nothing that starts a line.
 const shown = (name) => {
-  const text = String(name);
+  const text = `${name}`;
   return (text.length > 64 ? `${text.slice(0, 64)}…` : text).replace(/\p{Cc}|\u2028|\u2029/gu, ' ');
 };
 
@@ -159,8 +159,7 @@ class WrpcReadable extends Emitter {
       // A closed sink accepts nothing and will never emit 'drain'
       if (writable.closed) {
         await this.terminate();
-        writable.removeListener('error', onError);
-        return;
+        return void writable.removeListener('error', onError);
       }
       const needDrain = !writable.write(chunk);
       if (needDrain && !writable.closed) await writable.waitEvent('drain');

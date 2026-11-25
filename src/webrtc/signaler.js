@@ -308,9 +308,9 @@ class WrpcSignaler extends Emitter {
     const rooms = [];
     try {
       await this.ready();
-      for (const [room, data] of this.#rooms) {
-        const members = await this.join(room, data);
-        rooms.push({ room, members });
+      for (const entry of this.#rooms) {
+        const members = await this.join(entry[0], entry[1]);
+        rooms.push({ room: entry[0], members });
       }
     } catch (error) {
       if (!this.#closed && !this.#replaced && this.listenerCount('error') > 0) await this.emit('error', error);

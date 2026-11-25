@@ -60,7 +60,7 @@ const BASE64URL = /^[A-Za-z0-9_-]*$/;
 const base64urlDecode = (text) => {
   if (typeof text !== 'string' || !BASE64URL.test(text)) refuse('assertion: not base64url', 'malformed');
   const padded = text + '='.repeat((4 - (text.length % 4)) % 4);
-  let binary;
+  let binary = '';
   try {
     binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
   } catch {
@@ -74,7 +74,7 @@ const base64urlDecode = (text) => {
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const parseJson = (bytes, what) => {
-  let value;
+  let value = null;
   try {
     value = JSON.parse(decoder.decode(bytes));
   } catch {
@@ -124,7 +124,7 @@ const sdpFingerprint = (sdp) => {
   if (typeof sdp !== 'string') return null;
   FINGERPRINT_LINE.lastIndex = 0;
   let found = null;
-  let match;
+  let match = null;
   while ((match = FINGERPRINT_LINE.exec(sdp)) !== null) {
     const fingerprint = `${match[1].toLowerCase()} ${match[2].toUpperCase()}`;
     if (found === null) found = fingerprint;
@@ -134,6 +134,11 @@ const sdpFingerprint = (sdp) => {
 };
 
 const isJwk = (value) => isObject(value) && value.kty === 'EC' && value.crv === 'P-256';
+
+const allJwks = (list) => {
+  for (let i = 0; i < list.length; i++) if (!isJwk(list[i])) return false;
+  return true;
+};
 
 const publicJwk = (jwk) => {
   const { d: _d, key_ops: _ops, ...rest } = jwk;
@@ -189,7 +194,7 @@ const createAssertionVerifier = ({
     throw new ConfigError('createAssertionVerifier: maxAge must be a non-negative integer (ms, 0 = never)');
   }
   if (typeof clock !== 'function') throw new ConfigError('createAssertionVerifier: clock must be a function');
-  if (typeof keys !== 'function' && !isJwk(keys) && !(Array.isArray(keys) && keys.every(isJwk))) {
+  if (typeof keys !== 'function' && !isJwk(keys) && !(Array.isArray(keys) && allJwks(keys))) {
     throw new ConfigError('createAssertionVerifier: keys must be an EC P-256 JWK, an array of them, or a function');
   }
   if (issuer !== null && (typeof issuer !== 'string' || issuer.length === 0)) {
@@ -216,12 +221,15 @@ const createAssertionVerifier = ({
 
   const load = () =>
     (inflight ??= (async () => {
-      const list = typeof keys === 'function' ? await keys() : Array.isArray(keys) ? keys : [keys];
-      if (!Array.isArray(list) || list.length === 0 || !list.every(isJwk)) {
+      let list = keys;
+      if (typeof keys === 'function') list = await keys();
+      else if (!Array.isArray(keys)) list = [keys];
+      if (!Array.isArray(list) || list.length === 0 || !allJwks(list)) {
         throw new ConfigError('assertion keys: expected a non-empty array of EC P-256 JWKs');
       }
       const fresh = new Map();
-      for (const jwk of list) {
+      for (let i = 0; i < list.length; i++) {
+        const jwk = list[i];
         const kid = typeof jwk.kid === 'string' ? jwk.kid : '';
         const key = subtle.importKey('jwk', publicJwk(jwk), ES256, false, ['verify']);
         // A JWK the platform refuses rejects here, and nobody awaits it
@@ -274,7 +282,7 @@ const createAssertionVerifier = ({
     if (header.alg !== ALG) refuse(`assertion: alg must be ${ALG}`, 'alg');
     const kid = header.kid === undefined ? '' : header.kid;
     if (typeof kid !== 'string') refuse('assertion: kid must be a string', 'kid');
-    let key;
+    let key = null;
     try {
       key = await keyFor(kid);
     } catch (error) {

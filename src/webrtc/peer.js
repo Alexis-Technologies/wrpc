@@ -76,11 +76,10 @@ class WrpcPeer extends Emitter {
   // What a PeerLink is given instead of this peer (peerLink.js), and a Mesh.
   #linkPort;
   #meshPort;
-  // Contained: a signal whose handling rejects (a link refusing a
-  // description) used to be an unhandled rejection.
-  #onSignal = (event) => void this.#receive(event).catch((error) => this.escalate(error));
-  #onReset = (event) => void this.#reset(event);
-  #onReplaced = (event) => void this.#replaced(event);
+  // The signaler's listeners, one reference each so close() removes them.
+  #onSignal = null;
+  #onReset = null;
+  #onReplaced = null;
 
   constructor(options = {}) {
     // `logger` is false unless given, so a peer's listener warning is too.
@@ -184,13 +183,18 @@ class WrpcPeer extends Emitter {
       signaler,
       log: this.#log,
       host: this.#host,
-      connect: (id, options) => this.connect(id, options),
+      connect: (id, linkOptions) => this.connect(id, linkOptions),
       link: (id) => this.#links.get(id),
       held: (id, except) => this.#held(id, except),
       escalate,
       on: (name, listener) => this.on(name, listener),
       off: (name, listener) => this.off(name, listener),
     };
+    // Contained: a signal whose handling rejects (a link refusing a
+    // description) used to be an unhandled rejection.
+    this.#onSignal = (event) => void this.#receive(event).catch((error) => this.escalate(error));
+    this.#onReset = (event) => void this.#reset(event);
+    this.#onReplaced = (event) => void this.#replaced(event);
     // Listening from the start: a peer that never called start() itself
     // still answers a knock — start() runs on the first signal.
     signaler.on('signal', this.#onSignal);
@@ -293,7 +297,8 @@ class WrpcPeer extends Emitter {
       const pending = this.#pending.get(remoteId);
       if (pending) {
         this.#pending.delete(remoteId);
-        for (const queued of pending) {
+        for (let i = 0; i < pending.length; i++) {
+          const queued = pending[i];
           if (queued.type === 'connect') link.knocked();
           else if (queued.type === 'candidate' || queued.description?.type === 'offer') {
             link.receive(queued).catch((error) => this.escalate(error, link));
@@ -330,9 +335,10 @@ class WrpcPeer extends Emitter {
     this.#signaler.off('signal', this.#onSignal);
     this.#signaler.off('reset', this.#onReset);
     this.#signaler.off('replaced', this.#onReplaced);
-    for (const mesh of [...this.#meshes.values()]) mesh.detach();
+    // Copies: a detach or a close deletes from the map it is walked over.
+    for (const mesh of new Map(this.#meshes).values()) mesh.detach();
     this.#meshes.clear();
-    for (const link of [...this.#links.values()]) link.close();
+    for (const link of this.links.values()) link.close();
     this.#pending.clear();
     void this.emit('close').catch((error) => this.escalate(error));
   }
@@ -381,7 +387,7 @@ class WrpcPeer extends Emitter {
       this.#otel.recordRtcAssertion('missing');
       throw new AssertionError('assertion: missing', 'missing');
     }
-    let verified;
+    let verified = null;
     try {
       verified = await this.#verifier.verify(message.assertion, { from, sdp, now: Date.now() + this.#clock });
     } catch (error) {
@@ -404,7 +410,7 @@ class WrpcPeer extends Emitter {
     const closure = link.link.closure;
     if (closure?.reason !== 'goodbye' || closure.remote) return;
     const now = Date.now();
-    for (const [id, said] of this.#goodbyes) if (said.until <= now) this.#goodbyes.delete(id);
+    for (const entry of this.#goodbyes) if (entry[1].until <= now) this.#goodbyes.delete(entry[0]);
     this.#goodbyes.set(link.id, { instance: link.instance, until: now + GOODBYE_HOLD });
   }
 
@@ -563,8 +569,7 @@ class WrpcPeer extends Emitter {
         this.#pending.delete(from);
         if (this.#closed) return;
         this.#log.warn({ event: 'rtc.peer.refused', peer: from, room, reason: error.code ?? 'assertion', err: error });
-        this.#signal(from, { type: 'close', reason: 'refused' }, room ?? null);
-        return;
+        return void this.#signal(from, { type: 'close', reason: 'refused' }, room ?? null);
       }
     }
     let accepted = true;
@@ -592,7 +597,8 @@ class WrpcPeer extends Emitter {
       link.abandon();
       return void this.escalate(error, link);
     }
-    for (const queued of queue) {
+    for (let i = 0; i < queue.length; i++) {
+      const queued = queue[i];
       if (queued.type === 'connect') link.knocked();
       // A stale-incarnation answer or candidate belongs to the link that
       // went; the fresh dial above is what reaches the newcomer.
@@ -610,7 +616,8 @@ class WrpcPeer extends Emitter {
   #reset(event) {
     const changed = event?.id !== event?.previous;
     this.#log.warn({ event: 'rtc.peer.reset', id: event?.id, previous: event?.previous, changed });
-    if (changed) for (const link of [...this.#links.values()]) link.abandon();
+    // A copy: an abandoned link leaves the map at once.
+    if (changed) for (const link of this.links.values()) link.abandon();
     void this.emit('reset', event).catch((error) => this.escalate(error));
   }
 
@@ -621,7 +628,7 @@ class WrpcPeer extends Emitter {
   #replaced(event) {
     if (this.#closed) return;
     this.#log.warn({ event: 'rtc.peer.replaced', id: event?.id });
-    for (const link of [...this.#links.values()]) link.abandon();
+    for (const link of this.links.values()) link.abandon();
     void this.emit('replaced', event).catch((error) => this.escalate(error));
     this.close();
   }

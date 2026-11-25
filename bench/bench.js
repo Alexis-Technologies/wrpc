@@ -14,7 +14,7 @@ const { createWrpcServer } = require('./support/wrpc-echo.js');
 const smallPayload = { name: 'Ada' };
 const largePayload = { text: 'x'.repeat(10_000) };
 
-async function main() {
+const main = async () => {
   console.log(`Node ${process.version} | ${new Date().toISOString()}\n`);
   const results = [];
 
@@ -57,6 +57,6 @@ async function main() {
   await server.close();
 
   return results;
-}
+};
 
 main();

@@ -56,7 +56,7 @@ const serve = (key) => {
   process.on('disconnect', () => process.exit(0));
 };
 
-async function main() {
+const main = async () => {
   const autocannon = require('autocannon');
   console.log(`Node ${process.version} | 100 connections, 10 pipelined, ${DURATION} s per variant\n`);
   for (let round = 1; round <= ROUNDS; round++) {
@@ -86,7 +86,7 @@ async function main() {
       }
     }
   }
-}
+};
 
 if (process.argv[2] === 'serve') {
   serve(process.argv[3]);

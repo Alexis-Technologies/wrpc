@@ -60,7 +60,16 @@ const STATES = ['new', 'connecting', 'connected', 'reconnecting', 'failed', 'clo
 // bounded. 'abandoned' never crosses the wire: it is this side closing
 // without a word (a stale incarnation, a responder giving up).
 const CLOSE_REASONS = Object.freeze(['goodbye', 'refused', 'gave-up']);
-const closeReason = (value) => (value === undefined ? 'goodbye' : CLOSE_REASONS.includes(value) ? value : 'unknown');
+const closeReason = (value) => {
+  if (value === undefined) return 'goodbye';
+  return CLOSE_REASONS.includes(value) ? value : 'unknown';
+};
+
+const checkChannelId = (name, id) => {
+  if (!Number.isInteger(id) || id < 0 || id > MAX_CHANNEL_ID) {
+    throw new ConfigError(`channels.${name} must be an integer in 0..${MAX_CHANNEL_ID}`);
+  }
+};
 
 const normalizeChannels = (channels = {}) => {
   if (typeof channels !== 'object' || channels === null) throw new ConfigError('channels must be an object');
@@ -69,14 +78,8 @@ const normalizeChannels = (channels = {}) => {
     responder = DEFAULT_CHANNELS.responder,
     label = DEFAULT_CHANNELS.label,
   } = channels;
-  for (const [name, id] of [
-    ['initiator', initiator],
-    ['responder', responder],
-  ]) {
-    if (!Number.isInteger(id) || id < 0 || id > MAX_CHANNEL_ID) {
-      throw new ConfigError(`channels.${name} must be an integer in 0..${MAX_CHANNEL_ID}`);
-    }
-  }
+  checkChannelId('initiator', initiator);
+  checkChannelId('responder', responder);
   if (initiator === responder) throw new ConfigError('channels.initiator and channels.responder must differ');
   if (typeof label !== 'string' || label.length === 0) {
     throw new ConfigError('channels.label must be a non-empty string');
@@ -350,8 +353,8 @@ class RtcLink extends Emitter {
     const mine = this.initiator ? initiator : responder;
     const theirs = this.initiator ? responder : initiator;
     let pc = null;
-    let clientChannel;
-    let hostChannel;
+    let clientChannel = null;
+    let hostChannel = null;
     try {
       pc = this.#adapter.createPeerConnection(this.#configuration);
       if (!isRtcPeerConnection(pc)) {
@@ -375,8 +378,7 @@ class RtcLink extends Emitter {
         }
       }
       if (state === 'connecting') throw error;
-      this.#error(error, 'dial');
-      return;
+      return void this.#error(error, 'dial');
     }
     this.#pc = pc;
     this.#makingOffer = false;
@@ -605,7 +607,7 @@ class RtcLink extends Emitter {
     if (this.#state === 'connected') return;
     // A peer demanding fragments under 1 KiB is refused here, before the
     // link is 'connected': the failure runs the ordinary redial cycle.
-    let maxMessageSize;
+    let maxMessageSize = 0;
     try {
       maxMessageSize = negotiateMessageSize(pc.sctp ?? null);
     } catch (error) {
@@ -706,7 +708,7 @@ class RtcLink extends Emitter {
   }
 
   #send(message) {
-    let result;
+    let result = null;
     try {
       result = this.#signal(message);
     } catch (error) {

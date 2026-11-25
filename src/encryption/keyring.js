@@ -52,7 +52,10 @@ const fromProvider = (provider, name) =>
     },
     get kids() {
       const kids = typeof provider.kids === 'function' ? provider.kids() : null;
-      return Array.isArray(kids) ? kids.filter(isKid) : [this.current];
+      if (!Array.isArray(kids)) return [this.current];
+      const valid = [];
+      for (let i = 0; i < kids.length; i++) if (isKid(kids[i])) valid.push(kids[i]);
+      return valid;
     },
     get(kid) {
       if (!isKid(kid)) return null;
@@ -74,7 +77,9 @@ const normalizeKeys = (value, name = 'keys') => {
   let current = DEFAULT_KID;
   if (isObject(value) && !(value instanceof Uint8Array)) {
     if (!isObject(value.ring)) throw new ConfigError(`${name}.ring must be an object of kid → key`);
-    for (const kid of Object.keys(value.ring)) {
+    const names = Object.keys(value.ring);
+    for (let i = 0; i < names.length; i++) {
+      const kid = names[i];
       ring.set(
         checkedKid(kid, `${name}.ring: ${JSON.stringify(kid)}`),
         parseKey(value.ring[kid], `${name}.ring.${kid}`),

@@ -219,7 +219,7 @@ const decodeAttachments = (bytes, maxDepth = MAX_DEPTH) => {
   if (!isAttachmentsFrame(bytes)) throw malformed('not an attachments frame');
   const headerLen = ((bytes[2] << 24) >>> 0) + (bytes[3] << 16) + (bytes[4] << 8) + bytes[5];
   if (HEADER_BYTES + headerLen > bytes.length) throw malformed('header past the end of the frame');
-  let header;
+  let header = null;
   try {
     header = JSON.parse(decoder.decode(bytes.subarray(HEADER_BYTES, HEADER_BYTES + headerLen)));
   } catch {

@@ -106,7 +106,7 @@ class PeerLink extends Emitter {
     this.#remote = new WrpcClient(`webrtc:${id}`, transport, {
       logger: false,
       ...client,
-      reconnect: client.reconnect === false ? false : { ...CLIENT_RECONNECT, ...(client.reconnect ?? {}) },
+      reconnect: client.reconnect === false ? false : { ...CLIENT_RECONNECT, ...client.reconnect },
     });
     this.#bindAll();
   }
@@ -299,8 +299,7 @@ class PeerLink extends Emitter {
         // Not who the signaling said, or not provably so: the link ends
         // here with a goodbye, before the description touches the pc.
         this.#log.warn({ event: 'rtc.peer.refused', peer: this.#id, reason: error.code ?? 'assertion', err: error });
-        this.#link.close('refused');
-        return;
+        return void this.#link.close('refused');
       }
     }
     return this.#link.receive(message);
@@ -465,7 +464,8 @@ class PeerLink extends Emitter {
     this.#count(-1);
     clearTimeout(this.#redialTimer);
     this.#redialTimer = null;
-    for (const unbind of this.#unbind) unbind();
+    const unbind = this.#unbind;
+    for (let i = 0; i < unbind.length; i++) unbind[i]();
     this.#unbind = [];
     // The client's reconnect cycle stops here; its transport's close() on a
     // closed link is a no-op.

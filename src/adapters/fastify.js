@@ -19,6 +19,10 @@ const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.
 const { setupMirror } = require('./mirror.js');
 const { ConfigError, ArgumentError } = require('../errors.js');
 
+// A sealed request and an attachments frame: bytes under their own type
+// (the parsers registered in wrpcFastify).
+const BYTE_TYPES = ['application/wrpc-sealed', 'application/octet-stream'];
+
 // Fastify plugin. One plugin, two backends, picked by looking at what
 // fastify is actually running on:
 //
@@ -36,9 +40,13 @@ const { ConfigError, ArgumentError } = require('../errors.js');
 // alternative is refusing to support the only uws-backed fastify there is.
 const findUwsApp = (server) => {
   if (!server || typeof server !== 'object') return null;
-  const key = Object.getOwnPropertySymbols(server).find((symbol) => symbol.description === 'uws.app');
-  const app = key ? server[key] : null;
-  return app && typeof app.ws === 'function' ? app : null;
+  const symbols = Object.getOwnPropertySymbols(server);
+  for (let i = 0; i < symbols.length; i++) {
+    if (symbols[i].description !== 'uws.app') continue;
+    const app = server[symbols[i]];
+    return app && typeof app.ws === 'function' ? app : null;
+  }
+  return null;
 };
 
 const resolveEngine = (fastify, options) => {
@@ -105,13 +113,15 @@ const forbidden = () => {
 // redaction rule every other transport applies. Fastify's own schema
 // validation failures land here too — their issue list becomes `details`.
 const wireErrorHandler = (error, request, reply) => {
-  let code =
-    typeof error.code === 'number' ? error.code : typeof error.statusCode === 'number' ? error.statusCode : 500;
+  let code = 500;
+  if (typeof error.code === 'number') code = error.code;
+  else if (typeof error.statusCode === 'number') code = error.statusCode;
   if (!Number.isInteger(code) || code < 200 || code > 599) code = 500;
   const body = { message: publicErrorMessage(code, error), code };
   if (Array.isArray(error.validation)) {
     const issues = [];
-    for (const issue of error.validation) {
+    for (let i = 0; i < error.validation.length; i++) {
+      const issue = error.validation[i];
       issues.push({ message: issue.message, path: issue.instancePath });
     }
     body.details = { issues };
@@ -145,7 +155,8 @@ const registerRestRoutes = (fastify, rpc, options) => {
     return pending;
   };
   const base = rpc.basePath;
-  for (const route of routes) {
+  for (let i = 0; i < routes.length; i++) {
+    const route = routes[i];
     const { proc, http } = route;
     const hooks = rpc.router.hooksFor(proc);
     // The same call identity a packet-mode Context carries, so cross-cutting
@@ -162,22 +173,24 @@ const registerRestRoutes = (fastify, rpc, options) => {
     const settled = (request, target) => contextOf(request, target).catch(() => null);
     const wrap = (list, payloadOf) => {
       const wrapped = [];
-      for (const hook of list) {
+      for (let j = 0; j < list.length; j++) {
+        const hook = list[j];
         wrapped.push(async (request, reply) => {
           const resolved = await settled(request, rpcTarget);
           if (resolved === null) return;
-          return void (await hook(resolved.context, payloadOf(request)));
+          await hook(resolved.context, payloadOf(request));
         });
       }
       return wrapped;
     };
     const wrapPayload = (list) => {
       const wrapped = [];
-      for (const hook of list) {
+      for (let j = 0; j < list.length; j++) {
+        const hook = list[j];
         wrapped.push(async (request, reply, payload) => {
           const resolved = await settled(request, rpcTarget);
           if (resolved === null) return;
-          return void (await hook(resolved.context, payload));
+          await hook(resolved.context, payload);
         });
       }
       return wrapped;
@@ -187,7 +200,8 @@ const registerRestRoutes = (fastify, rpc, options) => {
     // translated to fastify's "the returned value IS the payload".
     const wrapShaping = (list) => {
       const wrapped = [];
-      for (const hook of list) {
+      for (let j = 0; j < list.length; j++) {
+        const hook = list[j];
         wrapped.push(async (request, reply, payload) => {
           const resolved = await settled(request, rpcTarget);
           if (resolved === null) return payload;
@@ -260,7 +274,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
         copyTraceHeaders(request.headers, packet);
         const started = otel.enabled ? performance.now() : 0;
         return otel.withSpan({ client, packet, target: rpcTarget.method }, async (handle) => {
-          let result;
+          let result = undefined;
           try {
             result = await proc.invokeBare(context, argsOf(request));
           } catch (error) {
@@ -356,11 +370,11 @@ const wrpcFastify = async (fastify, options = {}) => {
         // Streaming bypasses fastify's reply machinery and writes straight
         // to the raw response: an SSE body has no end for `reply.send` to
         // wait for. `hijack()` tells fastify not to answer it as well.
-        stream(options) {
+        stream(streamOptions) {
           if (typeof reply.hijack === 'function') reply.hijack();
           settled = true;
           resolve();
-          return nodeStream(reply.raw)(options);
+          return nodeStream(reply.raw)(streamOptions);
         },
         onAbort(listener) {
           reply.raw?.on?.('close', listener);
@@ -393,7 +407,8 @@ const wrpcFastify = async (fastify, options = {}) => {
   // The same holds for a call whose arguments hold bytes: it arrives as an
   // attachments frame under `application/octet-stream`, which fastify
   // parses no more than the sealed type — two 2.x ends were answered 415.
-  for (const type of ['application/wrpc-sealed', 'application/octet-stream']) {
+  for (let i = 0; i < BYTE_TYPES.length; i++) {
+    const type = BYTE_TYPES[i];
     if (typeof fastify.hasContentTypeParser === 'function' && !fastify.hasContentTypeParser(type)) {
       fastify.addContentTypeParser(type, { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
     }
@@ -402,10 +417,10 @@ const wrpcFastify = async (fastify, options = {}) => {
     base === ''
       ? ['/', rpc.eventsPath, '/encryption-key', '/:unit/:method']
       : [base, rpc.eventsPath, `${base}/encryption-key`, `${base}/:unit/:method`];
-  for (const url of routes) {
+  for (let i = 0; i < routes.length; i++) {
     fastify.route({
       method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      url,
+      url: routes[i],
       // The marker the mirror feature skips: wrpc must not mirror itself.
       config: { wrpc: true },
       ...(maxBodySize === undefined ? {} : { bodyLimit: maxBodySize }),

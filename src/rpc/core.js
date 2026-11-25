@@ -111,7 +111,13 @@ const DEFAULT_BASE_PATH = '/api';
 // cookies on it — and a key this list does not hold is read by nothing:
 // `cors: { origin: 'https://app.example' }`, the spelling of the `cors`
 // package and of @fastify/cors, left the allowlist empty without a word.
-const CORS_OPTION_KEYS = ['origins', 'credentials', 'headers', 'metaHeaders', 'methods'];
+const CORS_OPTION_KEYS = new Set(['origins', 'credentials', 'headers', 'metaHeaders', 'methods']);
+
+const isStringList = (list) => {
+  for (let i = 0; i < list.length; i++) if (typeof list[i] !== 'string') return false;
+  return true;
+};
+
 const checkCors = (cors, log) => {
   if (cors === null || cors === undefined) return null;
   if (typeof cors !== 'object') throw new ConfigError('RpcServer: options.cors must be an object');
@@ -124,17 +130,18 @@ const checkCors = (cors, log) => {
     origins === null ||
     typeof origins === 'function' ||
     typeof origins === 'string' ||
-    (Array.isArray(origins) && origins.every((origin) => typeof origin === 'string'));
+    (Array.isArray(origins) && isStringList(origins));
   if (!valid) {
     throw new ConfigError('RpcServer: options.cors.origins must be an origin, an array of them or a function');
   }
-  for (const key of Object.keys(cors)) {
-    if (!CORS_OPTION_KEYS.includes(key)) log.warn({ event: 'cors.option', key });
+  const keys = Object.keys(cors);
+  for (let i = 0; i < keys.length; i++) {
+    if (!CORS_OPTION_KEYS.has(keys[i])) log.warn({ event: 'cors.option', key: keys[i] });
   }
   return cors;
 };
 
-const ROOMS_OPTION_KEYS = ['epoch', 'linger', 'maxTracked', 'compression', 'encryption', 'maxMessage'];
+const ROOMS_OPTION_KEYS = new Set(['epoch', 'linger', 'maxTracked', 'compression', 'encryption', 'maxMessage']);
 const RPC_OPTION_KEYS = [
   'router',
   'sessions',
@@ -168,7 +175,8 @@ const RPC_OPTION_KEYS = [
 
 const rpcOptions = (options = {}) => {
   const picked = {};
-  for (const key of RPC_OPTION_KEYS) {
+  for (let i = 0; i < RPC_OPTION_KEYS.length; i++) {
+    const key = RPC_OPTION_KEYS[i];
     if (options[key] !== undefined) picked[key] = options[key];
   }
   return picked;
@@ -343,7 +351,7 @@ class RpcServer extends Emitter {
     // Checked after the mint, so a generator that answers a dotted id is
     // refused by the same rule as a hand-passed one — and named as the
     // option that actually produced it.
-    if (String(this.#instance).includes('.')) {
+    if (`${this.#instance}`.includes('.')) {
       const source = instanceId === null ? 'generateId must not return' : 'options.instanceId must not contain';
       throw new ConfigError(`RpcServer: ${source} "."`);
     }
@@ -468,8 +476,9 @@ class RpcServer extends Emitter {
           'RpcServer: options.rooms.backplane is not an option — pass the backplane as options.backplane',
         );
       }
-      for (const key in roomsOptions) {
-        if (!ROOMS_OPTION_KEYS.includes(key)) this.#roomsLog.warn({ event: 'rooms.option', key });
+      const keys = Object.keys(roomsOptions);
+      for (let i = 0; i < keys.length; i++) {
+        if (!ROOMS_OPTION_KEYS.has(keys[i])) this.#roomsLog.warn({ event: 'rooms.option', key: keys[i] });
       }
     }
     // Built before the no-backplane return, so `rooms.compression` and
@@ -571,7 +580,8 @@ class RpcServer extends Emitter {
         // object `rooms['__proto__'] = 1` sets nothing — the room was missing
         // from every other node's count.
         const rooms = { __proto__: null };
-        for (const room of this.#rooms.list()) rooms[room] = this.#rooms.count(room);
+        const names = this.#rooms.list();
+        for (let i = 0; i < names.length; i++) rooms[names[i]] = this.#rooms.count(names[i]);
         let clients = 0;
         for (const client of this.#clients) if (client.persistent) clients++;
         return { rooms, clients };
@@ -599,23 +609,27 @@ class RpcServer extends Emitter {
       },
       join: (sel, rooms) => {
         if (!Array.isArray(rooms)) return;
-        for (const client of select(sel)) {
-          for (const room of rooms) client.join(room);
+        const selected = select(sel);
+        for (let i = 0; i < selected.length; i++) {
+          for (let j = 0; j < rooms.length; j++) selected[i].join(rooms[j]);
         }
       },
       leave: (sel, rooms) => {
         if (!Array.isArray(rooms)) return;
-        for (const client of select(sel)) {
-          for (const room of rooms) client.leave(room);
+        const selected = select(sel);
+        for (let i = 0; i < selected.length; i++) {
+          for (let j = 0; j < rooms.length; j++) selected[i].leave(rooms[j]);
         }
       },
       disconnect: (sel) => {
-        for (const client of select(sel)) client.close();
+        const selected = select(sel);
+        for (let i = 0; i < selected.length; i++) selected[i].close();
       },
       // The local leg of Cluster.send / RpcServer.sendTo: a per-request HTTP
       // client cannot receive one, and is skipped the way Broadcast skips it.
       event: (sel, name, data) => {
-        for (const client of select(sel)) if (client.persistent) client.sendEvent(name, data);
+        const selected = select(sel);
+        for (let i = 0; i < selected.length; i++) if (selected[i].persistent) selected[i].sendEvent(name, data);
       },
       // The remote leg of a broadcast ask: LOCAL delivery only — the
       // question already reached every other node as its own request. An
@@ -774,7 +788,7 @@ class RpcServer extends Emitter {
       throw error;
     }
     const transport = new ServerHttpTransport({ headers, remoteAddress, respond: () => {} }, { headers: {} });
-    const verb = String(method).toUpperCase();
+    const verb = `${method}`.toUpperCase();
     const safeMethod = verb === 'GET' || verb === 'HEAD';
     const { restore, meta } = this.#identify({ headers, url, remoteAddress }, safeMethod);
     const client = this.#addClient(transport, restore, meta);
@@ -1000,8 +1014,7 @@ class RpcServer extends Emitter {
   }
 
   #isKeyPath(url) {
-    const [pathname] = split(url ?? '/', '?');
-    return pathname === `${this.#basePath}/encryption-key`;
+    return split(url ?? '/', '?')[0] === `${this.#basePath}/encryption-key`;
   }
 
   // The socket a connection is attached through: a SealedSocket when the
@@ -1130,9 +1143,9 @@ class RpcServer extends Emitter {
       inflight--;
       if (inflight === 0 && typeof socket.resume === 'function') socket.resume();
     };
-    socket.on('message', (data, isBinary) => {
-      if (!isBinary) return void handleMessage(client, data, this.#router, this.#limits);
-      let bytes = new Uint8Array(data);
+    socket.on('message', (message, isBinary) => {
+      if (!isBinary) return void handleMessage(client, message, this.#router, this.#limits);
+      let bytes = new Uint8Array(message);
       // A framed message (wire.js): a compressed packet is dispatched from
       // here, a compressed chunk falls through to the chunk path inflated;
       // an attachments frame is the chunk path's to dispatch (handleBinary).
@@ -1142,6 +1155,8 @@ class RpcServer extends Emitter {
       }
       inflight++;
       if (inflight === 1 && typeof socket.pause === 'function') socket.pause();
+      // `done` on both paths on purpose: the count goes down however the chunk settled.
+      // oxlint-disable-next-line promise/no-callback-in-promise
       handleBinary(client, bytes, this.#router, this.#limits).then(done, done);
     });
     // Debug, not warn: the built-in Connection already wrote its own line
@@ -1328,7 +1343,7 @@ class RpcServer extends Emitter {
     // the same string (bench/http-call.js).
     if (!this.#codec) return jsonParse(bytes ? body.toString() : body);
     try {
-      return this.#codec.decode(typeof body === 'string' ? body : String(body));
+      return this.#codec.decode(typeof body === 'string' ? body : `${body}`);
     } catch {
       return null;
     }
@@ -1340,10 +1355,10 @@ class RpcServer extends Emitter {
   #batchIds(packet) {
     if (!Array.isArray(packet)) return null;
     if (packet.length === 0 || packet.length > this.#limits.maxBatch) return null;
-    const ids = new Array(packet.length);
+    const ids = [];
     for (let i = 0; i < packet.length; i++) {
       const item = packet[i];
-      ids[i] = item && typeof item === 'object' ? item.id : undefined;
+      ids.push(item && typeof item === 'object' ? item.id : undefined);
     }
     return ids;
   }
@@ -1506,7 +1521,9 @@ class RpcServer extends Emitter {
     // No Content-Type override here: which codec's type applies depends on
     // the MODE (packet vs REST), decided below — a blanket header would
     // advertise the packet framing on REST bodies it never framed.
-    const [pathname, params] = split(call.url ?? '/', '?');
+    const target = split(call.url ?? '/', '?');
+    const pathname = target[0];
+    const params = target[1];
     const match = this.matchPath(pathname);
     if (this.#sse) {
       if (pathname === this.eventsPath && (call.method ?? 'GET').toUpperCase() === 'GET') {
@@ -1661,7 +1678,7 @@ class RpcServer extends Emitter {
       // REST semantics: the request arrives structured, and the SAME shape
       // is what a ws caller passes by hand — the mapping only defines how
       // an HTTP request is unpacked into args.
-      let body;
+      let body = null;
       try {
         body = decodeBody(undefined);
       } catch {
@@ -1674,8 +1691,10 @@ class RpcServer extends Emitter {
       return void handleRpc(client, packet, this.#router);
     }
     const parameters = this.#parseQuery(params);
-    const [unit, name] = split(rest, '/');
-    let body;
+    const parts = split(rest, '/');
+    const unit = parts[0];
+    const name = parts[1];
+    let body = null;
     try {
       body = decodeBody(null) ?? {};
     } catch {
@@ -1698,6 +1717,8 @@ class RpcServer extends Emitter {
     // unchanged, and never throws — ~380 -> ~35 ns on a three-segment path
     // (bench/http-call.js).
     if (!rest.includes('%')) return this.#router.matchRest(method, raw);
+    // The decode loop bench/http-call.js measures (decodeEach).
+    // oxlint-disable-next-line unicorn/no-new-array
     const segments = new Array(raw.length);
     for (let i = 0; i < raw.length; i++) {
       try {

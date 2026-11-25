@@ -46,7 +46,7 @@ const STACK_ORDER = [
 const MEASUREMENTS = ['small payload', '10KB payload', 'small payload ×64'];
 const WORKER = path.join(__dirname, 'support', 'rpc-stack-worker.js');
 
-function runStack(key) {
+const runStack = (key) => {
   const result = spawnSync(process.execPath, [WORKER, key], { encoding: 'utf8' });
   if (result.status !== 0) {
     console.error(result.stdout);
@@ -59,9 +59,9 @@ function runStack(key) {
     if (line !== resultLine) console.log(line);
   }
   return JSON.parse(resultLine.slice('RESULT_JSON:'.length));
-}
+};
 
-function main() {
+const main = () => {
   console.log(`Node ${process.version} | ${new Date().toISOString()}\n`);
 
   const byStack = new Map();
@@ -85,6 +85,6 @@ function main() {
     }
     console.log();
   }
-}
+};
 
 main();

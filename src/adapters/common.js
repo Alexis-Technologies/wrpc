@@ -118,7 +118,8 @@ const receiveBody = (stream, limit = MAX_BODY_SIZE) => {
     };
     const onEnd = () => {
       settle();
-      resolve(chunks.length === 0 ? null : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size));
+      if (chunks.length === 0) return void resolve(null);
+      resolve(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size));
     };
     const onError = (error) => {
       if (settled) return;
@@ -159,16 +160,16 @@ const statusLine = (code) => `${code} ${STATUS_CODES[code] ?? 'Unknown'}`;
 // The core answers with `Set-Cookie` as an array and Content-Length as a
 // number; frameworks want strings and repeated header lines.
 const eachHeader = (headers, visit) => {
-  // for...in over the core's own header literal: Object.entries allocated an
-  // array plus a [name, value] pair per header, per HTTP response — 5.5 M
-  // walks a second against 7.9 M (bench/object-walk.js).
+  // for...in over the core's own header literal, per HTTP response: 9.9 M
+  // walks a second against 6.8 M for Object.entries and for Object.keys with
+  // an index loop alike (bench/object-walk.js).
   for (const name in headers) {
     const value = headers[name];
     if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++) visit(name, String(value[i]));
+      for (let i = 0; i < value.length; i++) visit(name, `${value[i]}`);
       continue;
     }
-    visit(name, String(value));
+    visit(name, `${value}`);
   }
 };
 

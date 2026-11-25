@@ -77,7 +77,9 @@ const createRedisAdapter = (options = {}) => {
     // Snapshot is load-bearing, unlike the one dropped in scaling/memory.js:
     // these handlers run SYNCHRONOUSLY, so one that subscribes or unsubscribes
     // during dispatch would otherwise perturb a live Set iterator.
-    for (const handler of Array.from(set)) {
+    const snapshot = Array.from(set);
+    for (let i = 0; i < snapshot.length; i++) {
+      const handler = snapshot[i];
       try {
         handler(message);
       } catch (error) {
@@ -195,7 +197,8 @@ const createRedisAdapter = (options = {}) => {
     close() {
       if (closed) return;
       closed = true;
-      for (const name of Array.from(handlers.keys())) unsubscribe(name);
+      const names = Array.from(handlers.keys());
+      for (let i = 0; i < names.length; i++) unsubscribe(names[i]);
       handlers.clear();
       subscribing.clear();
       detach(subscriber, 'message', onMessage);

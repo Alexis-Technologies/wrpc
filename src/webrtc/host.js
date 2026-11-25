@@ -119,7 +119,7 @@ class PeerHost extends Emitter {
     // parses like a server's would (instanceOfClientId). Minted by the
     // generator, so an injected one owns this id like it owns the rest.
     this.#instance = instanceId ?? ids.first;
-    if (String(this.#instance).includes('.')) {
+    if (this.#instance.includes('.')) {
       const source =
         instanceId === null || instanceId === undefined
           ? 'generateId must not return'
@@ -283,7 +283,8 @@ class PeerHost extends Emitter {
 
   /** Closes every attached peer's link. */
   close() {
-    for (const client of [...this.#clients]) client.close();
+    // The snapshot: a close drops its client from the set on the spot.
+    for (const client of this.clients) client.close();
   }
 
   // Mirrors RpcServer: system/introspect mounted public unless the router

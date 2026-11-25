@@ -54,9 +54,14 @@ const NO_COMPRESS = Object.freeze({ compress: false });
 const CLOSE_POLICY = 1008;
 const CLOSE_PROTOCOL = 1002;
 
+const isListOf = (value, allowed) => {
+  for (let i = 0; i < value.length; i++) if (!allowed.includes(value[i])) return false;
+  return true;
+};
+
 const listOf = (value, allowed, fallback, name) => {
   if (value === undefined || value === null) return fallback;
-  if (!Array.isArray(value) || value.length === 0 || !value.every((entry) => allowed.includes(entry))) {
+  if (!Array.isArray(value) || value.length === 0 || !isListOf(value, allowed)) {
     throw new ConfigError(`${name} must be a non-empty list of ${allowed.join(', ')}`);
   }
   return Object.freeze([...new Set(value)]);
@@ -127,18 +132,18 @@ const normalizeServerEncryption = (value, name) => {
   // One Noise object per protocol name a client may send, by that name: a
   // name arrives from the peer and is looked up, never parsed.
   const protocols = new Map();
-  for (const pattern of patterns) {
-    for (const id of ciphers) {
-      const noise = createNoise({ pattern, dh, cipher: aead({ algorithm: id }), kdf });
+  for (let i = 0; i < patterns.length; i++) {
+    for (let j = 0; j < ciphers.length; j++) {
+      const noise = createNoise({ pattern: patterns[i], dh, cipher: aead({ algorithm: ciphers[j] }), kdf });
       protocols.set(noise.name, noise);
     }
   }
   // The per-request binding's suites, by the AEAD id a request names.
   const kem = dhKem(dh, kdf);
   const suites = new Map();
-  for (const id of ciphers) {
-    const cipher = aead({ algorithm: id });
-    suites.set(AEAD_IDS[id], { cipher, hpke: createHpke({ kem, kdf, cipher }) });
+  for (let i = 0; i < ciphers.length; i++) {
+    const cipher = aead({ algorithm: ciphers[i] });
+    suites.set(AEAD_IDS[ciphers[i]], { cipher, hpke: createHpke({ kem, kdf, cipher }) });
   }
   // kid → promise of the derived static key pairs, derived once — but the
   // RING is asked first, every time: a kid a live provider no longer answers
@@ -327,7 +332,7 @@ class SealedSocket extends EventEmitter {
   }
 
   #open(bytes) {
-    let message;
+    let message = null;
     try {
       message = this.#channel.open(bytes);
     } catch {
@@ -408,7 +413,7 @@ class SealedSocket extends EventEmitter {
     });
     const { authorize } = this.#encryption;
     if (authorize !== null) {
-      let allowed;
+      let allowed = false;
       try {
         allowed = await authorize(info);
       } catch (error) {
@@ -494,8 +499,8 @@ class SealedSocket extends EventEmitter {
     let sent = true;
     this.#outbound.push(
       sealed,
-      (frame) => {
-        if (!this.#dead) sent = this.#socket.send(asBuffer(frame), NO_COMPRESS);
+      (sealedFrame) => {
+        if (!this.#dead) sent = this.#socket.send(asBuffer(sealedFrame), NO_COMPRESS);
       },
       () => this.#end(CLOSE_PROTOCOL, 'crypto'),
     );

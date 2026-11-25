@@ -76,8 +76,10 @@ const applyMask = (payload, mask) => {
 
 // Frame header size for a payload of `length` bytes (RFC 6455 5.2).
 const headerSize = (length, masked) => {
-  const base = length < LEN_16_BIT ? 2 : length <= MAX_16_BIT ? 4 : 10;
-  return masked ? base + 4 : base;
+  const mask = masked ? 4 : 0;
+  if (length < LEN_16_BIT) return 2 + mask;
+  if (length <= MAX_16_BIT) return 4 + mask;
+  return 10 + mask;
 };
 
 // Writes a final-frame header at the start of `target`, returns its size.
@@ -85,10 +87,9 @@ const headerSize = (length, masked) => {
 const writeHeader = (target, opcode, rsv, length, mask) => {
   const masked = mask !== null ? MASK_MASK : 0;
   target[0] = FINAL_FRAME | rsv | opcode;
-  let offset;
+  let offset = 2;
   if (length < LEN_16_BIT) {
     target[1] = masked | length;
-    offset = 2;
   } else if (length <= MAX_16_BIT) {
     target[1] = masked | LEN_16_BIT;
     target.writeUInt16BE(length, 2);
@@ -228,8 +229,8 @@ class Frame {
     const length = this.payload.length;
     const fin = this.fin ? FINAL_FRAME : 0;
     const masked = this.masked ? MASK_MASK : 0;
-    let header;
-    let lengthField;
+    let header = null;
+    let lengthField = 0;
 
     if (length < LEN_16_BIT) {
       header = Buffer.alloc(this.masked ? 6 : 2);

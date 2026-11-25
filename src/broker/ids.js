@@ -48,7 +48,9 @@ const toBytes = (body) => {
 const toHeaders = (value) => {
   const headers = Object.create(null);
   if (!value || typeof value !== 'object') return headers;
-  for (const key of Object.keys(value)) {
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     const entry = value[key];
     if (entry === undefined || entry === null) continue;
     headers[key] = typeof entry === 'string' ? entry : toText(Array.isArray(entry) ? entry[0] : entry);
@@ -89,7 +91,8 @@ const encodeToken = (name, { safe = /[A-Za-z0-9_-]/, escape = '~', maxLength = 2
       out += char;
       continue;
     }
-    for (const byte of encoder.encode(char)) out += `${escape}${HEX[byte >> 4]}${HEX[byte & 15]}`;
+    const bytes = encoder.encode(char);
+    for (let i = 0; i < bytes.length; i++) out += `${escape}${HEX[bytes[i] >> 4]}${HEX[bytes[i] & 15]}`;
   }
   if (out.length <= maxLength) return out;
   const digest = createHash('sha256')
@@ -156,7 +159,7 @@ const openId = (secret, signed, scope = '') => {
 // A session id is a credential (whoever knows it may speak on the
 // session): what a log line or a transport's `source` carries is this
 // fingerprint of it — enough to correlate, useless to replay.
-const fingerprint = (id) => createHash('sha256').update(String(id)).digest('hex').slice(0, 12);
+const fingerprint = (id) => createHash('sha256').update(`${id}`).digest('hex').slice(0, 12);
 
 module.exports = {
   codedError,

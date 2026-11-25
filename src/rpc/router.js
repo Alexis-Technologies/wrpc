@@ -3,6 +3,7 @@
 const { Semaphore } = require('../utils.js');
 const { isTracked, tracked } = require('./subscriptions.js');
 const {
+  unitVersions,
   normalizeHttp,
   normalizeRestOptions,
   effectiveHttp,
@@ -73,10 +74,13 @@ const runStandardSchema = async (validator, value) => {
     // as structured `details`, which the transport forwards on 4xx (or on
     // expose) as the wire error's optional `details` field.
     const issues = [];
-    for (const issue of result.issues) {
+    const messages = [];
+    for (let i = 0; i < result.issues.length; i++) {
+      const issue = result.issues[i];
       issues.push({ message: issue.message, path: issue.path });
+      messages.push(issue.message);
     }
-    const error = new Error(issues.map((issue) => issue.message).join('; '));
+    const error = new Error(messages.join('; '));
     error.details = { issues };
     throw error;
   }
@@ -120,8 +124,8 @@ const PROCEDURE_PHASES = ['preValidation', 'preHandler', 'preSerialization', 'on
 const toHookList = (value, phase, label) => {
   if (value === undefined || value === null) return [];
   const list = Array.isArray(value) ? value : [value];
-  for (const fn of list) {
-    if (typeof fn !== 'function') {
+  for (let i = 0; i < list.length; i++) {
+    if (typeof list[i] !== 'function') {
       throw new ConfigError(`${label}: hooks.${phase} must be a function or an array of functions`);
     }
   }
@@ -133,26 +137,33 @@ const toHookList = (value, phase, label) => {
 const normalizeHooks = (hooks, allowed, label) => {
   if (hooks === undefined || hooks === null) hooks = {};
   if (typeof hooks !== 'object') throw new ConfigError(`${label}: hooks must be an object of phase handlers`);
-  for (const key of Object.keys(hooks)) {
-    if (!allowed.includes(key)) throw new ConfigError(`${label}: unknown hook phase '${key}'`);
+  const keys = Object.keys(hooks);
+  for (let i = 0; i < keys.length; i++) {
+    if (!allowed.includes(keys[i])) throw new ConfigError(`${label}: unknown hook phase '${keys[i]}'`);
   }
   const result = {};
-  for (const phase of allowed) result[phase] = toHookList(hooks[phase], phase, label);
+  for (let i = 0; i < allowed.length; i++) result[allowed[i]] = toHookList(hooks[allowed[i]], allowed[i], label);
   return result;
 };
 
 const EMPTY_LIST = Object.freeze([]);
-const EMPTY_HOOKS = Object.freeze(Object.fromEntries(INVOCATION_PHASES.map((phase) => [phase, EMPTY_LIST])));
+const EMPTY_HOOKS = {};
+for (let i = 0; i < INVOCATION_PHASES.length; i++) EMPTY_HOOKS[INVOCATION_PHASES[i]] = EMPTY_LIST;
+Object.freeze(EMPTY_HOOKS);
 
 /** Runs one phase in order; a throw ends the call with the error's code. */
 const runHooks = async (hooks, context, payload) => {
-  for (const hook of hooks) await hook(context, payload);
+  for (let i = 0; i < hooks.length; i++) {
+    const hook = hooks[i];
+    await hook(context, payload);
+  }
 };
 
 // The observational phases must never break what they observe: a throwing
 // onResponse/onError/onDisconnect is reported to the log and contained.
 const runHooksSafe = async (hooks, context, payload, log, phase) => {
-  for (const hook of hooks) {
+  for (let i = 0; i < hooks.length; i++) {
+    const hook = hooks[i];
     try {
       await hook(context, payload);
     } catch (error) {
@@ -196,15 +207,16 @@ const normalizeSchema = (schema, label) => {
     throw new ConfigError(`${label} schema has both 'query' and 'querystring' and they differ — use one`);
   }
   const normalized = {};
-  for (const key of Object.keys(schema)) {
-    if (key === 'query') continue; // folded into querystring below
-    assignKey(normalized, key, schema[key]);
+  const keys = Object.keys(schema);
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i] === 'query') continue; // folded into querystring below
+    assignKey(normalized, keys[i], schema[keys[i]]);
   }
   if (schema.query !== undefined && schema.querystring === undefined) normalized.querystring = schema.query;
-  for (const part of SCHEMA_PARTS) {
-    const value = normalized[part];
+  for (let i = 0; i < SCHEMA_PARTS.length; i++) {
+    const value = normalized[SCHEMA_PARTS[i]];
     if (value !== undefined && (typeof value !== 'object' || value === null)) {
-      throw new ConfigError(`${label} schema.${part} must be an object`);
+      throw new ConfigError(`${label} schema.${SCHEMA_PARTS[i]} must be an object`);
     }
   }
   return normalized;
@@ -351,7 +363,7 @@ class Procedure {
       // Validate the payload, not the tracking wrapper: an output schema
       // describes what the client receives, not how it is labelled.
       const payload = isTracked(value) ? value.data : value;
-      let checked;
+      let checked = null;
       try {
         checked = runValidator(outputValidator, payload);
         if (checked && typeof checked.then === 'function') checked = await checked;
@@ -403,7 +415,7 @@ class Procedure {
       // Called directly rather than through Promise.resolve().then(): the
       // handler starts now instead of a microtask later, and a synchronous
       // throw becomes the rejection it would have been (bench/bench.js).
-      let invocation;
+      let invocation = null;
       try {
         invocation = Promise.resolve(this.handler(context, args));
       } catch (error) {
@@ -457,7 +469,7 @@ class Procedure {
       // Called directly rather than through Promise.resolve().then(): the
       // handler starts now instead of a microtask later, and a synchronous
       // throw becomes the rejection it would have been (bench/bench.js).
-      let invocation;
+      let invocation = null;
       try {
         invocation = Promise.resolve(this.handler(context, args));
       } catch (error) {
@@ -474,7 +486,9 @@ class Procedure {
       // A preSerialization hook that returns something replaces the result;
       // one that returns undefined leaves it alone. Runs BEFORE the output
       // validator, so what the hook shaped is what the schema checks.
-      for (const hook of hooks.preSerialization) {
+      const preSerialization = hooks.preSerialization;
+      for (let i = 0; i < preSerialization.length; i++) {
+        const hook = preSerialization[i];
         const replaced = await hook(context, result);
         if (replaced !== undefined) result = replaced;
       }
@@ -545,7 +559,10 @@ const CONSUMES_KEY = 'consumes';
 // scoped to a unit, so an onConnect there could never mean anything.
 const concatHooks = (base, extra, phases) => {
   const result = {};
-  for (const phase of phases) result[phase] = [...(base?.[phase] ?? []), ...(extra?.[phase] ?? [])];
+  for (let i = 0; i < phases.length; i++) {
+    const phase = phases[i];
+    result[phase] = [...(base?.[phase] ?? []), ...(extra?.[phase] ?? [])];
+  }
   return result;
 };
 
@@ -579,6 +596,15 @@ const INPUT_PARTS = [
   ['body', 'body'],
 ];
 
+// An injected ajv's errors, as issues under one part's path.
+const addIssues = (issues, errors, part) => {
+  const list = errors ?? EMPTY_LIST;
+  for (let i = 0; i < list.length; i++) {
+    issues.push({ message: list[i].message, path: `/${part}${list[i].instancePath ?? ''}` });
+  }
+  return issues;
+};
+
 // Compiles the input parts into ONE function validator, fastify-style: each
 // part validates its slice of `{ params, query, body }`, issues carry
 // part-prefixed paths, and ajv's own coercions land in place. The wrapper is
@@ -586,9 +612,11 @@ const INPUT_PARTS = [
 // execution seam.
 const compileInput = (ajv, schema, label) => {
   const parts = [];
-  for (const [part, argsKey] of INPUT_PARTS) {
+  for (let i = 0; i < INPUT_PARTS.length; i++) {
+    const part = INPUT_PARTS[i][0];
+    const argsKey = INPUT_PARTS[i][1];
     if (schema[part] === undefined) continue;
-    let validate;
+    let validate = null;
     try {
       validate = ajv.compile(schema[part]);
     } catch (error) {
@@ -611,12 +639,10 @@ const compileInput = (ajv, schema, label) => {
   return (args, context) => {
     const value = args && typeof args === 'object' ? args : {};
     let issues = null;
-    for (const { part, argsKey, validate } of parts) {
+    for (let i = 0; i < parts.length; i++) {
+      const { part, argsKey, validate } = parts[i];
       if (validate(value[argsKey] ?? {})) continue;
-      issues ??= [];
-      for (const item of validate.errors ?? []) {
-        issues.push({ message: item.message, path: `/${part}${item.instancePath ?? ''}` });
-      }
+      issues = addIssues(issues ?? [], validate.errors, part);
     }
     if (headersValidate) {
       // A COPY on purpose: client.meta.headers is frozen, and an injected
@@ -624,16 +650,13 @@ const compileInput = (ajv, schema, label) => {
       // coerced value back (compiled validators are strict-mode code). The
       // copy also keeps the snapshot honest — validation observes headers,
       // it never rewrites them.
-      if (!headersValidate({ ...(context?.meta?.headers ?? {}) })) {
-        issues ??= [];
-        for (const item of headersValidate.errors ?? []) {
-          issues.push({ message: item.message, path: `/headers${item.instancePath ?? ''}` });
-        }
+      if (!headersValidate({ ...context?.meta?.headers })) {
+        issues = addIssues(issues ?? [], headersValidate.errors, 'headers');
       }
     }
     if (issues) {
       const messages = [];
-      for (const issue of issues) messages.push(`${issue.path} ${issue.message}`);
+      for (let i = 0; i < issues.length; i++) messages.push(`${issues[i].path} ${issues[i].message}`);
       const error = new Error(messages.join('; '));
       error.details = { issues };
       throw error;
@@ -648,15 +671,16 @@ const successResponse = (proc) => {
   if (!response || typeof response !== 'object') return null;
   const preferred = proc.http?.status ?? 200;
   if (response[preferred] && response[preferred] !== false) return response[preferred];
-  for (const key of Object.keys(response)) {
-    const code = Number(key);
-    if (code >= 200 && code < 300 && response[key] !== false) return response[key];
+  const keys = Object.keys(response);
+  for (let i = 0; i < keys.length; i++) {
+    const code = Number(keys[i]);
+    if (code >= 200 && code < 300 && response[keys[i]] !== false) return response[keys[i]];
   }
   return null;
 };
 
 const compileOutput = (ajv, schema, label) => {
-  let validate;
+  let validate = null;
   try {
     validate = ajv.compile(schema);
   } catch (error) {
@@ -665,10 +689,13 @@ const compileOutput = (ajv, schema, label) => {
   return (result) => {
     if (validate(result)) return result;
     const issues = [];
-    for (const item of validate.errors ?? []) {
-      issues.push({ message: item.message, path: item.instancePath });
+    const messages = [];
+    const errors = validate.errors ?? EMPTY_LIST;
+    for (let i = 0; i < errors.length; i++) {
+      issues.push({ message: errors[i].message, path: errors[i].instancePath });
+      messages.push(`${errors[i].instancePath} ${errors[i].message}`);
     }
-    const error = new Error(issues.map((issue) => `${issue.path} ${issue.message}`).join('; '));
+    const error = new Error(messages.join('; '));
     error.details = { issues };
     throw error;
   };
@@ -703,9 +730,8 @@ class Router {
     this.#hooks = normalizeHooks(options.hooks, ROUTER_PHASES, 'defineRouter');
     this.#validation = normalizeValidation(options.validation);
     this.#restOptions = normalizeRestOptions(options.rest);
-    for (const [unitKey, methods] of Object.entries(definition)) {
-      this.#addUnit(unitKey, methods);
-    }
+    const unitKeys = Object.keys(definition);
+    for (let i = 0; i < unitKeys.length; i++) this.#addUnit(unitKeys[i], definition[unitKeys[i]]);
     this.#rebuildChains();
   }
 
@@ -716,8 +742,9 @@ class Router {
    * tool for combining routers). Returns the router.
    */
   addUnit(unitKey, definition) {
-    const [unit, version = DEFAULT_VERSION] = String(unitKey).split('.');
-    if (this.#units.get(unit)?.has(version)) {
+    const parts = String(unitKey).split('.');
+    const version = parts.length > 1 ? parts[1] : DEFAULT_VERSION;
+    if (this.#units.get(parts[0])?.has(version)) {
       throw new ConfigError(`addUnit: unit '${unitKey}' is already registered`);
     }
     this.#addUnit(unitKey, definition);
@@ -778,23 +805,16 @@ class Router {
   // and an unenforced schema is an authorization bug waiting to be found.
   #rebuildCompiled() {
     this.#compiled = new Map();
-    for (const [unit, versions] of this.#units) {
-      for (const [version, entry] of versions) {
-        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-        for (const [methodName, proc] of entry.methods) {
-          const artifacts = this.#compileFor(proc, `${unitKey}/${methodName}`);
-          if (artifacts) this.#compiled.set(proc, artifacts);
-        }
-        for (const [eventName, proc] of entry.events) {
-          const artifacts = this.#compileFor(proc, `${unitKey}/on.${eventName}`);
-          if (artifacts) this.#compiled.set(proc, artifacts);
-        }
-        for (const [consumerName, proc] of entry.consumes) {
-          const artifacts = this.#compileFor(proc, `${unitKey}/consumes.${consumerName}`);
-          if (artifacts) this.#compiled.set(proc, artifacts);
-        }
-      }
+    for (const { unitKey, entry } of unitVersions(this.#units)) {
+      for (const method of entry.methods) this.#compileInto(method[1], `${unitKey}/${method[0]}`);
+      for (const event of entry.events) this.#compileInto(event[1], `${unitKey}/on.${event[0]}`);
+      for (const consumer of entry.consumes) this.#compileInto(consumer[1], `${unitKey}/consumes.${consumer[0]}`);
     }
+  }
+
+  #compileInto(proc, label) {
+    const artifacts = this.#compileFor(proc, label);
+    if (artifacts) this.#compiled.set(proc, artifacts);
   }
 
   #compileFor(proc, label) {
@@ -846,7 +866,8 @@ class Router {
 
   #chainFor(entry, proc) {
     const chain = {};
-    for (const phase of INVOCATION_PHASES) {
+    for (let i = 0; i < INVOCATION_PHASES.length; i++) {
+      const phase = INVOCATION_PHASES[i];
       const merged = [...this.#hooks[phase], ...(entry.hooks?.[phase] ?? []), ...(proc.hooks[phase] ?? [])];
       chain[phase] = merged.length > 0 ? Object.freeze(merged) : EMPTY_LIST;
     }
@@ -854,13 +875,15 @@ class Router {
   }
 
   #addUnit(unitKey, definition) {
-    const [unit, rawVersion, ...extra] = unitKey.split('.');
+    const parts = unitKey.split('.');
+    const unit = parts[0];
+    const rawVersion = parts[1];
     // A silent split would truncate 'unit.v1.2' into unit.v1 and merge
     // colliding registrations — reject anything but 'unit' / 'unit.vN'.
     // The vN pattern is the whole version syntax: 'auth.1' is invalid.
     if (
       !unit ||
-      extra.length > 0 ||
+      parts.length > 2 ||
       (rawVersion !== undefined && !VERSION_TOKEN.test(rawVersion)) ||
       typeof definition !== 'object' ||
       definition === null
@@ -878,7 +901,10 @@ class Router {
       entry = { methods: new Map(), events: new Map(), consumes: new Map(), emits: null, hooks: null };
       versions.set(version, entry);
     }
-    for (const [name, value] of Object.entries(definition)) {
+    const names = Object.keys(definition);
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const value = definition[name];
       if (name === EVENTS_KEY) {
         this.#addEvents(unitKey, entry.events, value);
         continue;
@@ -907,8 +933,10 @@ class Router {
     if (typeof definition !== 'object' || definition === null || Array.isArray(definition)) {
       throw new ConfigError(`Router definition ${unitKey}.consumes must be an object of consumer procedures`);
     }
-    for (const [name, value] of Object.entries(definition)) {
-      const proc = toProcedure(value, unitKey, `consumes.${name}`);
+    const names = Object.keys(definition);
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const proc = toProcedure(definition[name], unitKey, `consumes.${name}`);
       if (proc.subscription) {
         throw new ConfigError(`Router definition ${unitKey}.consumes.${name} cannot be a subscription`);
       }
@@ -922,8 +950,10 @@ class Router {
     if (typeof definition !== 'object' || definition === null) {
       throw new ConfigError(`Router definition ${unitKey}.on must be an object of event handlers`);
     }
-    for (const [name, value] of Object.entries(definition)) {
-      events.set(name, rejectConsume(toProcedure(value, unitKey, `on.${name}`), `${unitKey}/on.${name}`));
+    const names = Object.keys(definition);
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      events.set(name, rejectConsume(toProcedure(definition[name], unitKey, `on.${name}`), `${unitKey}/on.${name}`));
     }
   }
 
@@ -950,10 +980,9 @@ class Router {
    */
   consumers() {
     const list = [];
-    for (const [unit, versions] of this.#units) {
-      for (const [version, entry] of versions) {
-        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-        for (const [name, proc] of entry.consumes) list.push({ unitKey, unit, version, name, procedure: proc });
+    for (const { unit, version, unitKey, entry } of unitVersions(this.#units)) {
+      for (const consumer of entry.consumes) {
+        list.push({ unitKey, unit, version, name: consumer[0], procedure: consumer[1] });
       }
     }
     return list;
@@ -985,48 +1014,46 @@ class Router {
     // call would make. `schemas: false` strips them (they can be sizable).
     const { schemas = true } = options;
     const result = {};
-    for (const [unit, versions] of this.#units) {
-      for (const [version, entry] of versions) {
-        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-        if (filter && !filter.includes(unitKey)) continue;
-        const methodsInfo = {};
-        for (const [methodName, proc] of entry.methods) {
-          const info = { access: proc.access };
-          // Only subscriptions carry `kind`: a client scaffolds a call
-          // unless told otherwise, so the common case stays one key.
-          if (proc.subscription) info.kind = proc.kind;
-          if (Object.keys(proc.meta).length > 0) info.meta = proc.meta;
-          if (proc.signature) info.signature = proc.signature;
-          // The REST mapping travels so clients (and codegen/OpenAPI
-          // tooling) can address the same procedure as a plain endpoint —
-          // effective, so a client's REST leg calls the versioned URL.
-          if (proc.http) info.http = publicHttp(effectiveHttp(proc.http, version, this.#restOptions));
-          if (schemas && proc.schema) {
-            const parts = {};
-            if (proc.schema.params !== undefined) parts.params = proc.schema.params;
-            if (proc.schema.querystring !== undefined) parts.querystring = proc.schema.querystring;
-            if (proc.schema.body !== undefined) parts.body = proc.schema.body;
-            if (Object.keys(parts).length > 0) info.schema = parts;
-          }
-          assignKey(methodsInfo, methodName, info);
+    for (const { version, unitKey, entry } of unitVersions(this.#units)) {
+      if (filter && !filter.includes(unitKey)) continue;
+      const methodsInfo = {};
+      for (const method of entry.methods) {
+        const proc = method[1];
+        const info = { access: proc.access };
+        // Only subscriptions carry `kind`: a client scaffolds a call
+        // unless told otherwise, so the common case stays one key.
+        if (proc.subscription) info.kind = proc.kind;
+        if (Object.keys(proc.meta).length > 0) info.meta = proc.meta;
+        if (proc.signature) info.signature = proc.signature;
+        // The REST mapping travels so clients (and codegen/OpenAPI
+        // tooling) can address the same procedure as a plain endpoint —
+        // effective, so a client's REST leg calls the versioned URL.
+        if (proc.http) info.http = publicHttp(effectiveHttp(proc.http, version, this.#restOptions));
+        if (schemas && proc.schema) {
+          const parts = {};
+          if (proc.schema.params !== undefined) parts.params = proc.schema.params;
+          if (proc.schema.querystring !== undefined) parts.querystring = proc.schema.querystring;
+          if (proc.schema.body !== undefined) parts.body = proc.schema.body;
+          if (Object.keys(parts).length > 0) info.schema = parts;
         }
-        // The unit's INBOUND event handlers, under the same reserved 'on'
-        // key the definition used — additive, and impossible to collide
-        // with a method ('on' routes to #addEvents at definition time).
-        // What `wrpc types` turns into the contract's `sends` key.
-        if (entry.events.size > 0) {
-          const inbound = {};
-          for (const [eventName, proc] of entry.events) {
-            const eventInfo = { access: proc.access };
-            if (proc.signature) eventInfo.signature = proc.signature;
-            assignKey(inbound, eventName, eventInfo);
-          }
-          assignKey(methodsInfo, EVENTS_KEY, inbound);
-        }
-        // The declared OUTBOUND events, verbatim — the contract's `events`.
-        if (entry.emits) assignKey(methodsInfo, EMITS_KEY, entry.emits);
-        assignKey(result, unitKey, methodsInfo);
+        assignKey(methodsInfo, method[0], info);
       }
+      // The unit's INBOUND event handlers, under the same reserved 'on'
+      // key the definition used — additive, and impossible to collide
+      // with a method ('on' routes to #addEvents at definition time).
+      // What `wrpc types` turns into the contract's `sends` key.
+      if (entry.events.size > 0) {
+        const inbound = {};
+        for (const event of entry.events) {
+          const eventInfo = { access: event[1].access };
+          if (event[1].signature) eventInfo.signature = event[1].signature;
+          assignKey(inbound, event[0], eventInfo);
+        }
+        assignKey(methodsInfo, EVENTS_KEY, inbound);
+      }
+      // The declared OUTBOUND events, verbatim — the contract's `events`.
+      if (entry.emits) assignKey(methodsInfo, EMITS_KEY, entry.emits);
+      assignKey(result, unitKey, methodsInfo);
     }
     return result;
   }
@@ -1051,21 +1078,21 @@ class Router {
     // server's router by default, and dropping it there would silently
     // unprefix every versioned route.
     const merged = new Router({}, { hooks, validation, rest: this.#restOptions ?? other.#restOptions ?? undefined });
-    for (const source of [this, other]) {
-      for (const [unit, versions] of source.#units) {
-        for (const [version, entry] of versions) {
-          const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-          const definition = Object.fromEntries(entry.methods);
-          if (entry.events.size > 0) definition[EVENTS_KEY] = Object.fromEntries(entry.events);
-          if (entry.consumes.size > 0) definition[CONSUMES_KEY] = Object.fromEntries(entry.consumes);
-          if (entry.emits) definition[EMITS_KEY] = entry.emits;
-          if (entry.hooks) definition[HOOKS_KEY] = entry.hooks;
-          merged.#addUnit(unitKey, definition);
-        }
-      }
-    }
+    this.#addUnitsTo(merged);
+    other.#addUnitsTo(merged);
     merged.#rebuildChains();
     return merged;
+  }
+
+  #addUnitsTo(target) {
+    for (const { unitKey, entry } of unitVersions(this.#units)) {
+      const definition = Object.fromEntries(entry.methods);
+      if (entry.events.size > 0) definition[EVENTS_KEY] = Object.fromEntries(entry.events);
+      if (entry.consumes.size > 0) definition[CONSUMES_KEY] = Object.fromEntries(entry.consumes);
+      if (entry.emits) definition[EMITS_KEY] = entry.emits;
+      if (entry.hooks) definition[HOOKS_KEY] = entry.hooks;
+      target.#addUnit(unitKey, definition);
+    }
   }
 }
 
@@ -1094,18 +1121,19 @@ const defaultErrorResponses = (proc) => {
   if (proc.access !== 'public') codes.push(403);
   if (proc.timeout > 0) codes.push(408);
   const responses = {};
-  for (const code of codes) responses[code] = WIRE_ERROR_SCHEMA;
+  for (let i = 0; i < codes.length; i++) responses[codes[i]] = WIRE_ERROR_SCHEMA;
   return responses;
 };
 
 const effectiveSchema = (proc) => {
   const response = defaultErrorResponses(proc);
   const declared = proc.schema?.response ?? {};
-  for (const key of Object.keys(declared)) {
-    if (declared[key] === false) delete response[key];
-    else assignKey(response, key, declared[key]);
+  const keys = Object.keys(declared);
+  for (let i = 0; i < keys.length; i++) {
+    if (declared[keys[i]] === false) delete response[keys[i]];
+    else assignKey(response, keys[i], declared[keys[i]]);
   }
-  const schema = { ...(proc.schema ?? {}) };
+  const schema = { ...proc.schema };
   schema.response = response;
   return schema;
 };

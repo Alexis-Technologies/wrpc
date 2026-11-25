@@ -26,16 +26,21 @@ const getPathname = (url) => (url ? url.split('?')[0] : '/');
  */
 const negotiateProtocol = (header, { protocols, handleProtocols }, request) => {
   if (!header) return '';
-  const offered = header
-    .split(',')
-    .map((token) => token.trim())
-    .filter((token) => token.length > 0 && !CARRIER_PROTOCOL.test(token));
+  const tokens = header.split(',');
+  const offered = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i].trim();
+    if (token.length > 0 && !CARRIER_PROTOCOL.test(token)) offered.push(token);
+  }
   if (handleProtocols) {
     const selected = handleProtocols(offered, request);
     if (selected === false) return false;
     return typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '';
   }
-  if (protocols) return offered.find((name) => protocols.includes(name)) ?? '';
+  if (protocols) {
+    for (let i = 0; i < offered.length; i++) if (protocols.includes(offered[i])) return offered[i];
+    return '';
+  }
   if (offered.includes(WRPC_V2)) return WRPC_V2;
   if (offered.includes(WRPC_V1)) return WRPC_V1;
   return '';

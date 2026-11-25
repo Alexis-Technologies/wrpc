@@ -23,15 +23,19 @@ const EMPTY = new Uint8Array(0);
 const NOISE_LABEL = utf8('wrpc noise static v1');
 const HPKE_LABEL = utf8('wrpc hpke static v1');
 
+const isKey = (key) => key instanceof Uint8Array && key.length === 32;
+
 /** `{ noise, hpke }` key pairs for one keyring secret. */
 const deriveStatics = async (secret, { dh, kdf }) => {
-  const [noiseSeed, hpkeSeed] = await Promise.all([
+  const seeds = await Promise.all([
     kdf.derive(secret, EMPTY, NOISE_LABEL, 32),
     kdf.derive(secret, EMPTY, HPKE_LABEL, 32),
   ]);
+  const noiseSeed = seeds[0];
+  const hpkeSeed = seeds[1];
   try {
-    const [noise, hpke] = await Promise.all([dh.keyPair(noiseSeed), dh.keyPair(hpkeSeed)]);
-    return { noise, hpke };
+    const pairs = await Promise.all([dh.keyPair(noiseSeed), dh.keyPair(hpkeSeed)]);
+    return { noise: pairs[0], hpke: pairs[1] };
   } finally {
     noiseSeed.fill(0);
     hpkeSeed.fill(0);
@@ -43,18 +47,21 @@ const formatBundle = (kid, statics) =>
 
 /** `{ kid, noise, hpke }` (public keys as bytes) from a bundle string or the same object. */
 const parseBundle = (value, name = 'serverKey') => {
-  let kid;
-  let noise;
-  let hpke;
+  let kid = '';
+  let noise = null;
+  let hpke = null;
   if (typeof value === 'string') {
     const parts = value.split(':');
-    if (parts.length === 3) [kid, noise, hpke] = [parts[0], fromBase64(parts[1]), fromBase64(parts[2])];
+    if (parts.length === 3) {
+      kid = parts[0];
+      noise = fromBase64(parts[1]);
+      hpke = fromBase64(parts[2]);
+    }
   } else if (typeof value === 'object' && value !== null) {
     ({ kid, noise, hpke } = value);
     if (typeof noise === 'string') noise = fromBase64(noise);
     if (typeof hpke === 'string') hpke = fromBase64(hpke);
   }
-  const isKey = (key) => key instanceof Uint8Array && key.length === 32;
   if (!isKid(kid) || !isKey(noise) || !isKey(hpke)) {
     throw new ConfigError(`encryption: ${name} must be a key bundle — "<kid>:<noise key>:<hpke key>"`);
   }

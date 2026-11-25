@@ -85,7 +85,9 @@ const serviceAddress = (service, address, label) => {
 const peerHeaders = (headers) => {
   const out = {};
   if (!headers) return out;
-  for (const key of Object.keys(headers)) {
+  const keys = Object.keys(headers);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     const name = key.toLowerCase();
     if (name.startsWith(RESERVED_PREFIX)) continue;
     const value = headers[key];
@@ -118,7 +120,7 @@ const sealFrame = (sealing, address, correlationId, headers, body, now = Date.no
   delete inner[HEADER_KIND];
   delete inner[HEADER_SEQ];
   if (kind === KIND.REQUEST || kind === KIND.HELLO) {
-    inner[HEADER_TIME] = String(now());
+    inner[HEADER_TIME] = `${now()}`;
     if (replyTo !== null) inner[HEADER_REPLY] = replyTo;
   }
   const outer = seq === undefined ? { [HEADER_KIND]: kind } : { [HEADER_KIND]: kind, [HEADER_SEQ]: seq };
@@ -173,7 +175,7 @@ const frameBody = (message, local, maxMessage, failed = null) => {
 // before and after).
 const sessionFrame = (sealing, address, session, seq, data, active, options, failed = null) => {
   const binary = typeof data !== 'string';
-  const headers = { [HEADER_KIND]: binary ? KIND.CHUNK : KIND.PACKET, [HEADER_SEQ]: String(seq) };
+  const headers = { [HEADER_KIND]: binary ? KIND.CHUNK : KIND.PACKET, [HEADER_SEQ]: `${seq}` };
   let body = binary ? toBytes(data) : data;
   if (active !== null && (options === null || options.compress !== false)) {
     const encoded = encodeIfSmaller(active.encode, body, failed);

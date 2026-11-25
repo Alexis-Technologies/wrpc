@@ -43,7 +43,7 @@ const FRAMING = /^(?:content-length|transfer-encoding|connection)$/;
 // twice" for whatever it pushed out. Size it for the traffic: it must hold
 // every request of the last 2·maxSkew, so max ≥ rps × 2·maxSkew/1000 —
 // the default holds ~167 req/s at the default skew.
-const OVERFLOW = ['refuse', 'evict'];
+const OVERFLOW = new Set(['refuse', 'evict']);
 // One line per interval for a flood of overflow refusals, not one each.
 const OVERFLOW_INTERVAL = 10_000;
 
@@ -60,7 +60,7 @@ const createReplayCache = ({
   onOverflow = null,
 } = {}) => {
   if (!Number.isInteger(max) || max <= 0) throw new ConfigError('createReplayCache: max must be a positive integer');
-  if (!OVERFLOW.includes(overflow)) throw new ConfigError("createReplayCache: overflow must be 'refuse' or 'evict'");
+  if (!OVERFLOW.has(overflow)) throw new ConfigError("createReplayCache: overflow must be 'refuse' or 'evict'");
   if (onOverflow !== null && typeof onOverflow !== 'function') {
     throw new ConfigError('createReplayCache: onOverflow must be a function');
   }
@@ -76,9 +76,9 @@ const createReplayCache = ({
         entries.delete(id);
       }
       // Insertion order is time order, so the expired are at the front.
-      for (const [key, expires] of entries) {
-        if (expires > time) break;
-        entries.delete(key);
+      for (const entry of entries) {
+        if (entry[1] > time) break;
+        entries.delete(entry[0]);
       }
       if (entries.size >= max) {
         if (onOverflow !== null) onOverflow();
@@ -122,7 +122,7 @@ const createHttpSealing = ({
     replay && typeof replay.seen === 'function'
       ? replay
       : createReplayCache({
-          ...(replay ?? {}),
+          ...replay,
           now,
           onOverflow: () => {
             overflowed = true;
@@ -141,7 +141,7 @@ const createHttpSealing = ({
     if (suite === undefined || kidEnd + suite.hpke.encLength >= raw.length) {
       return void refuse(call, outerHeaders, 400, 'format');
     }
-    let kid;
+    let kid = '';
     try {
       kid = decoder.decode(raw.subarray(3, kidEnd));
     } catch {
@@ -154,8 +154,8 @@ const createHttpSealing = ({
     const recipient = (await pending).hpke;
     const prefix = raw.subarray(0, kidEnd);
     const enc = Uint8Array.from(raw.subarray(kidEnd, kidEnd + suite.hpke.encLength));
-    let context;
-    let plain;
+    let context = null;
+    let plain = null;
     try {
       context = await suite.hpke.setupRecipient(enc, recipient, { info: concat(INFO, prefix) });
       plain = await context.open(null, raw.subarray(kidEnd + suite.hpke.encLength));
@@ -166,7 +166,7 @@ const createHttpSealing = ({
     if (plain.length < 4 || new DataView(plain.buffer, plain.byteOffset, 4).getUint32(0) > MAX_INNER_HEADER) {
       return void refuse(call, outerHeaders, 400, 'format');
     }
-    let request;
+    let request = null;
     try {
       request = unpack(plain);
     } catch {
@@ -178,7 +178,7 @@ const createHttpSealing = ({
     }
     // Fresh, and once: what HPKE itself does not promise.
     if (Math.abs(now() - sent) > maxSkew) return void refuse(call, outerHeaders, 409, 'stale');
-    let replayed;
+    let replayed = false;
     overflowed = false;
     try {
       replayed = await cache.seen(toBase64Url(enc), 2 * maxSkew);
@@ -222,7 +222,9 @@ const createHttpSealing = ({
     // is about to be sealed is the outer layer's business, never the inner's.
     delete headers['accept-encoding'];
     if (typeof declared === 'object' && declared !== null) {
-      for (const name of Object.keys(declared)) {
+      const names = Object.keys(declared);
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
         if (typeof declared[name] !== 'string') continue;
         const lower = name.toLowerCase();
         if (FRAMING.test(lower) || (reserved !== null && reserved.test(lower))) continue;
@@ -236,9 +238,11 @@ const createHttpSealing = ({
       // HttpOnly cookie, and that is the only kind a session should be.
       const outer = { ...outerHeaders, 'Content-Type': CONTENT_TYPE, 'Cache-Control': 'no-store' };
       const sealedHeaders = {};
-      for (const name of Object.keys(inner)) {
+      const names = Object.keys(inner);
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
         if (name.toLowerCase() === 'set-cookie') outer[name] = inner[name];
-        else sealedHeaders[name] = Array.isArray(inner[name]) ? inner[name].join(', ') : String(inner[name]);
+        else sealedHeaders[name] = Array.isArray(inner[name]) ? inner[name].join(', ') : `${inner[name]}`;
       }
       const nonce = random(RESPONSE_NONCE);
       responseKey({ kdf, cipher: suite.cipher }, context, enc, nonce)
@@ -268,7 +272,7 @@ const createHttpSealing = ({
     if (typeof call.onAbort === 'function') inner.onAbort = (listener) => call.onAbort(listener);
     // An event stream (SSE): the key is exported now, because the core opens
     // the stream synchronously — and only when the request asked for one.
-    if (typeof call.stream === 'function' && String(headers.accept ?? '').includes(STREAM_TYPE)) {
+    if (typeof call.stream === 'function' && `${headers.accept ?? ''}`.includes(STREAM_TYPE)) {
       // Drawn here, per stream: the salt of the stream key, carried to the
       // client in the Content-Type — a replay of this request onto another
       // instance opens a stream under another key (http.js).
@@ -277,7 +281,9 @@ const createHttpSealing = ({
       const type = sealedStreamType(nonce);
       inner.stream = ({ headers: streamHeaders = {} }) => {
         const outer = { ...outerHeaders };
-        for (const name of Object.keys(streamHeaders)) {
+        const names = Object.keys(streamHeaders);
+        for (let i = 0; i < names.length; i++) {
+          const name = names[i];
           const lower = name.toLowerCase();
           if (lower !== 'content-type' && lower !== 'content-encoding') outer[name] = streamHeaders[name];
         }

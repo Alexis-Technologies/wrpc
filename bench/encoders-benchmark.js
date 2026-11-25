@@ -138,7 +138,7 @@ const runBenchmarks = () => {
         `(${formatNumber(results.browserEncode.duration)}ms)`,
     );
     const encodeDiff = (results.browserEncode.opsPerSec / results.nodeEncode.opsPerSec - 1) * 100;
-    console.log(`    Difference: ${encodeDiff > 0 ? '+' : ''}` + `${formatNumber(encodeDiff)}% ` + `(Browser vs Node)`);
+    console.log(`    Difference: ${encodeDiff > 0 ? '+' : ''}${formatNumber(encodeDiff)}% (Browser vs Node)`);
 
     console.log();
     console.log('  Decoding (same origin):');
@@ -151,7 +151,7 @@ const runBenchmarks = () => {
         `(${formatNumber(results.browserDecode.duration)}ms)`,
     );
     const decodeDiff = (results.browserDecode.opsPerSec / results.nodeDecode.opsPerSec - 1) * 100;
-    console.log(`    Difference: ${decodeDiff > 0 ? '+' : ''}` + `${formatNumber(decodeDiff)}% ` + `(Browser vs Node)`);
+    console.log(`    Difference: ${decodeDiff > 0 ? '+' : ''}${formatNumber(decodeDiff)}% (Browser vs Node)`);
 
     console.log();
     console.log('  Cross-compatibility decoding:');
@@ -167,7 +167,7 @@ const runBenchmarks = () => {
     );
     const crossDiff = (results.nodeToBrowser.opsPerSec / results.browserToNode.opsPerSec - 1) * 100;
     console.log(
-      `    Difference: ${crossDiff > 0 ? '+' : ''}` + `${formatNumber(crossDiff)}% ` + `(Node→Browser vs Browser→Node)`,
+      `    Difference: ${crossDiff > 0 ? '+' : ''}${formatNumber(crossDiff)}% (Node→Browser vs Browser→Node)`,
     );
 
     console.log();
@@ -182,9 +182,7 @@ const runBenchmarks = () => {
         `(${formatNumber(results.browserRoundTrip.duration)}ms)`,
     );
     const roundTripDiff = (results.browserRoundTrip.opsPerSec / results.nodeRoundTrip.opsPerSec - 1) * 100;
-    console.log(
-      `    Difference: ${roundTripDiff > 0 ? '+' : ''}` + `${formatNumber(roundTripDiff)}% ` + `(Browser vs Node)`,
-    );
+    console.log(`    Difference: ${roundTripDiff > 0 ? '+' : ''}${formatNumber(roundTripDiff)}% (Browser vs Node)`);
 
     console.log();
     console.log('='.repeat(80));

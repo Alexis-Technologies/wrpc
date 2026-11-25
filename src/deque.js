@@ -20,8 +20,13 @@
 
 const MIN_CAPACITY = 16;
 
+// The ring's slots, preallocated and written by index through the mask —
+// the shape bench/broker-backlog.js and bench/ws-outbox.js measure.
+// oxlint-disable-next-line unicorn/no-new-array
+const slotsOf = (capacity) => new Array(capacity);
+
 class Deque {
-  #slots = new Array(MIN_CAPACITY);
+  #slots = slotsOf(MIN_CAPACITY);
   #mask = MIN_CAPACITY - 1;
   #head = 0;
   #length = 0;
@@ -64,7 +69,7 @@ class Deque {
   // this queue (a listener that terminates its connection) finds it empty
   // on its next look, whatever it had read before.
   clear() {
-    this.#slots = new Array(MIN_CAPACITY);
+    this.#slots = slotsOf(MIN_CAPACITY);
     this.#mask = MIN_CAPACITY - 1;
     this.#head = 0;
     this.#length = 0;
@@ -73,7 +78,7 @@ class Deque {
   // Into a fresh array, from its start: what wrapped around the end of the
   // old one is in order again.
   #resize(capacity) {
-    const slots = new Array(capacity);
+    const slots = slotsOf(capacity);
     for (let i = 0; i < this.#length; i++) slots[i] = this.#slots[(this.#head + i) & this.#mask];
     this.#slots = slots;
     this.#mask = capacity - 1;

@@ -858,7 +858,7 @@ const HEAD_READS = {
     'this.#dispatch(state, consumer, state.ready.shift());': 'a Deque',
     'state.ready.unshift(message);': 'a Deque',
   },
-  'src/broker/redis/index.js': { 'const [id, fields] = buffered.shift();': 'a Deque' },
+  'src/broker/redis/index.js': { 'const entry = buffered.shift();': 'a Deque' },
   'src/broker/tail.js': { 'const entry = reader.queue.shift();': 'a Deque' },
   'src/transport.js': {
     'const index = bucket.shift();': 'the answers of ONE batch that share an id: at most maxBatch (128)',
@@ -880,7 +880,7 @@ const HEAD_READS = {
 const CALL_SPREADS = {
   'src/broker/redis/index.js': {
     'rows = await tail.connection.xread(...args);': 'a tail reads at most TAIL_TOPICS (8,192) topics',
-    "if (maxLen > 0) return client.xadd(streamKey(topic), 'MAXLEN', '~', String(maxLen), '*', ...fields);":
+    [`if (maxLen > 0) return client.xadd(streamKey(topic), 'MAXLEN', '~', \`\${maxLen}\`, '*', ...fields);`]:
       'two fields per header of one message this process produced',
     "return client.xadd(streamKey(topic), '*', ...fields);": 'the same fields',
     "await client.xadd(queueKey(name), '*', ...encodeFields(body, producerHeaders(headers)));": 'the same fields',

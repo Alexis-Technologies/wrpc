@@ -88,8 +88,7 @@ class Mesh extends Emitter {
       // linked — the old tab's goodbye, landing after the new tab was
       // linked — is not about this link; acting on it would drop the fresh one.
       if (link && isPeerId(event.instance) && link.instance !== null && event.instance !== link.instance) {
-        peer.log.debug({ event: 'mesh.leave.stale', room, peer: event.id, instance: event.instance });
-        return;
+        return void peer.log.debug({ event: 'mesh.leave.stale', room, peer: event.id, instance: event.instance });
       }
       // The same guard for a member not linked right now: a stale goodbye
       // must not take the incarnation the roster holds off it.
@@ -112,9 +111,9 @@ class Mesh extends Emitter {
       this.#dropId(event.id, true, event.reason === 'replaced');
     });
     on(peer, 'reset', (event) => {
-      const entry = Array.isArray(event?.rooms) ? event.rooms.find((item) => item.room === room) : null;
-      if (!entry) return;
-      for (const member of entry.members) this.#ensure(member.id, member.data ?? null, member.instance ?? null);
+      const rooms = event?.rooms;
+      if (!Array.isArray(rooms)) return;
+      for (let i = 0; i < rooms.length; i++) if (rooms[i].room === room) return void this.#ensureAll(rooms[i].members);
     });
     on(peer, 'link', (link) => this.#adopt(link));
     this.#joined = this.#join();
@@ -135,7 +134,7 @@ class Mesh extends Emitter {
   /** Ids of the members this peer has an open link with (a copy). */
   get peers() {
     const ids = new Set();
-    for (const [id, link] of this.#members) if (link.open) ids.add(id);
+    for (const entry of this.#members) if (entry[1].open) ids.add(entry[0]);
     return ids;
   }
 
@@ -206,10 +205,12 @@ class Mesh extends Emitter {
   detach() {
     if (this.#left) return;
     this.#left = true;
-    for (const unbind of this.#unbind) unbind();
+    const unbind = this.#unbind;
+    for (let i = 0; i < unbind.length; i++) unbind[i]();
     this.#unbind = [];
-    for (const id of [...this.#roster.keys()]) this.#forget(id);
-    for (const link of [...this.#members.values()]) this.#drop(link, false);
+    for (const id of this.#roster.keys()) this.#forget(id);
+    // A copy: a dropped link's close runs listeners while the members are walked.
+    for (const link of this.links.values()) this.#drop(link, false);
     void this.emit('left').catch((error) => this.#peer.escalate(error, this));
   }
 
@@ -222,7 +223,14 @@ class Mesh extends Emitter {
   async #join() {
     const members = await this.#signaler.join(this.#room, this.#data);
     if (this.#left) return;
-    for (const member of members) this.#ensure(member.id, member.data ?? null, member.instance ?? null);
+    this.#ensureAll(members);
+  }
+
+  #ensureAll(members) {
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i];
+      this.#ensure(member.id, member.data ?? null, member.instance ?? null);
+    }
   }
 
   // A member: link if not yet linked (from either side), and keep its host
@@ -258,7 +266,7 @@ class Mesh extends Emitter {
     if (known) this.#release(known);
     this.#members.set(link.id, link);
     link.join(this.hostRoom);
-    for (const [name, handler] of this.#responders) link.respond(name, handler);
+    for (const entry of this.#responders) link.respond(entry[0], entry[1]);
     const onOpen = () => {
       // The edge is back: whatever was waiting to dial it again is over.
       this.#settle(link.id);

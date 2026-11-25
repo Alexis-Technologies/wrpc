@@ -61,14 +61,15 @@ const INBOX_LOW = 8;
 // why bytes count beside messages.
 const TURN_BUDGET = Object.freeze({ messages: 512, bytes: 256 * 1024 });
 
+const isMark = (mark) => mark === undefined || (Number.isInteger(mark) && mark > 0);
+
 // `turnBudget`: false (or absent) for none, true for TURN_BUDGET, or
 // `{ messages, bytes }` — each a positive integer, either left out to keep
 // its default.
 const turnBudgetOf = (value) => {
   if (value === undefined || value === null || value === false) return null;
   if (value === true) return TURN_BUDGET;
-  const valid = (mark) => mark === undefined || (Number.isInteger(mark) && mark > 0);
-  if (typeof value !== 'object' || !valid(value.messages) || !valid(value.bytes)) {
+  if (typeof value !== 'object' || !isMark(value.messages) || !isMark(value.bytes)) {
     throw new ConfigError('Connection: turnBudget must be a boolean or { messages, bytes } of positive integers');
   }
   return { messages: value.messages ?? TURN_BUDGET.messages, bytes: value.bytes ?? TURN_BUDGET.bytes };
@@ -113,16 +114,7 @@ class Connection extends EventEmitter {
   #turnCount = 0;
   #turnBytes = 0;
   #turnHeld = false;
-  #nextTurn = () => {
-    this.#turnHeld = false;
-    this.#turnCount = 0;
-    this.#turnBytes = 0;
-    if (this.#socket.destroyed) return;
-    if (!this.#paused && !this.#inboxHeld) this.#socket.resume();
-    // Unconditionally: no 'data' event comes for what is already read, and
-    // a close meanwhile left the peer's own Close among it.
-    this.#processFrames();
-  };
+  #nextTurn = null;
   #closeCode = CLOSE_CODES.CONNECTION_CLOSED_ABNORMALLY;
   #closeReason = '';
   // Set when WE failed the connection (a protocol error, an oversized or
@@ -161,13 +153,12 @@ class Connection extends EventEmitter {
   // writev instead of N syscalls. The idiom node:http uses. The `send()`
   // boolean stays honest: a corked write still reports writableLength
   // against the high-water mark, and 'drain' is unchanged.
-  #uncork = () => {
-    this.#corked = false;
-    if (!this.#socket.destroyed) this.#socket.uncork();
-  };
+  #uncork = null;
 
   constructor(socket, head, options = {}) {
     super();
+    this.#nextTurn = () => this.#startTurn();
+    this.#uncork = () => this.#uncorkSocket();
     this.#socket = socket;
 
     const {
@@ -327,6 +318,17 @@ class Connection extends EventEmitter {
     this.emit('message', data, isBinary);
   }
 
+  #startTurn() {
+    this.#turnHeld = false;
+    this.#turnCount = 0;
+    this.#turnBytes = 0;
+    if (this.#socket.destroyed) return;
+    if (!this.#paused && !this.#inboxHeld) this.#socket.resume();
+    // Unconditionally: no 'data' event comes for what is already read, and
+    // a close meanwhile left the peer's own Close among it.
+    this.#processFrames();
+  }
+
   #receive(data) {
     if (this.#closeReceived && this.#closing) return;
 
@@ -427,7 +429,9 @@ class Connection extends EventEmitter {
 
   #processFrameParserError(error) {
     const { code } = error;
-    const [type, subtype] = code.split('-');
+    const parts = code.split('-');
+    const type = parts[0];
+    const subtype = parts[1];
     this.#fault('ws.frame', error, { close: code });
     const frame =
       type === 'PROTOCOL_ERROR'
@@ -460,8 +464,8 @@ class Connection extends EventEmitter {
       if (opcode === OPCODES.CONTINUATION) {
         const error = new Error('Protocol error: Unexpected CONTINUATION without start');
         this.#fault('ws.protocol', error);
-        const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
-        return void this.#fail(frame);
+        const closeFrame = Frame.protocolErrorClose('COMMON', this.#isClient);
+        return void this.#fail(closeFrame);
       }
       if (frame.fin) {
         // single frame
@@ -493,15 +497,15 @@ class Connection extends EventEmitter {
       if (isText && !isValidUTF8(fullPayload)) {
         const error = new Error('Invalid UTF-8 in text frame');
         this.#fault('ws.invalid-utf8', error);
-        const frame = Frame.errorClose('INVALID_PAYLOAD', this.#isClient);
-        return void this.#fail(frame);
+        const closeFrame = Frame.errorClose('INVALID_PAYLOAD', this.#isClient);
+        return void this.#fail(closeFrame);
       }
       this.#emitMessage(fullPayload, isBinary);
     } else {
       const error = new Error('Protocol error: Unexpected data frame during fragments');
       this.#fault('ws.protocol', error);
-      const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
-      return void this.#fail(frame);
+      const closeFrame = Frame.protocolErrorClose('COMMON', this.#isClient);
+      return void this.#fail(closeFrame);
     }
   }
 
@@ -672,6 +676,11 @@ class Connection extends EventEmitter {
     const ok = this.#socket.write(buffer);
     if (!ok) this.#needsDrain = true;
     return ok;
+  }
+
+  #uncorkSocket() {
+    this.#corked = false;
+    if (!this.#socket.destroyed) this.#socket.uncork();
   }
 
   #writeFrame(frame) {

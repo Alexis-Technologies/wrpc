@@ -40,8 +40,10 @@ const hasMethod = (value, name) => typeof value?.[name] === 'function';
 // treated as a Console: the entry is dropped rather than shown raw.
 const isStructured = (logger) => hasMethod(logger, 'child') || 'level' in logger;
 
-const isLoggerLike = (logger) =>
-  LEVELS.some((level) => hasMethod(logger, level)) || hasMethod(logger, 'table') || hasMethod(logger, 'group');
+const isLoggerLike = (logger) => {
+  for (const level of LEVELS) if (hasMethod(logger, level)) return true;
+  return hasMethod(logger, 'table') || hasMethod(logger, 'group');
+};
 
 // Resolves a level to the first method the sink actually has, bound once at
 // construction rather than looked up per call.

@@ -79,7 +79,7 @@ class SegmentQueue {
     if (size > this.#length) throw new RangeError('Cannot consume more bytes than buffered');
     const first = this.#segments[this.#head];
     const available = first.length - this.#offset;
-    let out;
+    let out = null;
     if (available > size) {
       out = first.subarray(this.#offset, this.#offset + size);
       this.#offset += size;

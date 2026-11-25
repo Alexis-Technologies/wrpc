@@ -33,6 +33,19 @@ const toCamelCase = (text) => text.replace(/[-_]+(\w)/g, (_, letter) => letter.t
 
 const isParam = (segment) => segment.startsWith(':');
 
+const hasParam = (segments) => {
+  for (let i = 0; i < segments.length; i++) if (isParam(segments[i])) return true;
+  return false;
+};
+
+// The non-empty segments of a route URL.
+const segmentsOf = (url) => {
+  const parts = url.split('/');
+  const segments = [];
+  for (let i = 0; i < parts.length; i++) if (parts[i].length > 0) segments.push(parts[i]);
+  return segments;
+};
+
 // The default unit, two-pass. A parametric URL names its own unit: the
 // LAST static segment before the first param — '/workspace/projects/:id'
 // -> 'projects' — with one refinement: when the URL ends in
@@ -76,7 +89,8 @@ const defaultUnit = (segments, knownUnits = null) => {
 const defaultName = (method, tail) => {
   const statics = [];
   let lastParam = null;
-  for (const segment of tail) {
+  for (let i = 0; i < tail.length; i++) {
+    const segment = tail[i];
     if (isParam(segment)) lastParam = segment.slice(1);
     else statics.push(toCamelCase(segment));
   }
@@ -85,7 +99,8 @@ const defaultName = (method, tail) => {
   if (endsWithParam && statics.length > 0 && capitalize(statics[statics.length - 1]) === capitalize(lastParam)) {
     statics.pop();
   }
-  const suffix = statics.map(capitalize).join('');
+  let suffix = '';
+  for (let i = 0; i < statics.length; i++) suffix += capitalize(statics[i]);
   if (method === 'GET' || method === 'HEAD') {
     return endsWithParam ? `find${suffix}By${capitalize(lastParam)}` : `findAll${suffix}`;
   }
@@ -109,7 +124,9 @@ const signatureType = (schema, depth = 0) => {
     if (!schema.properties) return 'object';
     const required = new Set(Array.isArray(schema.required) ? schema.required : []);
     const fields = {};
-    for (const key of Object.keys(schema.properties)) {
+    const keys = Object.keys(schema.properties);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
       const name = required.has(key) ? key : `${key}?`;
       Object.defineProperty(fields, name, {
         value: signatureType(schema.properties[key], depth + 1),
@@ -140,11 +157,11 @@ const routeSignature = (schema) => {
 
 const buildUrl = (url, params, query, stringify) => {
   const segments = url.split('/');
-  const parts = new Array(segments.length);
+  const parts = [];
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
     if (!isParam(segment)) {
-      parts[i] = segment;
+      parts.push(segment);
       continue;
     }
     const name = segment.slice(1);
@@ -155,7 +172,7 @@ const buildUrl = (url, params, query, stringify) => {
       error.expose = true;
       throw error;
     }
-    const text = String(value);
+    const text = `${value}`;
     // A value that is a path of its own. `encodeURIComponent` leaves dots
     // alone, and the URL the injected request is parsed as resolves them:
     // `id: '..'` turned `/admin/users/:id` into `/admin/` — ANOTHER route,
@@ -168,11 +185,11 @@ const buildUrl = (url, params, query, stringify) => {
       error.expose = true;
       throw error;
     }
-    parts[i] = encodeURIComponent(text);
+    parts.push(encodeURIComponent(text));
   }
   let built = parts.join('/');
   if (query && Object.keys(query).length > 0) {
-    const text = stringify ? stringify(query) : String(new URLSearchParams(query));
+    const text = stringify ? stringify(query) : `${new URLSearchParams(query)}`;
     if (text) built += `?${text}`;
   }
   return built;
@@ -196,18 +213,31 @@ const injectedHeaders = async (mirror, allow, context, headers) => {
   if (passed !== null) for (const name in passed) merged[name] = passed[name];
   if (mirror.headers) {
     const own = await mirror.headers(context);
-    if (own) for (const name of Object.keys(own)) merged[name.toLowerCase()] = own[name];
+    if (own) {
+      const names = Object.keys(own);
+      for (let i = 0; i < names.length; i++) merged[names[i].toLowerCase()] = own[names[i]];
+    }
   }
   return merged;
+};
+
+// The lowercase names of a list, or null when an entry is not a name.
+const lowerNames = (list) => {
+  const names = new Set();
+  for (let i = 0; i < list.length; i++) {
+    const name = list[i];
+    if (typeof name !== 'string' || name.length === 0) return null;
+    names.add(name.toLowerCase());
+  }
+  return names;
 };
 
 // `mirror.allowHeaders` → a Set of lowercase names, or null for none.
 const allowedNames = (value) => {
   if (value === undefined || value === null) return null;
-  if (!Array.isArray(value) || !value.every((name) => typeof name === 'string' && name.length > 0)) {
-    throw new ConfigError('wrpcFastify mirror: allowHeaders must be an array of header names');
-  }
-  return new Set(value.map((name) => name.toLowerCase()));
+  const names = Array.isArray(value) ? lowerNames(value) : null;
+  if (names === null) throw new ConfigError('wrpcFastify mirror: allowHeaders must be an array of header names');
+  return names;
 };
 
 const mirrorHandler = (fastify, route, mirror, stringify, allow) => {
@@ -249,7 +279,8 @@ const setupMirror = (fastify, rpc, options) => {
     // opts a route out. HEAD twins and OPTIONS are transport furniture.
     if (route.config?.wrpc === true) return;
     const methods = Array.isArray(route.method) ? route.method : [route.method];
-    for (const method of methods) {
+    for (let i = 0; i < methods.length; i++) {
+      const method = methods[i];
       if (method === 'HEAD' || method === 'OPTIONS' || !HTTP_METHODS.has(method)) continue;
       if (route.url.includes('*')) continue; // a wildcard names no action
       const entry = { method, url: route.url, schema: route.schema ?? null, config: route.config ?? {} };
@@ -264,14 +295,15 @@ const setupMirror = (fastify, rpc, options) => {
     // Pass 1: parametric routes establish the unit vocabulary the
     // parameterless ones disambiguate against.
     const knownUnits = new Set();
-    for (const route of collected) {
-      const segments = route.url.split('/').filter((segment) => segment.length > 0);
-      if (!segments.some(isParam)) continue;
+    for (let i = 0; i < collected.length; i++) {
+      const segments = segmentsOf(collected[i].url);
+      if (!hasParam(segments)) continue;
       const named = defaultUnit(segments);
       if (named) knownUnits.add(named.unit);
     }
-    for (const route of collected) {
-      const segments = route.url.split('/').filter((segment) => segment.length > 0);
+    for (let i = 0; i < collected.length; i++) {
+      const route = collected[i];
+      const segments = segmentsOf(route.url);
       const named = defaultUnit(segments, knownUnits);
       const unitName = route.config.wrpc?.unit ?? mirror.unit?.(route) ?? named?.unit;
       if (!unitName) continue; // '/', '/:id' — nothing to name a unit after
@@ -301,9 +333,7 @@ const setupMirror = (fastify, rpc, options) => {
         configurable: true,
       });
     }
-    for (const [unitName, definition] of units) {
-      rpc.router.addUnit(unitName, definition);
-    }
+    for (const entry of units) rpc.router.addUnit(entry[0], entry[1]);
   });
 };
 

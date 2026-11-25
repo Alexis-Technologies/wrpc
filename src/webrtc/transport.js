@@ -458,9 +458,7 @@ class ClientRtcTransport extends ClientTransport {
   // Bumped by terminate(): an open() that was waiting on the link when the
   // core gave up must not come back to life on top of a later attempt.
   #attempt = 0;
-  #onLinkState = (state) => {
-    if (state === 'failed' || state === 'closed') this.#down();
-  };
+  #onLinkState = null;
 
   constructor(
     url,
@@ -487,6 +485,7 @@ class ClientRtcTransport extends ClientTransport {
     this.#highWater = marks.high;
     this.#lowWater = marks.low;
     this.#compression = normalizeCompression(compression, 'ClientRtcTransport: options');
+    this.#onLinkState = (state) => this.#linkState(state);
     if (link) this.#bindLink(link);
   }
 
@@ -664,6 +663,10 @@ class ClientRtcTransport extends ClientTransport {
     link.on('state', this.#onLinkState);
   }
 
+  #linkState(state) {
+    if (state === 'failed' || state === 'closed') this.#down();
+  }
+
   #receive(data) {
     try {
       this.#codec.receive(data);
@@ -710,9 +713,7 @@ class RtcPeerTransport extends ServerTransport {
   #up = true;
   #detach = null;
   #onError;
-  #onLinkState = (state) => {
-    if (state === 'failed' || state === 'closed') this.#down();
-  };
+  #onLinkState = null;
 
   /**
    * Over a link (its host channel) or over a raw data channel. `peer` is
@@ -778,6 +779,7 @@ class RtcPeerTransport extends ServerTransport {
     channel.addEventListener('close', onClose);
     channel.addEventListener('bufferedamountlow', onDrain);
     channel.addEventListener('error', onChannelError);
+    this.#onLinkState = (state) => this.#linkState(state);
     if (link) link.on('state', this.#onLinkState);
     this.#detach = () => {
       channel.removeEventListener('message', onMessage);
@@ -841,6 +843,10 @@ class RtcPeerTransport extends ServerTransport {
     if (!this.#up) return;
     this.#error(error);
     this.close();
+  }
+
+  #linkState(state) {
+    if (state === 'failed' || state === 'closed') this.#down();
   }
 
   #down() {

@@ -52,11 +52,9 @@ const createQueryUtils = (client, options = {}) => {
     if (!Array.isArray(path) || path.length !== 2) {
       throw new ArgumentError(`wrpc/query: a path is [unit, method], got ${JSON.stringify(path)}`);
     }
-    const [unit, method] = path;
-    if (typeof unit !== 'string' || typeof method !== 'string') {
+    if (typeof path[0] !== 'string' || typeof path[1] !== 'string') {
       throw new ArgumentError(`wrpc/query: a path is [unit, method] of strings, got ${JSON.stringify(path)}`);
     }
-    return [unit, method];
   };
 
   // Own properties only, both hops. A unit object is an Emitter, so
@@ -75,7 +73,9 @@ const createQueryUtils = (client, options = {}) => {
   };
 
   const resolveCall = (path) => {
-    const [unit, method] = checkPath(path);
+    checkPath(path);
+    const unit = path[0];
+    const method = path[1];
     const found = member(unit, method);
     if (found?.kind === 'subscription') {
       throw new Error(`wrpc/query: ${unit}/${method} is a subscription — use subscriptionHandler()`);
@@ -85,7 +85,9 @@ const createQueryUtils = (client, options = {}) => {
   };
 
   const resolveSubscription = (path) => {
-    const [unit, method] = checkPath(path);
+    checkPath(path);
+    const unit = path[0];
+    const method = path[1];
     const found = member(unit, method);
     if (isFunction(found)) {
       throw new Error(`wrpc/query: ${unit}/${method} is a call — use queryOptions() or mutationOptions()`);
@@ -182,7 +184,7 @@ const createQueryUtils = (client, options = {}) => {
     subscriptionHandler(path, args, handlerOptions = {}) {
       // The path first: a path that is not a path is a more fundamental
       // mistake than a missing queryClient, and it names the one in the message.
-      const [unit, method] = checkPath(path);
+      checkPath(path);
       const {
         queryClient = defaultQueryClient,
         queryKey: key = queryKey(path, args),
@@ -192,7 +194,7 @@ const createQueryUtils = (client, options = {}) => {
         onEnd,
         lastEventId,
       } = handlerOptions;
-      requireQueryClient(queryClient, `wrpc/query: subscriptionHandler(${unit}/${method})`);
+      requireQueryClient(queryClient, `wrpc/query: subscriptionHandler(${path[0]}/${path[1]})`);
       if (!isFunction(update)) throw new ArgumentError('wrpc/query: subscriptionHandler update must be a function');
       const subscription = resolveSubscription(path);
       return subscription.subscribe(args ?? {}, {
@@ -208,8 +210,7 @@ const createQueryUtils = (client, options = {}) => {
             queryClient.setQueryData(key, (previous) => update(previous, data));
           } catch (error) {
             if (!onError) throw error;
-            onError(error);
-            return;
+            return void onError(error);
           }
           onData?.(data);
         },

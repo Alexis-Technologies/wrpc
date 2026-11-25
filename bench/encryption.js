@@ -60,7 +60,7 @@ const microsAsync = async (fn) => {
 
 const cell = (value) => `${value.toFixed(2)} µs`.padStart(12);
 
-async function main() {
+const main = async () => {
   const gcm = node.aead().key(RAW);
   const chacha = node.aead({ algorithm: 'chacha20-poly1305' }).key(RAW);
   const subtle = await browser.aead().key(RAW);
@@ -319,8 +319,8 @@ async function main() {
   // the same string, which grows with the message where the seal's fixed
   // cost does not. Per recipient, over emits to 100 of them.
   const { innerOf } = require('../src/encryption/session.js');
-  const perSeal = (message, shared) => {
-    const emit = shared
+  const perSeal = (message, isShared) => {
+    const emit = isShared
       ? () => {
           const inner = innerOf(message);
           let sent = 0;
@@ -338,7 +338,7 @@ async function main() {
   const messages = SIZES.map((size) => payload(size).toString());
   console.log('seal(text): the inner frame each'.padEnd(34) + messages.map((m) => cell(perSeal(m, false))).join(''));
   console.log('sealInner(shared inner frame)'.padEnd(34) + messages.map((m) => cell(perSeal(m, true))).join(''));
-}
+};
 
 main().catch((error) => {
   console.error(error);

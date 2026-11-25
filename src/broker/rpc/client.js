@@ -47,7 +47,7 @@ const DEFAULT_HIGH_WATER_MARK = 1024;
 
 // broker://billing -> 'billing'
 const serviceOf = (url) => {
-  const match = /^broker:\/\/([^/?#]+)/.exec(String(url));
+  const match = /^broker:\/\/([^/?#]+)/.exec(`${url}`);
   return match ? decodeURIComponent(match[1]) : null;
 };
 
@@ -89,7 +89,7 @@ class ClientBrokerTransport extends ClientTransport {
   #active = null;
   // This end reads framed messages: what its hello and requests say.
   #frames = true;
-  #maxMessage;
+  #maxMessage = 0;
   // Correlation ids AND the session id. The session id is the key the server
   // holds this connection's frame state under, so guessing one lets a sender
   // inject frames into somebody else's session — which is why it is worth
@@ -134,7 +134,10 @@ class ClientBrokerTransport extends ClientTransport {
     const generation = ++this.#generation;
     this.#inbox = this.#direct.inbox();
     const stop = await this.#direct.listen(this.#inbox, (message) => this.#onMessage(message, generation));
-    if (generation !== this.#generation) return void (await stop());
+    if (generation !== this.#generation) {
+      await stop();
+      return;
+    }
     this.#stopInbox = stop;
     if (mode === 'session') {
       try {
@@ -195,8 +198,7 @@ class ClientBrokerTransport extends ClientTransport {
       if (kind !== KIND.RESPONSE) return;
       const body = frameBody(message, this.#compression, this.#maxMessage);
       if (body === null) return void this.#escalate(new Error('broker transport: an answer that cannot be inflated'));
-      this.emit('message', packetBody(body));
-      return;
+      return void this.emit('message', packetBody(body));
     }
     if (message.correlationId !== this.#session) return;
     if (kind === KIND.WELCOME) {

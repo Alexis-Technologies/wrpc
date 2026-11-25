@@ -62,6 +62,9 @@ const MILLIS = 1_000_000; // JetStream durations are nanoseconds
 
 const isFunction = (value) => typeof value === 'function';
 
+// A sequence is a number inside and a string outside.
+const sequenceText = (seq) => `${seq}`;
+
 // One subject token, always: see the header comment.
 const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '~', maxLength: 120 });
 // A stream NAME may not contain `.`, spaces or wildcards either.
@@ -118,11 +121,11 @@ const createNatsBroker = (options = {}) => {
   const consumers = new Set();
 
   const encodeHeaders = (bag, extra = null) => {
-    const merged = { ...toHeaders(bag), ...(extra ?? {}) };
+    const merged = { ...toHeaders(bag), ...extra };
     const names = Object.keys(merged);
     if (names.length === 0) return undefined;
     const carrier = headersFactory();
-    for (const name of names) carrier.set(name, merged[name]);
+    for (let i = 0; i < names.length; i++) carrier.set(names[i], merged[names[i]]);
     return carrier;
   };
 
@@ -198,7 +201,7 @@ const createNatsBroker = (options = {}) => {
           await manager.streams.add({ name, subjects: [subject], ...config });
         } catch (error) {
           // Another instance created it between the info and the add.
-          if (!/already in use|exists/i.test(String(error?.message))) throw error;
+          if (!/already in use|exists/i.test(`${error?.message}`)) throw error;
         }
       }
       return name;
@@ -235,7 +238,7 @@ const createNatsBroker = (options = {}) => {
 
   const entryOf = (message) => ({
     seq: Number(message.seq),
-    id: String(message.seq),
+    id: `${message.seq}`,
     value: toText(message.data),
     headers: decodeHeaders(message.headers),
   });
@@ -332,11 +335,9 @@ const createNatsBroker = (options = {}) => {
 
   const parseId = (text) => (typeof text === 'string' && SEQUENCE.test(text) ? text : null);
 
-  // A sequence is a number inside and a string outside.
-  const wrapRead = (inner, checked) => guardedRead(inner, { guard: checked, mapId: String });
+  const wrapRead = (inner, checked) => guardedRead(inner, { guard: checked, mapId: sequenceText });
 
-  const read = (topic, options = {}) => {
-    const { after = null, from = 'latest', signal = null } = options;
+  const read = (topic, { after = null, from = 'latest', signal = null } = {}) => {
     if (from !== 'latest' && from !== 'earliest') {
       throw new ArgumentError("nats log.read: from must be 'latest' or 'earliest'");
     }
@@ -374,7 +375,7 @@ const createNatsBroker = (options = {}) => {
     const { name, subject, config } = logStream(topic);
     await ensureStream(name, subject, config);
     const ack = await stream.publish(subject, toText(value), { headers: encodeHeaders(headers) });
-    return String(ack.seq);
+    return `${ack.seq}`;
   };
 
   // ---------------------------------------------------------------------
@@ -388,9 +389,9 @@ const createNatsBroker = (options = {}) => {
     await stream.publish(subject, toText(body), { headers: encodeHeaders(producerHeaders(headers)) });
   };
 
-  const consume = async (name, onDelivery, options = {}) => {
+  const consume = async (name, onDelivery, consumeOptions = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
+    const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('nats queue.consume', onDelivery, prefetch, deadLetter);
     const { js: stream, jsm: manager } = await managers();
     const { name: streamId, subject, config } = queueStream(name);
@@ -401,7 +402,7 @@ const createNatsBroker = (options = {}) => {
     try {
       await manager.consumers.add(streamId, wanted);
     } catch (error) {
-      if (!/already exists|in use/i.test(String(error?.message))) throw error;
+      if (!/already exists|in use/i.test(`${error?.message}`)) throw error;
       // The durable was created earlier — by another instance, or by an
       // older build that set max_ack_pending to its prefetch — and keeps
       // that configuration until someone updates it: said once, since a
@@ -488,7 +489,7 @@ const createNatsBroker = (options = {}) => {
         await stream.publish(subject, message.data, { headers: encodeHeaders(carried) });
       };
       const delivery = Object.freeze({
-        id: String(message.seq),
+        id: `${message.seq}`,
         body: toText(message.data),
         headers,
         attempt,
@@ -503,7 +504,7 @@ const createNatsBroker = (options = {}) => {
         // and the original terminated.
         release: () =>
           finish(async () => {
-            await republish({ [ATTEMPT_HEADER]: String(attempt), [REDELIVERED_HEADER]: '1' });
+            await republish({ [ATTEMPT_HEADER]: `${attempt}`, [REDELIVERED_HEADER]: '1' });
             message.term();
           }),
         deadLetter: (reason = '') =>
@@ -515,7 +516,7 @@ const createNatsBroker = (options = {}) => {
                 headers: encodeHeaders({
                   ...headers,
                   [DEAD_REASON_HEADER]: reasonText(reason),
-                  [ATTEMPT_HEADER]: String(attempt),
+                  [ATTEMPT_HEADER]: `${attempt}`,
                 }),
               });
             }
@@ -530,7 +531,7 @@ const createNatsBroker = (options = {}) => {
     const pump = async () => {
       for (;;) {
         if (!state.running || state.paused || closed) return;
-        let messages;
+        let messages = null;
         try {
           messages = await consumer.consume({ max_messages: prefetch });
           state.messages = messages;
@@ -673,7 +674,9 @@ const createNatsBroker = (options = {}) => {
     closed = true;
     tails.close();
     ensured.clear();
-    await Promise.all(Array.from(consumers, (stop) => stop()));
+    const stopping = [];
+    for (const stop of consumers) stopping.push(stop());
+    await Promise.all(stopping);
     // The connection is INJECTED: draining or closing it is the caller's.
   };
 

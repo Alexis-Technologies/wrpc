@@ -324,7 +324,7 @@ class Inflater {
         lengths[i++] = sym;
         continue;
       }
-      let repeat;
+      let repeat = 0;
       let value = 0;
       if (sym === 16) {
         if (i === 0) throw new DeflateError('repeat with no previous length', 'huffman');
@@ -371,7 +371,7 @@ class Inflater {
   }
 
   run() {
-    let final;
+    let final = 0;
     do {
       final = this.#bits(1);
       const type = this.#bits(2);

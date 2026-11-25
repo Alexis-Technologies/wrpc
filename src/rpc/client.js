@@ -76,6 +76,15 @@ const buildMeta = ({ headers, url, remoteAddress, protocol, data, declared } = {
     protocol: protocol ?? '',
   });
 
+// A packet as one frame: the codec's, an attachments frame when it holds
+// bytes the connection may carry as such, JSON otherwise.
+const encodePacket = (transport, packet) => {
+  const codec = transport.codec;
+  if (codec) return codec.encode(packet);
+  if (transport.attachments !== false && hasBytes(packet)) return encodeAttachments(packet);
+  return JSON.stringify(packet);
+};
+
 const refusal = (message) => {
   const error = new Error(message);
   error.code = 400;
@@ -327,7 +336,7 @@ class Client extends Emitter {
   send(obj, options = {}) {
     const { code, method, text } = options;
     const transport = this.#transport;
-    let flushed;
+    let flushed = false;
     if (options.compress === false && typeof transport.writeWith === 'function') {
       const codec = transport.codec;
       flushed = transport.writeWith(codec ? codec.encode(obj) : (text ?? JSON.stringify(obj)), options);
@@ -387,7 +396,7 @@ class Client extends Emitter {
   decodePacket(text) {
     if (!this.#codec) return jsonParse(text);
     try {
-      return this.#codec.decode(typeof text === 'string' ? text : String(text));
+      return this.#codec.decode(typeof text === 'string' ? text : `${text}`);
     } catch {
       return null;
     }
@@ -441,14 +450,7 @@ class Client extends Emitter {
       throw refusal(`Can't send wrpc event to http transport`);
     }
     if (options !== null && (options.unreliable === true || options.compress === false)) {
-      const transport = this.#transport;
-      const codec = transport.codec;
-      const wire = codec
-        ? codec.encode(packet)
-        : transport.attachments !== false && hasBytes(packet)
-          ? encodeAttachments(packet)
-          : JSON.stringify(packet);
-      return void this.sendRaw(wire, options);
+      return void this.sendRaw(encodePacket(this.#transport, packet), options);
     }
     this.send(packet);
   }

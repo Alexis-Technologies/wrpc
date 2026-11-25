@@ -2,7 +2,7 @@
 
 // The page half of the browser benchmark (scripts/bench-browser.js injects
 // the browser bundle as `wrpc`, then this file, then evaluates
-// `__wrpcBench()`). It measures the CLIENT's per-call cost in a real
+// `wrpcBench()`). It measures the CLIENT's per-call cost in a real
 // browser — the id, the packet, the pending-call record, the deadline
 // bookkeeping, the callback settle — over an in-page echo server on a
 // MessageChannel, so no network and no server code is in the number.
@@ -57,7 +57,7 @@ const measure = async (name, fn, opsPerIteration) => {
   return { name, opsPerSec: Math.round((iterations * opsPerIteration * 1000) / elapsed) };
 };
 
-globalThis.__wrpcBench = async () => {
+globalThis.wrpcBench = async () => {
   const client = await wrpc.connect('event://bench', { transport: 'event', worker: fakeWorker, heartbeat: false });
   client.use({ bench: { echo: { access: 'public' } } });
   const echo = client.api.bench.echo;

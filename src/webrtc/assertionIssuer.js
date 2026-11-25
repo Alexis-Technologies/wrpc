@@ -37,10 +37,12 @@ const generateAssertionKeys = async ({ kid = generateUUID(), subtle = globalThis
   const pair = await subtle.generateKey(ES256, true, ['sign', 'verify']);
   // Without key_ops: the JWKs travel between an issuer and verifiers whose
   // usage is decided at import, and publicKeys() strips it the same way.
-  const [{ key_ops: _sign, ...privateKey }, { key_ops: _verify, ...publicKey }] = await Promise.all([
+  const exported = await Promise.all([
     subtle.exportKey('jwk', pair.privateKey),
     subtle.exportKey('jwk', pair.publicKey),
   ]);
+  const { key_ops: _sign, ...privateKey } = exported[0];
+  const { key_ops: _verify, ...publicKey } = exported[1];
   return {
     kid,
     privateKey: { ...privateKey, kid, alg: ASSERTION_ALG, use: 'sig' },
@@ -74,8 +76,8 @@ const createAssertionIssuer = ({
   if (issuer !== null && (typeof issuer !== 'string' || issuer.length === 0)) {
     throw new ConfigError('createAssertionIssuer: issuer must be a non-empty string');
   }
-  let privateKey;
-  let publicKey;
+  let privateKey = null;
+  let publicKey = null;
   let keyId = kid ?? null;
   if (isPrivateJwk(key)) {
     keyId ??= typeof key.kid === 'string' ? key.kid : null;

@@ -90,7 +90,7 @@ class UwsSocket extends EventEmitter {
     if (this.#closed) return false;
     const isBinary = typeof data !== 'string';
     const compress = options === null || options.compress !== false;
-    let status;
+    let status = -1;
     try {
       status = this.#ws.send(data, isBinary, compress);
     } catch {
@@ -202,6 +202,8 @@ const createUwsEngine = (engineOptions = {}) => {
         const path = req.getUrl();
         const query = req.getQuery() ?? '';
         const headers = {};
+        // uWS.HttpRequest#forEach, the one walk over its headers — not an array.
+        // oxlint-disable-next-line unicorn/no-array-for-each, no-restricted-properties
         req.forEach((key, value) => {
           headers[key] = value;
         });
@@ -279,6 +281,8 @@ const createUwsEngine = (engineOptions = {}) => {
     const path = req.getUrl();
     const query = req.getQuery() ?? '';
     const headers = {};
+    // uWS.HttpRequest#forEach, the one walk over its headers — not an array.
+    // oxlint-disable-next-line unicorn/no-array-for-each, no-restricted-properties
     req.forEach((key, value) => {
       headers[key] = value;
     });
@@ -290,7 +294,10 @@ const createUwsEngine = (engineOptions = {}) => {
     const abortListeners = [];
     res.onAborted(() => {
       aborted = true;
-      for (const listener of abortListeners) listener();
+      for (let i = 0; i < abortListeners.length; i++) {
+        const listener = abortListeners[i];
+        listener();
+      }
     });
 
     const respond = ({ status, headers: responseHeaders = {}, body }) => {

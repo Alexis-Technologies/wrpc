@@ -52,7 +52,9 @@ const producerHeaders = (headers) => {
     return headers;
   }
   const own = {};
-  for (const name of Object.keys(headers)) {
+  const names = Object.keys(headers);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
     if (name === ATTEMPT_HEADER || name === REDELIVERED_HEADER || name === DEAD_REASON_HEADER) continue;
     own[name] = headers[name];
   }

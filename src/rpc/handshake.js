@@ -46,7 +46,9 @@ const NO_LOG = { warn() {} };
 const sanitizeDeclared = (value, allow = null) => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   let declared = null;
-  for (const key of Object.keys(value)) {
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     if (typeof value[key] !== 'string') continue;
     const name = toKebab(key);
     if (name === '__proto__' || RESERVED_DECLARED.test(name)) continue;
@@ -54,6 +56,13 @@ const sanitizeDeclared = (value, allow = null) => {
     (declared ??= { __proto__: null })[name] = value[key];
   }
   return declared;
+};
+
+// Which bag a carrier token fills, or null for one that fills none (a Bearer).
+const carrierField = (token) => {
+  if (token.startsWith(HEADERS_PROTOCOL)) return 'headers';
+  if (token.startsWith(META_PROTOCOL)) return 'meta';
+  return null;
 };
 
 // The offers, split once. `headers`/`meta` are `undefined` when that token was
@@ -67,14 +76,15 @@ const carriedBags = (offer, limit, log) => {
   if (typeof offer !== 'string' || !offer.includes('wrpc.')) return null;
   const carried = { headers: undefined, meta: undefined, rest: [] };
   let budget = limit;
-  for (const part of offer.split(',')) {
-    const token = part.trim();
+  const parts = offer.split(',');
+  for (let i = 0; i < parts.length; i++) {
+    const token = parts[i].trim();
     if (token.length === 0) continue;
     if (!CARRIER_PROTOCOL.test(token)) {
       carried.rest.push(token);
       continue;
     }
-    const field = token.startsWith(HEADERS_PROTOCOL) ? 'headers' : token.startsWith(META_PROTOCOL) ? 'meta' : null;
+    const field = carrierField(token);
     // The first token of a kind wins; a Bearer token is the auth strategy's.
     if (field === null || carried[field] !== undefined) continue;
     if (token.length > budget) {
@@ -131,7 +141,8 @@ const readDeclared = (observed, url, limit, log, allow = null) => {
   let names = NO_NAMES;
   if (declared !== null) {
     names = [];
-    for (const name in declared) if (!(name in observed)) names.push(name);
+    const keys = Object.keys(declared);
+    for (let i = 0; i < keys.length; i++) if (!(keys[i] in observed)) names.push(keys[i]);
     Object.freeze(names);
   }
   return { headers, meta, declared: names };
@@ -147,16 +158,18 @@ const readHandshake = (req, { metaMaxBytes = DEFAULT_META_MAX, log = NO_LOG, dec
   return { headers, meta: meta ?? {}, declared };
 };
 
+const namesError = (label) => new ConfigError(`${label}: declaredHeaders must be an array of header names, or null`);
+
 // The allowlist option in every spelling → a Set of lowercase names, or
 // null for "everything the deny list allows". `cookie` is never declarable,
 // allowlisted or not: it is the one name a hostile page most wants.
 const normalizeDeclaredHeaders = (value, label) => {
   if (value === null || value === undefined) return null;
-  if (!Array.isArray(value) || !value.every((name) => typeof name === 'string' && name.length > 0)) {
-    throw new ConfigError(`${label}: declaredHeaders must be an array of header names, or null`);
-  }
+  if (!Array.isArray(value)) throw namesError(label);
   const allow = new Set();
-  for (const name of value) {
+  for (let i = 0; i < value.length; i++) {
+    const name = value[i];
+    if (typeof name !== 'string' || name.length === 0) throw namesError(label);
     const lower = name.toLowerCase();
     if (lower !== 'cookie') allow.add(lower);
   }

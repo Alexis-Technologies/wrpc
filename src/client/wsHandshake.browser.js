@@ -51,18 +51,14 @@ const openSocket = (WebSocket, url, protocols, options, log) => {
       // request headers). A refused bag leaves the connection unlabelled and
       // says so, instead of failing a handshake the application cannot see.
       let budget = META_MAX;
-      for (const [prefix, bag] of [
-        [HEADERS_PROTOCOL, headers],
-        [META_PROTOCOL, meta],
-      ]) {
-        if (!bag) continue;
+      const carry = (prefix, bag) => {
+        if (!bag) return;
         // Measured twice: the text first, because base64 only grows it and
         // an oversize bag is not worth encoding (nor safe to spread).
         const text = JSON.stringify(bag);
         const token = text.length > budget ? null : prefix + encode(text);
         if (token === null || token.length > budget) {
-          log?.warn({ event: 'meta.oversize', carrier: 'protocol', bytes: (token ?? text).length });
-          continue;
+          return void log?.warn({ event: 'meta.oversize', carrier: 'protocol', bytes: (token ?? text).length });
         }
         budget -= token.length;
         offer = [...offer, token];
@@ -70,7 +66,9 @@ const openSocket = (WebSocket, url, protocols, options, log) => {
         // its own): a server that turns out to speak revision 1 may be a
         // 1.0 server, which never read a carrier token.
         options.carried = true;
-      }
+      };
+      carry(HEADERS_PROTOCOL, headers);
+      carry(META_PROTOCOL, meta);
       headers = meta = null;
     }
   }

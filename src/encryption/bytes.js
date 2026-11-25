@@ -61,7 +61,7 @@ const fromBase64 = (text) => {
   if (typeof text !== 'string' || !BASE64.test(text)) return null;
   const bare = text.replace(/=+$/, '');
   if (bare.length % 4 === 1) return null;
-  let binary;
+  let binary = '';
   try {
     binary = atob(bare.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (bare.length % 4)) % 4));
   } catch {

@@ -68,7 +68,7 @@ const openedMux = async () => {
 
 let sunk = 0;
 
-async function main() {
+const main = async () => {
   const mux = await openedMux();
   console.log('outbound: one chunk frame routed to its side stream');
   for (const [label, size] of SIZES) {
@@ -115,7 +115,7 @@ async function main() {
   });
   sunk += seen;
   if (sunk < 0) throw new Error('unreachable');
-}
+};
 
 main().catch((error) => {
   console.error(error);

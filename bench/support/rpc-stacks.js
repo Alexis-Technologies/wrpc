@@ -23,7 +23,7 @@ const fastifyWebsocket = require('@fastify/websocket');
 const { WrpcClient } = require('../../src/client.js');
 const { createWrpcServer } = require('./wrpc-echo.js');
 
-function createEchoClient(url) {
+const createEchoClient = (url) => {
   const socket = new WebSocket(url);
   const pending = new Map();
 
@@ -48,9 +48,9 @@ function createEchoClient(url) {
     });
 
   return { opened, call, close: () => socket.close() };
-}
+};
 
-async function startWrpc() {
+const startWrpc = async () => {
   const api = { bench: { echo: { handler: async (args) => args } } };
   const { server, port } = await createWrpcServer(api);
   const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
@@ -62,11 +62,11 @@ async function startWrpc() {
       await server.close();
     },
   };
-}
+};
 
 // The same RPC path over the uWebSockets.js engine: what separates the cost
 // of wrpc's dispatch from the cost of its JavaScript WebSocket engine.
-async function startWrpcUws() {
+const startWrpcUws = async () => {
   const { createUwsEngine } = require('../../src/adapters/uws.js');
   const uws = require('uWebSockets.js');
   const { Server } = require('../../src/server.js');
@@ -89,11 +89,11 @@ async function startWrpcUws() {
       await server.close();
     },
   };
-}
+};
 
 // Client batching on: the 64 in-flight calls of the pipelined row share
 // frames instead of each being one.
-async function startWrpcBatch() {
+const startWrpcBatch = async () => {
   const api = { bench: { echo: { handler: async (args) => args } } };
   const { server, port } = await createWrpcServer(api);
   const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`, { batch: true });
@@ -105,14 +105,14 @@ async function startWrpcBatch() {
       await server.close();
     },
   };
-}
+};
 
 // The same RPC path into the same Server, over the two transports with a
 // native stack under them (bench/support/real-stacks.js): a WebTransport
 // session (libquiche on both ends) and a WebRTC data channel
 // (libdatachannel on both peers, a loopback pair negotiated in-process).
 // Skipped, with the reason, unless WRPC_WT=fails / WRPC_RTC=node-datachannel.
-async function startWrpcOver(kind) {
+const startWrpcOver = async (kind) => {
   const real = require('./real-stacks.js');
   const api = { bench: { echo: { handler: async (args) => args } } };
   const { server, port } = await createWrpcServer(api);
@@ -128,7 +128,7 @@ async function startWrpcOver(kind) {
       if (kind === 'webrtc') real.rtcCleanup();
     },
   };
-}
+};
 
 const realSkip = (name) => () => require('./real-stacks.js')[name]();
 
@@ -179,7 +179,7 @@ const correlate = (send) => {
   return { onMessage, call };
 };
 
-async function startWtRaw() {
+const startWtRaw = async () => {
   const { bootH3 } = require('./real-stacks.js');
   const { h3, port, WebTransport, serverCertificateHashes } = await bootH3();
   const serve = async (session) => {
@@ -216,9 +216,9 @@ async function startWtRaw() {
       await h3.stopServer();
     },
   };
-}
+};
 
-async function startRtcRaw() {
+const startRtcRaw = async () => {
   const real = require('./real-stacks.js');
   const pair = await real.rtcPair();
   pair.host.addEventListener('message', ({ data }) => {
@@ -234,9 +234,9 @@ async function startRtcRaw() {
       real.rtcCleanup();
     },
   };
-}
+};
 
-async function startWs() {
+const startWs = async () => {
   const httpServer = http.createServer();
   const wss = new WebSocket.Server({ server: httpServer });
   wss.on('connection', (socket) => {
@@ -256,9 +256,9 @@ async function startWs() {
       await new Promise((resolve) => httpServer.close(resolve));
     },
   };
-}
+};
 
-async function startUws() {
+const startUws = async () => {
   const uws = require('uWebSockets.js');
   const app = uws.App().ws('/*', {
     message: (socket, message) => {
@@ -282,9 +282,9 @@ async function startUws() {
       uws.us_listen_socket_close(token);
     },
   };
-}
+};
 
-async function startFastifyWebsocket() {
+const startFastifyWebsocket = async () => {
   const app = fastify({ logger: false });
   await app.register(fastifyWebsocket);
   app.get('/', { websocket: true }, (socket) => {
@@ -304,9 +304,9 @@ async function startFastifyWebsocket() {
       await app.close();
     },
   };
-}
+};
 
-async function startFastifyUws() {
+const startFastifyUws = async () => {
   const { serverFactory, websocket } = require('fastify-uws');
   const app = fastify({ logger: false, serverFactory });
   await app.register(websocket);
@@ -327,13 +327,13 @@ async function startFastifyUws() {
       await app.close();
     },
   };
-}
+};
 
 // Socket.io: a real RPC framework rather than a raw transport, so it pays for
 // its own envelope, its acknowledgement bookkeeping and its engine.io layer —
 // the same kinds of cost wrpc pays. `emitWithAck` is the request/response
 // shape closest to a call.
-async function startSocketIo() {
+const startSocketIo = async () => {
   const { Server } = require('socket.io');
   const { io } = require('socket.io-client');
   const httpServer = http.createServer();
@@ -358,13 +358,13 @@ async function startSocketIo() {
       await new Promise((resolve) => httpServer.close(resolve));
     },
   };
-}
+};
 
 // tRPC over WebSocket (httpSubscriptionLink's sibling, wsLink) — the closest
 // comparison to wrpc's own positioning. The function parser keeps the input
 // validator free, so the number is transport plus tRPC's own envelope rather
 // than someone's schema library.
-async function startTrpcWs() {
+const startTrpcWs = async () => {
   const { initTRPC } = require('@trpc/server');
   const { applyWSSHandler } = require('@trpc/server/adapters/ws');
   const { createTRPCClient, createWSClient, wsLink } = require('@trpc/client');
@@ -391,13 +391,13 @@ async function startTrpcWs() {
       await new Promise((resolve) => httpServer.close(resolve));
     },
   };
-}
+};
 
 // gRPC — a unary echo over HTTP/2 through @grpc/grpc-js, the service loaded
 // from bench/support/echo.proto at runtime by @grpc/proto-loader (no
 // codegen). Protobuf on the wire, so its envelope is cheaper to encode than
 // the JSON every other row pays; that is part of what gRPC is.
-async function startGrpc() {
+const startGrpc = async () => {
   const path = require('node:path');
   const grpc = require('@grpc/grpc-js');
   const loader = require('@grpc/proto-loader');
@@ -422,7 +422,7 @@ async function startGrpc() {
       await new Promise((resolve) => server.tryShutdown(resolve));
     },
   };
-}
+};
 
 module.exports = {
   wrpc: { label: 'wrpc (own WS + RPC dispatch)', start: startWrpc },

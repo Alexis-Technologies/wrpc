@@ -31,7 +31,7 @@ const { spawnSync } = require('node:child_process');
 const KINDS = ['ws', 'wt', 'webrtc'];
 const WORKER = path.join(__dirname, 'support', 'transport-worker.js');
 
-function run(kind) {
+const run = (kind) => {
   const result = spawnSync(process.execPath, [WORKER, kind], { encoding: 'utf8', timeout: 10 * 60 * 1000 });
   // A native stack's warnings repeat once per session; say each one once.
   const warnings = new Map();
@@ -47,9 +47,9 @@ function run(kind) {
   const resultLine = lines.find((line) => line.startsWith('RESULT_JSON:'));
   for (const line of lines) if (line !== resultLine) console.log(line);
   return JSON.parse(resultLine.slice('RESULT_JSON:'.length));
-}
+};
 
-function main() {
+const main = () => {
   console.log(`Node ${process.version} | ${new Date().toISOString()}\n`);
   const results = [];
   for (const kind of KINDS) {
@@ -74,6 +74,6 @@ function main() {
   console.log(`  ${line(header)}`);
   for (const row of rows) console.log(`  ${line(row)}`);
   console.log();
-}
+};
 
 main();

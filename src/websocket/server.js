@@ -39,7 +39,7 @@ const sendUpgrade = (socket, accept, extraHeaders = []) => {
   socket.cork();
   socket.write(UPGRADE);
   socket.write(accept);
-  for (const line of extraHeaders) socket.write(EOL + line);
+  for (let i = 0; i < extraHeaders.length; i++) socket.write(EOL + extraHeaders[i]);
   socket.write(EOL2);
   socket.uncork();
 };
@@ -261,6 +261,7 @@ class WebsocketServer extends EventEmitter {
       // gets compression at all — a browser on a slow link yes, a service
       // in the same datacenter no — by declining the offer, so the peer
       // learns it from the handshake rather than from a missing RSV1.
+      // oxlint-disable-next-line no-restricted-properties -- the perMessageDeflate option, not Array#filter
       if (deflate && typeof deflateOptions.filter === 'function' && !deflateOptions.filter(req)) deflate = null;
     }
 

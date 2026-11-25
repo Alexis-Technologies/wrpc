@@ -41,7 +41,7 @@ const unpack = (bytes) => {
   if (bytes.length < 4) return null;
   const length = bytes.readUInt32BE(0);
   if (4 + length > bytes.length) return null;
-  let headers;
+  let headers = null;
   try {
     headers = JSON.parse(bytes.toString('utf8', 4, 4 + length));
   } catch {
@@ -50,7 +50,11 @@ const unpack = (bytes) => {
   if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) return null;
   // A null-prototype map, like every header bag the broker family hands out.
   const safe = Object.create(null);
-  for (const name of Object.keys(headers)) if (typeof headers[name] === 'string') safe[name] = headers[name];
+  const names = Object.keys(headers);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (typeof headers[name] === 'string') safe[name] = headers[name];
+  }
   return { headers: safe, body: bytes.subarray(4 + length) };
 };
 
@@ -88,13 +92,13 @@ const createBrokerSealing = (option, name, { layer, replay, text = false }) => {
         if (!encryption.acceptPlaintext) return { refused: 'unsealed' };
         return { headers: message.headers, body: message.body, sealed: false };
       }
-      let opened;
+      let opened = null;
       try {
         // `text`: a log or a queue is only promised to keep a STRING as it
         // was (a Redis stream field is one), so the sealed body rides base64.
-        const bytes = text ? Buffer.from(String(message.body), 'base64') : toBytes(message.body);
+        const bytes = text ? Buffer.from(`${message.body}`, 'base64') : toBytes(message.body);
         const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        opened = unpack(sealer.open(String(kid), view, context));
+        opened = unpack(sealer.open(`${kid}`, view, context));
       } catch (error) {
         // A refusal has a reason; anything else — a key provider that threw
         // — is this side's failure, handed to the caller with the error so

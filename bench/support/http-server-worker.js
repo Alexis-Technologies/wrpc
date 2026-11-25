@@ -8,7 +8,7 @@
  */
 const servers = require('./http-servers.js');
 
-async function main() {
+const main = async () => {
   const key = process.argv[2];
   if (!Object.hasOwn(servers, key)) throw new Error(`unknown http stack ${key}`);
   const { port, path, body, stop } = await servers[key].start();
@@ -18,7 +18,7 @@ async function main() {
     await stop();
     process.exit(0);
   });
-}
+};
 
 main().catch((error) => {
   console.error(error);

@@ -68,16 +68,22 @@ const REJOIN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2,
 // again after this pause, this many times, before the read fails 503.
 const STALL_DELAY = 50;
 const MAX_STALLS = 10;
+// What a catch-up answers when the read's signal ended it under way.
+const ABORTED = Symbol('aborted');
+
+const requireFunction = (value, name) => {
+  if (typeof value !== 'function') throw new ConfigError(`TopicTails: ${name} must be a function`);
+};
 
 class TopicTails {
-  #live;
-  #range;
-  #covered;
-  #advance;
-  #contiguous;
-  #highWaterMark;
-  #page;
-  #onLag;
+  #live = null;
+  #range = null;
+  #covered = null;
+  #advance = null;
+  #contiguous = null;
+  #highWaterMark = 0;
+  #page = 0;
+  #onLag = null;
   #tails = new Map(); // topic -> { readers, ready, current, controller, failure }
 
   constructor({
@@ -95,9 +101,10 @@ class TopicTails {
     // without a trace.
     onLag = null,
   }) {
-    for (const [name, fn] of Object.entries({ live, range, covered, advance })) {
-      if (typeof fn !== 'function') throw new ConfigError(`TopicTails: ${name} must be a function`);
-    }
+    requireFunction(live, 'live');
+    requireFunction(range, 'range');
+    requireFunction(covered, 'covered');
+    requireFunction(advance, 'advance');
     if (contiguous !== null && typeof contiguous !== 'function') {
       throw new ConfigError('TopicTails: contiguous must be a function or null');
     }
@@ -151,7 +158,7 @@ class TopicTails {
         tail.controller.abort();
         const members = Array.from(tail.readers);
         tail.readers.clear();
-        for (const member of members) member.rejoin();
+        for (let i = 0; i < members.length; i++) members[i].rejoin();
       };
       tail.ready = Promise.resolve()
         .then(() => this.#live(topic, { signal: controller.signal, onEntry, onEnd }))
@@ -229,6 +236,66 @@ class TopicTails {
     let tail = this.#join(topic, reader);
     const catchUp = (after !== null && after !== undefined) || from === 'earliest';
 
+    // The catch-up from `start`, delegated to by the read below: a fresh
+    // tail first when the old one ended, then every page to the tip. Answers
+    // the cursor it reached, or ABORTED when the signal ended the read. A
+    // live entry never goes through the delegation, only a caught-up one.
+    const pages = async function* (start) {
+      let cursor = start;
+      if (reader.moved) {
+        reader.moved = false;
+        // A fresh tail, joined BEFORE the catch-up below so the two
+        // overlap the way a resume does. A broker that cannot start
+        // one is asked again on a backoff; then the read fails.
+        for (let attempt = 0; ; attempt++) {
+          tail = tails.#join(topic, reader);
+          // Why it failed is in tail.failure, read on the next line.
+          await tail.ready.catch(() => {});
+          if (tail.failure === null) break;
+          if (reader.failure === tail.failure) reader.failure = null;
+          if (signal?.aborted) return ABORTED;
+          if (attempt >= MAX_REJOINS - 1) throw codedError('Log tail ended', 503);
+          await sleep(backoffDelay({ ...REJOIN_BACKOFF, attempt }));
+        }
+      }
+      // Page until the tip: that is "caught up as of now"; whatever
+      // arrived meanwhile is in the live queue. The tip is a short
+      // page for a store read directly, and what `done` says for a
+      // broker that pages by time (see the header).
+      let stalls = 0;
+      for (;;) {
+        const result = await tails.#range(topic, { after: cursor, limit: tails.#page });
+        const page = Array.isArray(result) ? result : result.entries;
+        const done = Array.isArray(result) ? page.length < tails.#page : result.done === true;
+        let advanced = false;
+        let hole = false;
+        for (let i = 0; i < page.length; i++) {
+          const entry = page[i];
+          if (cursor !== null && tails.#covered(cursor, entry)) continue;
+          if (cursor !== null && tails.#contiguous !== null && !tails.#contiguous(cursor, entry)) {
+            hole = true;
+            break;
+          }
+          cursor = tails.#advance(cursor, entry);
+          advanced = true;
+          yield { id: cursor, value: entry.value, headers: entry.headers };
+          if (signal?.aborted) return ABORTED;
+        }
+        if (!hole && done) return cursor;
+        if (advanced && !hole) {
+          stalls = 0;
+          continue;
+        }
+        // No progress: a hole at the head of the page, or a page the
+        // adapter called incomplete with nothing in it. Asked again
+        // after a pause, a bounded number of times.
+        if (++stalls > MAX_STALLS) {
+          throw codedError(hole ? 'Log read fell behind a gap in the topic' : 'Log read could not reach the tip', 503);
+        }
+        await sleep(STALL_DELAY);
+      }
+    };
+
     // `entered`: the generator's body ran — and with it the `finally` that
     // leaves the tail. A generator returned before its first next() never
     // runs its body, so its place is released from the iterator instead.
@@ -248,60 +315,9 @@ class TopicTails {
           if (pending || reader.lagging) {
             reader.lagging = false;
             pending = false;
-            if (reader.moved) {
-              reader.moved = false;
-              // A fresh tail, joined BEFORE the catch-up below so the two
-              // overlap the way a resume does. A broker that cannot start
-              // one is asked again on a backoff; then the read fails.
-              for (let attempt = 0; ; attempt++) {
-                tail = tails.#join(topic, reader);
-                // Why it failed is in tail.failure, read on the next line.
-                await tail.ready.catch(() => {});
-                if (tail.failure === null) break;
-                if (reader.failure === tail.failure) reader.failure = null;
-                if (signal?.aborted) return;
-                if (attempt >= MAX_REJOINS - 1) throw codedError('Log tail ended', 503);
-                await sleep(backoffDelay({ ...REJOIN_BACKOFF, attempt }));
-              }
-            }
-            // Page until the tip: that is "caught up as of now"; whatever
-            // arrived meanwhile is in the live queue. The tip is a short
-            // page for a store read directly, and what `done` says for a
-            // broker that pages by time (see the header).
-            let stalls = 0;
-            for (;;) {
-              const result = await tails.#range(topic, { after: cursor, limit: tails.#page });
-              const page = Array.isArray(result) ? result : result.entries;
-              const done = Array.isArray(result) ? page.length < tails.#page : result.done === true;
-              let advanced = false;
-              let hole = false;
-              for (const entry of page) {
-                if (cursor !== null && tails.#covered(cursor, entry)) continue;
-                if (cursor !== null && tails.#contiguous !== null && !tails.#contiguous(cursor, entry)) {
-                  hole = true;
-                  break;
-                }
-                cursor = tails.#advance(cursor, entry);
-                advanced = true;
-                yield { id: cursor, value: entry.value, headers: entry.headers };
-                if (signal?.aborted) return;
-              }
-              if (!hole && done) break;
-              if (advanced && !hole) {
-                stalls = 0;
-                continue;
-              }
-              // No progress: a hole at the head of the page, or a page the
-              // adapter called incomplete with nothing in it. Asked again
-              // after a pause, a bounded number of times.
-              if (++stalls > MAX_STALLS) {
-                throw codedError(
-                  hole ? 'Log read fell behind a gap in the topic' : 'Log read could not reach the tip',
-                  503,
-                );
-              }
-              await sleep(STALL_DELAY);
-            }
+            const reached = yield* pages(cursor);
+            if (reached === ABORTED) return;
+            cursor = reached;
             continue;
           }
           if (reader.queue.length > 0) {

@@ -66,21 +66,21 @@ const DEFAULT_MAX_SESSIONS = 10_000;
 class BrokerSessionTransport extends ServerTransport {
   kind = 'broker';
   connection = true;
-  #direct;
-  #peer;
-  #session;
+  #direct = null;
+  #peer = '';
+  #session = '';
   #seq = 0;
   #unconfirmed = 0;
-  #highWaterMark;
+  #highWaterMark = 0;
   #closed = false;
-  #onFailure;
+  #onFailure = null;
   // What both ends agreed to on hello/welcome — `{ encode, decode }` — or null.
-  #compression;
+  #compression = null;
   // The binding's sealing (../sealing.js) or null: compress, then seal.
-  #sealing;
+  #sealing = null;
   // A codec that threw on the way out — the frame left plain; said by the
   // server's reporter.
-  #failed;
+  #failed = null;
 
   constructor({ direct, peer, session, highWaterMark, onFailure, compression = null, sealing = null, failed = null }) {
     super(`broker:${fingerprint(session)}`);
@@ -499,7 +499,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   };
 
   let stopService = await direct.listen(address, onService, { group: address });
-  let stopInbox;
+  let stopInbox = null;
   try {
     stopInbox = await direct.listen(inbox, onFrame);
   } catch (error) {
@@ -510,7 +510,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   const sweep = setInterval(
     () => {
       const cutoff = Date.now() - idleTimeout;
-      for (const [id, session] of sessions) if (session.lastSeen < cutoff) endSession(id, 'idle', { level: 'info' });
+      for (const entry of sessions) if (entry[1].lastSeen < cutoff) endSession(entry[0], 'idle', { level: 'info' });
       if (refused > 0) {
         log.warn({ event: 'broker.rpc.capacity', refused, sessions: sessions.size, max: maxSessions });
         refused = 0;
@@ -536,7 +536,8 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     clearInterval(sweep);
     if (stopService) await stopService();
     stopService = null;
-    for (const id of Array.from(sessions.keys())) endSession(id, 'closing', { detail: 'server closing' });
+    const ids = Array.from(sessions.keys());
+    for (let i = 0; i < ids.length; i++) endSession(ids[i], 'closing', { detail: 'server closing' });
     await stopInbox();
   };
   const onClose = () => void stop();

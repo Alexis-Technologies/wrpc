@@ -66,6 +66,9 @@ const CHANNEL_HEADER = 'wrpc-channel';
 const VECTOR = /^k1:(\d{1,5}=\d{1,19})(,\d{1,5}=\d{1,19})*$/;
 
 const isFunction = (value) => typeof value === 'function';
+const byNumber = (a, b) => a - b;
+// Stands in for a watcher's stop() until the watcher is set.
+const NOOP = () => {};
 
 // A Kafka topic name: letters, digits, dot, underscore and dash only.
 const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });
@@ -73,30 +76,49 @@ const topicName = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 
 // The resume token: every partition this reader has passed, sorted.
 const encodeVector = (cursor) => {
-  const parts = Object.keys(cursor)
-    .map(Number)
-    .sort((a, b) => a - b)
-    .map((partition) => `${partition}=${cursor[partition]}`);
-  return `k1:${parts.join(',')}`;
+  const keys = Object.keys(cursor);
+  const partitions = [];
+  for (let i = 0; i < keys.length; i++) partitions.push(Number(keys[i]));
+  partitions.sort(byNumber);
+  let text = 'k1:';
+  for (let i = 0; i < partitions.length; i++) {
+    if (i > 0) text += ',';
+    text += `${partitions[i]}=${cursor[partitions[i]]}`;
+  }
+  return text;
 };
 
 const decodeVector = (text) => {
   if (typeof text !== 'string' || !VECTOR.test(text)) return null;
   const cursor = {};
-  for (const pair of text.slice(3).split(',')) {
-    const [partition, offset] = pair.split('=');
-    cursor[Number(partition)] = Number(offset);
+  const pairs = text.slice(3).split(',');
+  for (let i = 0; i < pairs.length; i++) {
+    const pair = pairs[i].split('=');
+    cursor[Number(pair[0])] = Number(pair[1]);
   }
   return cursor;
 };
 
 const headersOf = (message) => {
   const bag = {};
-  for (const [key, value] of Object.entries(message.headers ?? {})) {
+  const headers = message.headers ?? {};
+  const keys = Object.keys(headers);
+  for (let i = 0; i < keys.length; i++) {
+    const value = headers[keys[i]];
     if (value === undefined || value === null) continue;
-    bag[key] = Buffer.isBuffer(value) ? value.toString() : String(value);
+    bag[keys[i]] = Buffer.isBuffer(value) ? value.toString() : `${value}`;
   }
   return toHeaders(bag);
+};
+
+// Whether every partition of `target` reached its offset in `reached`.
+const reachedAll = (target, reached) => {
+  const partitions = Object.keys(target);
+  for (let i = 0; i < partitions.length; i++) {
+    const partition = partitions[i];
+    if (!((reached[partition] ?? -1) >= target[partition])) return false;
+  }
+  return true;
 };
 
 const createKafkaBroker = (options = {}) => {
@@ -207,7 +229,7 @@ const createKafkaBroker = (options = {}) => {
         created = (await client.createTopics({ topics: [{ topic, numPartitions, replicationFactor }] })) !== false;
       } catch (error) {
         // Already there (another instance, or a previous run).
-        if (!/already exists|TOPIC_ALREADY_EXISTS/i.test(String(error?.message))) throw error;
+        if (!/already exists|TOPIC_ALREADY_EXISTS/i.test(`${error?.message}`)) throw error;
       }
       if (created) {
         // Once per topic, at creation: what the cluster now holds is the
@@ -240,8 +262,8 @@ const createKafkaBroker = (options = {}) => {
     const message = { value: toText(value) };
     if (headers) message.headers = toHeaders(headers);
     if (key !== null && key !== undefined) message.key = String(key);
-    const [result] = await client.send({ topic, messages: [message] });
-    return result;
+    const results = await client.send({ topic, messages: [message] });
+    return results[0];
   };
 
   // A consumer that this broker owns: tracked so close() disconnects it.
@@ -315,7 +337,9 @@ const createKafkaBroker = (options = {}) => {
             const set = channel === undefined ? null : handlers.get(channel);
             if (!set) return;
             const text = message.value === null ? '' : message.value.toString();
-            for (const handler of Array.from(set)) {
+            const list = Array.from(set);
+            for (let i = 0; i < list.length; i++) {
+              const handler = list[i];
               try {
                 handler(text);
               } catch (error) {
@@ -374,7 +398,8 @@ const createKafkaBroker = (options = {}) => {
     const rows = await client.fetchTopicOffsets(logTopic(topic));
     const low = {};
     const high = {};
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
       low[row.partition] = Number(row.low);
       high[row.partition] = Number(row.high);
     }
@@ -387,10 +412,13 @@ const createKafkaBroker = (options = {}) => {
   // initialized; the readers filter by offset anyway, so a failure here is
   // a slower read, never a wrong one.
   const seekAll = async (consumer, topic, offsets) => {
-    for (const [partition, offset] of Object.entries(offsets)) {
+    const keys = Object.keys(offsets);
+    for (let i = 0; i < keys.length; i++) {
+      const partition = Number(keys[i]);
+      const offset = `${offsets[keys[i]]}`;
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
-          consumer.seek({ topic, partition: Number(partition), offset: String(offset) });
+          consumer.seek({ topic, partition, offset });
           break;
         } catch (error) {
           if (attempt === 4) log.debug({ event: 'broker.kafka.seek', err: error, topic });
@@ -413,7 +441,7 @@ const createKafkaBroker = (options = {}) => {
       // nothing, so a restarted consumer resolves `latest` afresh and
       // whatever was appended meanwhile is gone from it. The readers move
       // to a fresh tail and catch up from their own cursors instead.
-      let unwatch = () => {};
+      let unwatch = NOOP;
       unwatch = healthWatcher(flavor, consumer, {
         onDown: (error) => {
           unwatch();
@@ -466,8 +494,10 @@ const createKafkaBroker = (options = {}) => {
       // The tip as a vector: every partition's next offset minus one.
       const cursor = {};
       let any = false;
-      for (const [partition, offset] of Object.entries(high)) {
-        cursor[Number(partition)] = offset - 1;
+      const keys = Object.keys(high);
+      for (let i = 0; i < keys.length; i++) {
+        const offset = high[keys[i]];
+        cursor[Number(keys[i])] = offset - 1;
         if (offset > 0) any = true;
       }
       return any ? cursor : null;
@@ -488,7 +518,7 @@ const createKafkaBroker = (options = {}) => {
       return page;
     },
     covered: (cursor, entry) => entry.offset <= (cursor?.[entry.partition] ?? -1),
-    advance: (cursor, entry) => ({ ...(cursor ?? {}), [entry.partition]: entry.offset }),
+    advance: (cursor, entry) => ({ ...cursor, [entry.partition]: entry.offset }),
   });
 
   // Pages in flight, by what they read; and the turnstile in front of them.
@@ -520,8 +550,10 @@ const createKafkaBroker = (options = {}) => {
     const wanted = {};
     const target = {};
     let pending = 0;
-    for (const [key, tip] of Object.entries(high)) {
-      const partition = Number(key);
+    const keys = Object.keys(high);
+    for (let i = 0; i < keys.length; i++) {
+      const tip = high[keys[i]];
+      const partition = Number(keys[i]);
       const asked = after === null || after === undefined ? 0 : (after[partition] ?? -1) + 1;
       const from = Math.max(asked, low[partition] ?? 0);
       if (from < tip) {
@@ -586,9 +618,8 @@ const createKafkaBroker = (options = {}) => {
     // Complete when every wanted partition reached its tip WITHIN the
     // page — what was fetched beyond `limit` is not handed over.
     const reached = {};
-    for (const entry of page) reached[entry.partition] = entry.offset;
-    const done = Object.keys(target).every((partition) => (reached[partition] ?? -1) >= target[partition]);
-    return { entries: page, done };
+    for (let i = 0; i < page.length; i++) reached[page[i].partition] = page[i].offset;
+    return { entries: page, done: reachedAll(target, reached) };
   };
 
   const parseId = (text) => (decodeVector(text) === null ? null : text);
@@ -596,8 +627,7 @@ const createKafkaBroker = (options = {}) => {
   // A cursor is a vector of partition offsets inside and its text outside.
   const encodeIds = (inner, guard) => guardedRead(inner, { guard, mapId: encodeVector });
 
-  const read = (topic, options = {}) => {
-    const { after = null, from = 'latest', signal = null } = options;
+  const read = (topic, { after = null, from = 'latest', signal = null } = {}) => {
     if (from !== 'latest' && from !== 'earliest') {
       throw new ArgumentError("kafka log.read: from must be 'latest' or 'earliest'");
     }
@@ -608,10 +638,13 @@ const createKafkaBroker = (options = {}) => {
     if (cursor === null) return failedRead(codedError('Malformed event id', 400));
     const guard = (async () => {
       const { low, high } = await watermarks(topic);
-      for (const [partition, offset] of Object.entries(cursor)) {
-        const tip = high[Number(partition)];
+      const keys = Object.keys(cursor);
+      for (let i = 0; i < keys.length; i++) {
+        const partition = Number(keys[i]);
+        const offset = cursor[keys[i]];
+        const tip = high[partition];
         if (tip === undefined || offset + 1 > tip) throw codedError('Event id is beyond the end of the log', 400);
-        if (offset + 1 < (low[Number(partition)] ?? 0)) {
+        if (offset + 1 < (low[partition] ?? 0)) {
           throw codedError('Event history was trimmed past this id', 410);
         }
       }
@@ -640,9 +673,9 @@ const createKafkaBroker = (options = {}) => {
     await send(topic, body, { headers: producerHeaders(headers), key });
   };
 
-  const consume = async (queue, onDelivery, options = {}) => {
+  const consume = async (queue, onDelivery, consumeOptions = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    const { group = queue, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
+    const { group = queue, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('kafka queue.consume', onDelivery, prefetch, deadLetter);
     const topic = await ensureTopic(queueTopic(queue));
     if (deadLetter) await ensureTopic(queueTopic(deadLetter));
@@ -667,7 +700,7 @@ const createKafkaBroker = (options = {}) => {
     });
 
     const commit = (partition, offset) =>
-      consumer.commitOffsets([{ topic, partition, offset: String(Number(offset) + 1) }]);
+      consumer.commitOffsets([{ topic, partition, offset: `${Number(offset) + 1}` }]);
 
     const handle = async ({ partition, message, heartbeat }) => {
       if (!state.running) return;
@@ -696,8 +729,7 @@ const createKafkaBroker = (options = {}) => {
             return;
           } catch (error) {
             if (error?.rebalanced === true) {
-              log.info({ event: 'broker.kafka.rebalanced', queue, id, action });
-              return;
+              return void log.info({ event: 'broker.kafka.rebalanced', queue, id, action });
             }
             if (round < SETTLE_ATTEMPTS - 1 && state.running) {
               await new Promise((resolve) => setTimeout(resolve, backoffDelay({ ...SETTLE_BACKOFF, attempt: round })));
@@ -706,7 +738,7 @@ const createKafkaBroker = (options = {}) => {
             state.healthy = false;
             report('broker.kafka.settle', error, { queue, id, action, attempt, partition });
             try {
-              consumer.seek({ topic, partition, offset: String(message.offset) });
+              consumer.seek({ topic, partition, offset: `${message.offset}` });
             } catch (seekError) {
               report('broker.kafka.seek', seekError, { queue, id });
             }
@@ -746,12 +778,12 @@ const createKafkaBroker = (options = {}) => {
         ack: () => finish('ack', () => commit(partition, message.offset)),
         retry: ({ delay = 0 } = {}) =>
           finish('retry', async () => {
-            await republish({ [ATTEMPT_HEADER]: String(attempt + 1) }, delay);
+            await republish({ [ATTEMPT_HEADER]: `${attempt + 1}` }, delay);
             await commit(partition, message.offset);
           }),
         release: () =>
           finish('release', async () => {
-            await republish({ [ATTEMPT_HEADER]: String(attempt) });
+            await republish({ [ATTEMPT_HEADER]: `${attempt}` });
             await commit(partition, message.offset);
           }),
         deadLetter: (reason = '') =>
@@ -761,7 +793,7 @@ const createKafkaBroker = (options = {}) => {
                 headers: {
                   ...headers,
                   [DEAD_REASON_HEADER]: reasonText(reason),
-                  [ATTEMPT_HEADER]: String(attempt),
+                  [ATTEMPT_HEADER]: `${attempt}`,
                 },
               });
             }
@@ -831,7 +863,8 @@ const createKafkaBroker = (options = {}) => {
     for (let next = waiting.shift(); next !== undefined; next = waiting.shift()) next();
     handlers.clear();
     ensured.clear();
-    for (const consumer of Array.from(consumers)) await closeConsumer(consumer);
+    const open = Array.from(consumers);
+    for (let i = 0; i < open.length; i++) await closeConsumer(open[i]);
     // The ephemeral groups still held — the backplane instance's, a tail's
     // — in one call, once every member left; a queue's durable group is not
     // this broker's to delete.

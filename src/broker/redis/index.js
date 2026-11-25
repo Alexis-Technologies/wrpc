@@ -70,12 +70,17 @@ const connected = (connection) => {
 // both halves outgrow Number's safe range in neither case but the STRING
 // order is wrong ('10-0' < '9-0').
 const compareIds = (a, b) => {
-  const [ams, aseq] = a.split('-');
-  const [bms, bseq] = b.split('-');
+  const left = a.split('-');
+  const right = b.split('-');
+  const ams = left[0];
+  const bms = right[0];
   if (ams.length !== bms.length) return ams.length < bms.length ? -1 : 1;
   if (ams !== bms) return ams < bms ? -1 : 1;
+  const aseq = left[1];
+  const bseq = right[1];
   if (aseq.length !== bseq.length) return aseq.length < bseq.length ? -1 : 1;
-  return aseq === bseq ? 0 : aseq < bseq ? -1 : 1;
+  if (aseq === bseq) return 0;
+  return aseq < bseq ? -1 : 1;
 };
 
 // XADD field pairs: the value, and the headers as one JSON field. Two
@@ -104,6 +109,18 @@ const decodeEntry = (id, fields) => {
     }
   }
   return { id, value, headers: toHeaders(parsed) };
+};
+
+// The entries XREAD answered for one topic of a tail: the topic's cursor
+// moved past each, and each handed to the topic's reader, if it still has
+// one.
+const deliverEntries = (tail, topic, entries) => {
+  const onEntry = tail.handlers.get(topic);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    tail.cursors.set(topic, entry[0]);
+    if (onEntry) onEntry(decodeEntry(entry[0], entry[1]));
+  }
 };
 
 const checkClient = (client, label) => {
@@ -199,8 +216,8 @@ const createRedisBroker = (options = {}) => {
   const range = async (topic, { after, limit }) => {
     const start = after === null || after === undefined ? '-' : `(${after}`;
     const rows = await client.xrange(streamKey(topic), start, '+', 'COUNT', limit);
-    const entries = new Array(rows.length);
-    for (let i = 0; i < rows.length; i++) entries[i] = decodeEntry(rows[i][0], rows[i][1]);
+    const entries = [];
+    for (let i = 0; i < rows.length; i++) entries.push(decodeEntry(rows[i][0], rows[i][1]));
     return entries;
   };
 
@@ -240,23 +257,18 @@ const createRedisBroker = (options = {}) => {
     try {
       for (;;) {
         if (closed || tail.handlers.size === 0) return;
-        const count = tail.handlers.size;
-        const args = new Array(5 + count * 2);
-        args[0] = 'COUNT';
-        args[1] = 512;
-        args[2] = 'BLOCK';
-        args[3] = blockMs;
-        args[4] = 'STREAMS';
+        // XREAD ... STREAMS <every key> <every id>.
+        const names = [];
+        const ids = [];
         const byKey = new Map();
-        let at = 0;
         for (const topic of tail.handlers.keys()) {
           const name = streamKey(topic);
           byKey.set(name, topic);
-          args[5 + at] = name;
-          args[5 + count + at] = tail.cursors.get(topic) ?? '$';
-          at++;
+          names.push(name);
+          ids.push(tail.cursors.get(topic) ?? '$');
         }
-        let rows;
+        const args = ['COUNT', 512, 'BLOCK', blockMs, 'STREAMS'].concat(names, ids);
+        let rows = null;
         try {
           // Bounded by TAIL_TOPICS: 16,389 arguments at most.
           rows = await tail.connection.xread(...args);
@@ -267,14 +279,7 @@ const createRedisBroker = (options = {}) => {
           continue;
         }
         if (!rows) continue;
-        for (const [name, entries] of rows) {
-          const topic = byKey.get(name);
-          const onEntry = tail.handlers.get(topic);
-          for (const [id, fields] of entries) {
-            tail.cursors.set(topic, id);
-            if (onEntry) onEntry(decodeEntry(id, fields));
-          }
-        }
+        for (let i = 0; i < rows.length; i++) deliverEntries(tail, byKey.get(rows[i][0]), rows[i][1]);
       }
     } finally {
       tail.running = false;
@@ -308,8 +313,7 @@ const createRedisBroker = (options = {}) => {
 
   const parseId = (text) => (typeof text === 'string' && text.length <= 64 && STREAM_ID.test(text) ? text : null);
 
-  const read = (topic, options = {}) => {
-    const { after = null, from = 'latest', signal = null } = options;
+  const read = (topic, { after = null, from = 'latest', signal = null } = {}) => {
     if (from !== 'latest' && from !== 'earliest') {
       throw new ArgumentError("redis log.read: from must be 'latest' or 'earliest'");
     }
@@ -323,7 +327,9 @@ const createRedisBroker = (options = {}) => {
     // Awaited by the iteration below AND by `ready`; a read nobody awaits
     // must not raise an unhandled rejection.
     const checked = (async () => {
-      const [last, first] = await Promise.all([tip(topic), firstId(topic)]);
+      const bounds = await Promise.all([tip(topic), firstId(topic)]);
+      const last = bounds[0];
+      const first = bounds[1];
       if (last === null || compareIds(after, last) > 0) throw codedError('Event id is beyond the end of the log', 400);
       if (first !== null && compareIds(after, first) < 0) {
         throw codedError('Event history was trimmed past this id', 410);
@@ -337,7 +343,7 @@ const createRedisBroker = (options = {}) => {
   const append = async (topic, value, { headers = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
     const fields = encodeFields(value, headers);
-    if (maxLen > 0) return client.xadd(streamKey(topic), 'MAXLEN', '~', String(maxLen), '*', ...fields);
+    if (maxLen > 0) return client.xadd(streamKey(topic), 'MAXLEN', '~', `${maxLen}`, '*', ...fields);
     return client.xadd(streamKey(topic), '*', ...fields);
   };
 
@@ -362,7 +368,7 @@ const createRedisBroker = (options = {}) => {
       await client.xgroup('CREATE', queueKey(name), group, '0', 'MKSTREAM');
     } catch (error) {
       // BUSYGROUP: the group is already there, with its own position.
-      if (!/BUSYGROUP/.test(String(error?.message))) throw error;
+      if (!/BUSYGROUP/.test(`${error?.message}`)) throw error;
     }
   };
 
@@ -371,9 +377,9 @@ const createRedisBroker = (options = {}) => {
     await client.xadd(queueKey(name), '*', ...encodeFields(body, producerHeaders(headers)));
   };
 
-  const consume = async (name, onDelivery, options = {}) => {
+  const consume = async (name, onDelivery, consumeOptions = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
+    const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('redis queue.consume', onDelivery, prefetch, deadLetter);
     const consumerName = `wrpc-${shortName()}`;
     const stream = queueKey(name);
@@ -436,14 +442,14 @@ const createRedisBroker = (options = {}) => {
         ack: () => finish(drop),
         retry: ({ delay = 0 } = {}) =>
           finish(async () => {
-            const headers = copyHeaders({ [ATTEMPT_HEADER]: String(attempt + 1) });
+            const headers = copyHeaders({ [ATTEMPT_HEADER]: `${attempt + 1}` });
             if (delay > 0) {
               // The member carries the message id: two retries of one
               // body and one header bag used to be ONE member of the set,
               // and the second overwrote the first — a message gone.
               await client.zadd(
                 delayedKey(name),
-                String(Date.now() + delay),
+                `${Date.now() + delay}`,
                 JSON.stringify({ id, body: message.body, headers }),
               );
             } else await requeue(message, headers);
@@ -451,7 +457,7 @@ const createRedisBroker = (options = {}) => {
           }),
         release: () =>
           finish(async () => {
-            await requeue(message, copyHeaders({ [ATTEMPT_HEADER]: String(attempt) }));
+            await requeue(message, copyHeaders({ [ATTEMPT_HEADER]: `${attempt}` }));
             await drop();
           }),
         deadLetter: (reason = '') =>
@@ -460,7 +466,7 @@ const createRedisBroker = (options = {}) => {
               const headers = {
                 ...entry.headers,
                 [DEAD_REASON_HEADER]: reasonText(reason),
-                [ATTEMPT_HEADER]: String(attempt),
+                [ATTEMPT_HEADER]: `${attempt}`,
               };
               await client.xadd(queueKey(deadLetter), '*', ...encodeFields(message.body, headers));
             }
@@ -485,7 +491,7 @@ const createRedisBroker = (options = {}) => {
         } catch (error) {
           // CROSSSLOT (keys the tag did not keep together on an older
           // layout) or NOSCRIPT policy: the two-step path below.
-          if (!/CROSSSLOT|NOSCRIPT|unknown command/i.test(String(error?.message))) throw error;
+          if (!/CROSSSLOT|NOSCRIPT|unknown command/i.test(`${error?.message}`)) throw error;
         }
       }
       if (score === null) {
@@ -500,7 +506,7 @@ const createRedisBroker = (options = {}) => {
         // even that fails, kept in memory until the next sweep here.
         const at = score ?? Date.now();
         try {
-          await client.zadd(delayedKey(name), String(at), item);
+          await client.zadd(delayedKey(name), `${at}`, item);
         } catch {
           stranded.push({ item, score: at });
         }
@@ -515,17 +521,29 @@ const createRedisBroker = (options = {}) => {
         // What an earlier sweep took off the set but could not put on the
         // stream, and could not put back either: tried again before
         // anything new.
-        for (const { item, score } of stranded.splice(0)) await promote(item, score);
-        const due = await client.zrangebyscore(delayedKey(name), '-inf', String(Date.now()), 'LIMIT', 0, 64);
-        for (const item of due) await promote(item, null);
-        const [, claimed] = await client.xautoclaim(stream, group, consumerName, String(claimIdleMs), '0', 'COUNT', 16);
-        for (const row of claimed ?? []) {
+        const rescued = stranded.splice(0);
+        for (let i = 0; i < rescued.length; i++) await promote(rescued[i].item, rescued[i].score);
+        const due = await client.zrangebyscore(delayedKey(name), '-inf', `${Date.now()}`, 'LIMIT', 0, 64);
+        for (let i = 0; i < due.length; i++) await promote(due[i], null);
+        const reply = await client.xautoclaim(stream, group, consumerName, `${claimIdleMs}`, '0', 'COUNT', 16);
+        const claimed = reply[1] ?? [];
+        for (let i = 0; i < claimed.length; i++) {
+          const row = claimed[i];
           if (!row || !row[1] || held.has(row[0])) continue;
           if (state.paused || !state.running || state.inflight >= prefetch) break;
           dispatch(row[0], row[1], { claimed: true });
         }
       } catch (error) {
         if (!closed) report('broker.redis.sweep', error, { queue: name });
+      }
+    };
+
+    // What XREADGROUP answered: dispatched, or held while paused or stopping.
+    const take = (entries) => {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (state.paused || !state.running) buffered.push(entry);
+        else dispatch(entry[0], entry[1]);
       }
     };
 
@@ -538,7 +556,7 @@ const createRedisBroker = (options = {}) => {
           if (!state.running || state.paused || closed) return;
           const capacity = prefetch - state.inflight;
           if (capacity <= 0) return;
-          let rows;
+          let rows = null;
           try {
             rows = await connection.xreadgroup(
               'GROUP',
@@ -561,12 +579,7 @@ const createRedisBroker = (options = {}) => {
             continue;
           }
           if (!rows) continue;
-          for (const [, entries] of rows) {
-            for (const [id, fields] of entries) {
-              if (state.paused || !state.running) buffered.push([id, fields]);
-              else dispatch(id, fields);
-            }
-          }
+          for (let i = 0; i < rows.length; i++) take(rows[i][1]);
         }
       } finally {
         reading = false;
@@ -597,8 +610,8 @@ const createRedisBroker = (options = {}) => {
       resume: async () => {
         state.paused = false;
         while (buffered.length > 0 && state.inflight < prefetch) {
-          const [id, fields] = buffered.shift();
-          dispatch(id, fields);
+          const entry = buffered.shift();
+          dispatch(entry[0], entry[1]);
         }
         void loop();
       },
@@ -654,13 +667,15 @@ const createRedisBroker = (options = {}) => {
     pubsub.on('message', (channel, message) => {
       const handlers = plain.get(channel);
       if (!handlers) return;
-      let decoded;
+      let decoded = null;
       try {
         decoded = decodeMessage(message);
       } catch (error) {
         return void report('broker.redis.decode', error, { channel });
       }
-      for (const handler of Array.from(handlers)) {
+      const list = Array.from(handlers);
+      for (let i = 0; i < list.length; i++) {
+        const handler = list[i];
         try {
           const result = handler(decoded);
           if (result && isFunction(result.catch)) result.catch((error) => report('broker.redis.listener', error));
@@ -716,9 +731,9 @@ const createRedisBroker = (options = {}) => {
     // lease ran out (a crashed listener) are pruned by whoever refreshes.
     const lease = async () => {
       const at = Date.now();
-      await client.zadd(members, String(at + inboxTtl), member);
-      await client.pexpire(members, String(inboxTtl * 2));
-      if (isFunction(client.zremrangebyscore)) await client.zremrangebyscore(members, '-inf', String(at - inboxTtl));
+      await client.zadd(members, `${at + inboxTtl}`, member);
+      await client.pexpire(members, `${inboxTtl * 2}`);
+      if (isFunction(client.zremrangebyscore)) await client.zremrangebyscore(members, '-inf', `${at - inboxTtl}`);
     };
     await lease();
     const beat = setInterval(
@@ -739,7 +754,7 @@ const createRedisBroker = (options = {}) => {
     const loop = async () => {
       for (;;) {
         if (!running || closed) return;
-        let popped;
+        let popped = null;
         try {
           popped = await connection.blpop(list, Math.max(1, Math.round(blockMs / 1000)));
           reading = true;
@@ -780,20 +795,22 @@ const createRedisBroker = (options = {}) => {
     return group === null || group === undefined ? listenPlain(address, onMessage) : listenGroup(address, onMessage);
   };
 
-  const send = async (address, body, options = {}) => {
+  const send = async (address, body, sendOptions = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    const payload = encodeMessage(body, options);
+    const payload = encodeMessage(body, sendOptions);
     const channel = inboxKey(address);
-    const [subscribers, alive] = await Promise.all([
+    const reached = await Promise.all([
       client.publish(channel, payload),
-      client.zrangebyscore(membersKey(address), String(Date.now()), '+inf', 'LIMIT', 0, 1),
+      client.zrangebyscore(membersKey(address), `${Date.now()}`, '+inf', 'LIMIT', 0, 1),
     ]);
+    const subscribers = reached[0];
+    const alive = reached[1];
     if (alive.length > 0) {
       // A TTL so a group that died does not leave work piling up forever;
       // the timeout hint (an RPC deadline) shortens it further.
-      const ttl = Math.max(1, Math.min(options.timeout ?? inboxTtl, inboxTtl));
+      const ttl = Math.max(1, Math.min(sendOptions.timeout ?? inboxTtl, inboxTtl));
       await client.rpush(listKey(address), payload);
-      await client.pexpire(listKey(address), String(ttl));
+      await client.pexpire(listKey(address), `${ttl}`);
       return;
     }
     // Nobody at all: the fast 503 an RPC caller wants instead of a timeout.
@@ -822,16 +839,19 @@ const createRedisBroker = (options = {}) => {
     tails.close();
     // The loops' connections sit in a blocking read: closed without waiting.
     const blocked = new Set();
-    for (const tail of tailers) {
-      tail.handlers.clear();
-      blocked.add(tail.connection);
+    for (let i = 0; i < tailers.length; i++) {
+      tailers[i].handlers.clear();
+      blocked.add(tailers[i].connection);
     }
     backplane.close();
     plain.clear();
     // Heartbeats, leases and sweep timers go with the broker: they used to
     // keep firing against the injected client after close().
-    for (const stop of Array.from(stops)) await stop();
-    for (const connection of Array.from(owned)) {
+    const stopping = Array.from(stops);
+    for (let i = 0; i < stopping.length; i++) await stopping[i]();
+    const quitting = Array.from(owned);
+    for (let i = 0; i < quitting.length; i++) {
+      const connection = quitting[i];
       owned.delete(connection);
       await quit(connection, { force: blocked.has(connection) });
     }

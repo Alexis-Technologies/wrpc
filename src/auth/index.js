@@ -56,7 +56,7 @@ const webStorage = (storage, { prefix = 'wrpc:' } = {}) => ({
 const cookieStorage = (doc, { prefix = 'wrpc:', maxAge = 31536000, path = '/', secure = true } = {}) => ({
   get: (key) => {
     const name = `${encodeURIComponent(prefix + key)}=`;
-    for (const part of String(doc.cookie ?? '').split('; ')) {
+    for (const part of `${doc.cookie ?? ''}`.split('; ')) {
       if (!part.startsWith(name)) continue;
       try {
         return JSON.parse(decodeURIComponent(part.slice(name.length)));
@@ -129,7 +129,7 @@ const bearerAuth = ({ store, signIn, refresh, key = 'tokens', on }) => {
       on: Array.isArray(on) && on.length > 0 ? on : [401, 403],
       handler: async (client, error) => {
         const tokens = await store.get(key);
-        let next;
+        let next = null;
         try {
           next = await refresh(client, tokens, error);
         } catch (refreshError) {

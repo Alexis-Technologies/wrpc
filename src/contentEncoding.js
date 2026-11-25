@@ -141,6 +141,7 @@ const normalizeCompression = (value, name, { streaming = false, zlib: lib = zlib
   if (typeof options !== 'object' || Array.isArray(options)) {
     throw new ConfigError(`${name}: compression must be true, false or an options object`);
   }
+  // oxlint-disable-next-line no-restricted-properties -- the compression option, not Array#filter
   const { threshold = DEFAULT_THRESHOLD, filter = null, encodings = ['gzip'], async: asyncOption = null } = options;
   if (!(Number.isInteger(threshold) && threshold >= 0)) {
     throw new ConfigError(`${name}: compression.threshold must be a non-negative integer`);
@@ -156,12 +157,16 @@ const normalizeCompression = (value, name, { streaming = false, zlib: lib = zlib
   if (!Array.isArray(encodings) || encodings.length === 0 || encodings.length > 8) {
     throw new ConfigError(`${name}: compression.encodings must be a list of one to eight encodings`);
   }
-  const encoders = encodings.map((entry) => toEncoder(entry, `${name}: compression.encodings`, lib));
+  // Built whole before it is checked: a list with an entry that is no
+  // encoding and a duplicate fails on the entry.
+  const label = `${name}: compression.encodings`;
+  const encoders = [];
+  for (let i = 0; i < encodings.length; i++) encoders.push(toEncoder(encodings[i], label, lib));
   for (let i = 0; i < encoders.length; i++) {
     const { token } = encoders[i];
     if (token === 'identity' || token === '*') throw new ConfigError(`${name}: ${token} is not an encoding to apply`);
-    if (encoders.findIndex((other) => other.token === token) !== i) {
-      throw new ConfigError(`${name}: compression.encodings names ${token} twice`);
+    for (let j = 0; j < i; j++) {
+      if (encoders[j].token === token) throw new ConfigError(`${name}: compression.encodings names ${token} twice`);
     }
     if (streaming && encoders[i].createStream === null) {
       throw new ConfigError(`${name}: the ${token} encoding has no createStream() — an SSE response needs one`);
@@ -253,6 +258,7 @@ const chooseEncoding = (compression, call, headers) => {
   for (const name in headers) {
     if (name.length === 16 && name.toLowerCase() === 'content-encoding') return null;
   }
+  // oxlint-disable-next-line no-restricted-properties -- the compression option, not Array#filter
   return compression.filter === null || compression.filter(call) === true ? encoder : null;
 };
 

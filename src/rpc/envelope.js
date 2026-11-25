@@ -133,7 +133,7 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
   const unframe = (body) => {
     if (body.length === 0) return null;
     const binary = (body[0] & FLAG_BINARY) !== 0;
-    let bytes;
+    let bytes = null;
     if ((body[0] & FLAG_COMPRESSED) === 0) bytes = body.subarray(1);
     else {
       if (codecs === null || body.length < 2) return null;

@@ -124,7 +124,8 @@ class RoomRegistry {
     const rooms = this.#joined.get(client);
     if (!rooms) return;
     // Copy: leave() mutates the very set being iterated.
-    for (const room of Array.from(rooms)) this.leave(client, room);
+    const list = Array.from(rooms);
+    for (let i = 0; i < list.length; i++) this.leave(client, list[i]);
     this.#joined.delete(client);
   }
 
@@ -133,7 +134,7 @@ class RoomRegistry {
     this.#rooms.clear();
     this.#joined.clear();
     if (!this.#onUnsubscribe) return;
-    for (const room of rooms) this.#onUnsubscribe(room);
+    for (let i = 0; i < rooms.length; i++) this.#onUnsubscribe(rooms[i]);
   }
 }
 
@@ -203,7 +204,7 @@ class Broadcast {
   // with an empty list is the dangerous case — the reading where it falls
   // back to every connected client is the `WHERE id IN ()` mistake.
   to(...rooms) {
-    for (const room of rooms) checkRoom(room);
+    for (let i = 0; i < rooms.length; i++) checkRoom(rooms[i]);
     const targets = this.#targets ? [...this.#targets, ...rooms] : [...rooms];
     return this.#derive({ targets });
   }
@@ -211,7 +212,7 @@ class Broadcast {
   except(...clients) {
     if (clients.length === 0) return this;
     const excluded = new Set(this.#excluded);
-    for (const client of clients) excluded.add(client);
+    for (let i = 0; i < clients.length; i++) excluded.add(clients[i]);
     return this.#derive({ excluded });
   }
 
@@ -230,8 +231,8 @@ class Broadcast {
     if (!this.#targets) return this.#clients();
     if (this.#targets.length === 1) return this.#registry.members(this.#targets[0]);
     const recipients = new Set();
-    for (const room of this.#targets) {
-      for (const client of this.#registry.members(room)) recipients.add(client);
+    for (let i = 0; i < this.#targets.length; i++) {
+      for (const client of this.#registry.members(this.#targets[i])) recipients.add(client);
     }
     return recipients;
   }
@@ -258,7 +259,7 @@ class Broadcast {
     // JSON.stringify (and utf8 encoding downstream) N times for one emit.
     // A payload that cannot serialize (circular) is reported, not thrown:
     // the broadcaster is usually far from whoever built the value.
-    let text;
+    let text = null;
     let binary = false;
     const packet = { type: 'event', name, data };
     try {
@@ -362,19 +363,23 @@ class Broadcast {
       !this.#localOnly && this.#cluster
         ? this.#cluster.broadcastAsk(this.#targets, name, data, timeout)
         : Promise.resolve(EMPTY_ASK);
-    return Promise.all([local.done, remote]).then(([mine, theirs]) => ({
-      answers: [...mine.answers, ...theirs.answers],
-      errors: [...mine.errors, ...theirs.errors],
-      expected: local.expected + theirs.expected,
-      incomplete: Boolean(theirs.incomplete),
-    }));
+    return Promise.all([local.done, remote]).then((legs) => {
+      const mine = legs[0];
+      const theirs = legs[1];
+      return {
+        answers: [...mine.answers, ...theirs.answers],
+        errors: [...mine.errors, ...theirs.errors],
+        expected: local.expected + theirs.expected,
+        incomplete: Boolean(theirs.incomplete),
+      };
+    });
   }
 
   // The local leg. The payload is serialized ONCE for the whole fan-out —
   // an ack needs a per-recipient id, but that is a suffix concatenation on
   // the shared prefix, not a second JSON.stringify of the data.
   #askLocal(name, data, timeout) {
-    let prefix;
+    let prefix = null;
     try {
       // The suffix surgery below splices a per-recipient id into JSON text;
       // under a codec the whole packet is encoded per recipient instead —
@@ -408,7 +413,8 @@ class Broadcast {
     const done = Promise.allSettled(pending).then((settled) => {
       const answers = [];
       const errors = [];
-      for (const outcome of settled) {
+      for (let i = 0; i < settled.length; i++) {
+        const outcome = settled[i];
         if (outcome.status === 'fulfilled') {
           answers.push(outcome.value);
           continue;
@@ -498,7 +504,7 @@ class RoomsBackplane {
     this.#log = createLoggerWriter(log);
     this.#linger = linger > 0 ? linger : 0;
     this.#maxTracked = maxTracked;
-    this.#epoch = String(epoch);
+    this.#epoch = `${epoch}`;
     this.#onGap = typeof onGap === 'function' ? onGap : null;
     this.#envelope = envelope;
   }
@@ -785,7 +791,10 @@ class RoomsBackplane {
     this.#closed = true;
     this.#seq.clear();
     this.#seqOld.clear();
-    for (const [channel, record] of Array.from(this.#channels)) {
+    const channels = Array.from(this.#channels);
+    for (let i = 0; i < channels.length; i++) {
+      const channel = channels[i][0];
+      const record = channels[i][1];
       if (record.off) {
         this.#dispose(channel, record);
         continue;

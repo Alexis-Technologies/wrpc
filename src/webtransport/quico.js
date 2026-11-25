@@ -42,6 +42,9 @@ const source = () => {
   };
 };
 
+// The request events that end a session.
+const SESSION_ENDS = ['close', 'end', 'error', 'aborted'];
+
 const toWtStream = (duplex) => {
   if (isWtStream(duplex)) return duplex;
   return { readable: Readable.toWeb(duplex), writable: Writable.toWeb(duplex) };
@@ -82,9 +85,8 @@ const fromQuico = (req, res, { accept = true, maxDatagramSize = 1200 } = {}) => 
   req.on('datagram', (data) => datagramsIn.push(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)));
   // quico 0.4 reports none of these for a session that vanished — pair the
   // adapter with attachSession's idleTimeout for liveness.
-  for (const event of ['close', 'end', 'error', 'aborted']) {
-    req.on(event, () => finish({ closeCode: 0, reason: '' }));
-  }
+  const ended = () => finish({ closeCode: 0, reason: '' });
+  for (let i = 0; i < SESSION_ENDS.length; i++) req.on(SESSION_ENDS[i], ended);
   const session = {
     ready: Promise.resolve(),
     closed,
@@ -123,10 +125,12 @@ const fromQuico = (req, res, { accept = true, maxDatagramSize = 1200 } = {}) => 
     },
   };
   const headers = {};
-  for (const name in req.headers) {
+  const names = Object.keys(req.headers);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
     if (name.charCodeAt(0) === 58) continue;
     const value = req.headers[name];
-    if (value !== undefined && value !== null) headers[name.toLowerCase()] = String(value);
+    if (value !== undefined && value !== null) headers[name.toLowerCase()] = `${value}`;
   }
   const url = typeof req.url === 'string' ? req.url : (req.headers[':path'] ?? '/');
   const remoteAddress = req.socket?.remoteAddress ?? req.remoteAddress ?? '';

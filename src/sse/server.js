@@ -163,6 +163,7 @@ class SseChannel {
     // for the ring — bench/replay-buffer.js; same shape as EventLog and
     // SegmentQueue. Capacity is `replay` (the frame-count budget); the byte
     // budget below can hold the COUNT lower, never higher.
+    // oxlint-disable-next-line unicorn/no-new-array
     this.buffer = new Array(replay);
     this.head = 0;
     this.count = 0;

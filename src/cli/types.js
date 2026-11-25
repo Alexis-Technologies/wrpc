@@ -116,6 +116,8 @@ const FLAGS_WITH_VALUE = new Set([
   '--timeout',
 ]);
 
+const toStdout = (target) => (target === '-' ? 1 : 0);
+
 const parseArgs = (argv) => {
   const options = {
     units: [],
@@ -155,15 +157,16 @@ const parseArgs = (argv) => {
     if (arg.startsWith('-') && arg !== '-') fail(`Unknown option ${arg}`);
     positional.push(arg);
   }
-  const [command, url, ...extra] = positional;
+  const command = positional[0];
+  const url = positional[1];
   if (!command) fail('Missing command. Try `wrpc types <url> --out api.d.ts`.');
   if (command !== 'types') fail(`Unknown command '${command}'. The only command is 'types'.`);
   if (!url) fail('Missing <url>. Try `wrpc types http://localhost:8000/api --out api.d.ts`.');
-  if (extra.length > 0) fail(`Unexpected argument '${extra[0]}'`);
+  if (positional.length > 2) fail(`Unexpected argument '${positional[2]}'`);
   if (!options.out) fail("Missing --out <path>. Use '--out -' to write to stdout.");
   // An empty --units would filter every unit away and generate an empty
   // interface, which looks like a working run and is not one.
-  if (options.units.some((unit) => unit === '')) fail('--units must not contain an empty unit name');
+  if (options.units.includes('')) fail('--units must not contain an empty unit name');
   if (!IDENTIFIER.test(options.interfaceName)) {
     fail(`--interface must be a valid TypeScript identifier, got '${options.interfaceName}'`);
   }
@@ -179,8 +182,8 @@ const parseArgs = (argv) => {
   }
   // Two artifacts cannot share one stdout: the result would be a .d.ts and a
   // module concatenated into something that is neither.
-  const stdouts = [options.out, options.schema, options.openapi].filter((target) => target === '-');
-  if (stdouts.length > 1) fail("only one of --out, --schema and --openapi may write to stdout ('-')");
+  const stdouts = toStdout(options.out) + toStdout(options.schema) + toStdout(options.openapi);
+  if (stdouts > 1) fail("only one of --out, --schema and --openapi may write to stdout ('-')");
   if (options.schema !== undefined && options.format === undefined) options.format = 'cjs';
   return { ...options, url };
 };
@@ -207,7 +210,7 @@ const quoteKey = (name) => {
 // reaches the output, so it must not be able to close the comment or start a
 // new line of code.
 const commentText = (text) =>
-  String(text)
+  `${text}`
     .replace(/\*\//g, '* /')
     // Matching control characters is the entire point: a newline (or a line
     // separator, which JSON does not escape) would end the comment and turn
@@ -227,10 +230,10 @@ const sourceLabel = (url) => {
 };
 
 const renderTypeName = (text, warn) => {
-  const parts = text.split('|').map((part) => part.trim());
+  const parts = text.split('|');
   const rendered = [];
-  for (const part of parts) {
-    const match = TYPE_REF.exec(part);
+  for (let i = 0; i < parts.length; i++) {
+    const match = TYPE_REF.exec(parts[i].trim());
     if (!match || !TYPE_NAMES.has(match[1])) {
       warn(`unknown type '${text}' in a signature; using 'unknown'`);
       return 'unknown';
@@ -262,9 +265,13 @@ const renderType = (shape, warn, depth = 0) => {
   }
   if (isFieldMap(shape)) {
     const fields = [];
-    // Object.entries, never a lookup by name: a descriptor arriving as JSON
-    // can carry a '__proto__' key, and it must be read as data.
-    for (const [rawKey, value] of Object.entries(shape)) {
+    // Own keys, each read as the own property it is: a descriptor arriving
+    // as JSON can carry a '__proto__' key, and JSON.parse makes it an own
+    // data property, which a read by that name finds before the prototype.
+    const keys = Object.keys(shape);
+    for (let i = 0; i < keys.length; i++) {
+      const rawKey = keys[i];
+      const value = shape[rawKey];
       const optional = rawKey.endsWith('?');
       const name = optional ? rawKey.slice(0, -1) : rawKey;
       if (name === '') {
@@ -302,7 +309,7 @@ const renderSends = (unitKey, inbound, warn) => {
     return [];
   }
   const entries = [];
-  for (const name of Object.keys(inbound).sort()) {
+  for (const name of Object.keys(inbound).toSorted()) {
     const info = inbound[name];
     if (!isFieldMap(info)) continue;
     const signature = signatureOf(info, `${unitKey}/on.${name}`, warn);
@@ -319,7 +326,7 @@ const renderEmits = (unitKey, emits, warn) => {
     return [];
   }
   const entries = [];
-  for (const name of Object.keys(emits).sort()) {
+  for (const name of Object.keys(emits).toSorted()) {
     const descriptor = emits[name];
     if (!isFieldMap(descriptor)) {
       warn(`${unitKey}.emits.${name} is not a descriptor; skipped`);
@@ -374,14 +381,14 @@ const renderTypes = (introspection, options = {}) => {
   let subscriptions = 0;
   // Sorted, so re-running the command produces a byte-identical file and a
   // diff means the server changed.
-  for (const unitKey of Object.keys(introspection).sort()) {
+  for (const unitKey of Object.keys(introspection).toSorted()) {
     const methods = introspection[unitKey];
     if (!isFieldMap(methods)) {
       warn(`unit '${unitKey}' is not an object of methods; skipped`);
       continue;
     }
     const body = [];
-    for (const method of Object.keys(methods).sort()) {
+    for (const method of Object.keys(methods).toSorted()) {
       // The reserved typed-event blocks, rendered below — never methods.
       if (method === 'on' || method === 'emits') continue;
       const info = methods[method];
@@ -405,7 +412,9 @@ const renderTypes = (introspection, options = {}) => {
       units.push(`  ${quoteKey(unitKey)}: Record<string, never>;`);
       continue;
     }
-    units.push(`  ${quoteKey(unitKey)}: {\n${body.map((line) => `  ${line}`).join('\n')}\n  };`);
+    let indented = '';
+    for (let i = 0; i < body.length; i++) indented += `\n  ${body[i]}`;
+    units.push(`  ${quoteKey(unitKey)}: {${indented}\n  };`);
   }
   const lines = [
     '// Generated by `wrpc types`. Do not edit — re-run the command instead.',
@@ -453,7 +462,7 @@ const openApiParameters = (part, location, target, warn) => {
   }
   const required = Array.isArray(part.required) ? part.required : [];
   const parameters = [];
-  for (const name of Object.keys(properties).sort()) {
+  for (const name of Object.keys(properties).toSorted()) {
     parameters.push({
       name,
       in: location,
@@ -481,10 +490,10 @@ const renderOpenApi = (introspection, options = {}) => {
   if (!isFieldMap(introspection)) fail('The server did not answer introspection with an object');
   const paths = {};
   let routes = 0;
-  for (const unitKey of Object.keys(introspection).sort()) {
+  for (const unitKey of Object.keys(introspection).toSorted()) {
     const methods = introspection[unitKey];
     if (!isFieldMap(methods)) continue;
-    for (const method of Object.keys(methods).sort()) {
+    for (const method of Object.keys(methods).toSorted()) {
       if (method === 'on' || method === 'emits') continue;
       const info = methods[method];
       if (!isFieldMap(info) || !isFieldMapLike(info.http)) continue;
@@ -499,7 +508,7 @@ const renderOpenApi = (introspection, options = {}) => {
       const operation = {
         operationId: target,
         responses: {
-          [String(status)]:
+          [`${status}`]:
             status === 204 ? { description: 'No content' } : { description: 'The procedure result, as JSON' },
           default: {
             description: 'A wrpc wire error',
@@ -557,14 +566,14 @@ const renderStatic = (introspection, options = {}) => {
   // land as data, not as a prototype), so re-running the command produces a
   // byte-identical file and a diff means the server changed.
   const sorted = { __proto__: null };
-  for (const unitKey of Object.keys(introspection).sort()) {
+  for (const unitKey of Object.keys(introspection).toSorted()) {
     const methods = introspection[unitKey];
     if (!isFieldMap(methods)) {
       warn(`unit '${unitKey}' is not an object of methods; skipped`);
       continue;
     }
     const unit = { __proto__: null };
-    for (const method of Object.keys(methods).sort()) unit[method] = methods[method];
+    for (const method of Object.keys(methods).toSorted()) unit[method] = methods[method];
     sorted[unitKey] = unit;
   }
   const json = JSON.stringify(sorted, null, 2);
@@ -659,7 +668,12 @@ const fetchIntrospection = async (url, units, doFetch, timeout = DEFAULT_TIMEOUT
  */
 const main = async (argv, io = {}) => {
   const {
+    // The terminal of the `wrpc` command, an app around the library. Looked up
+    // at call time, and the console rather than process.stdout.write: it
+    // swallows the EPIPE of `wrpc types … --out - | head`.
+    // oxlint-disable-next-line no-console
     log = (text) => void console.log(text),
+    // oxlint-disable-next-line no-console
     error = (text) => void console.error(text),
     fetch: doFetch = globalThis.fetch,
     write = writeFile,

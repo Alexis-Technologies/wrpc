@@ -307,7 +307,7 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
       senders.delete(id);
       refuse('kid');
     }
-    let bytes;
+    let bytes = null;
     try {
       bytes = entry.key.open(
         nonceOf(active, counter),

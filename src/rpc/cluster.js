@@ -87,6 +87,23 @@ const entryHash = (room, count) => {
 
 const instanceChannel = (instance) => INSTANCE_CHANNEL_PREFIX + instance;
 
+// `maxFetch: 0` turns the cap off; anything but a positive number is the default.
+const maxFetchOf = (value) => {
+  if (value === 0) return 0;
+  return value > 0 ? value : DEFAULT_MAX_FETCH;
+};
+
+// A fetch reply's descriptors: the reply itself, or its `list`.
+const replyList = (payload) => {
+  if (Array.isArray(payload)) return payload;
+  return Array.isArray(payload?.list) ? payload.list : null;
+};
+
+const isStringList = (list) => {
+  for (let i = 0; i < list.length; i++) if (typeof list[i] !== 'string') return false;
+  return true;
+};
+
 // The instance a prefixed client id belongs to: everything before the first
 // dot. A standalone Client's id has no dot and no instance — not addressable.
 const instanceOfClientId = (id) => {
@@ -181,7 +198,7 @@ class Cluster extends Emitter {
     this.#presenceInterval = interval;
     this.#presenceTimeout = options.presenceTimeout > 0 ? options.presenceTimeout : interval * 3;
     this.#requestTimeout = options.requestTimeout > 0 ? options.requestTimeout : DEFAULT_REQUEST_TIMEOUT;
-    this.#maxFetch = options.maxFetch === 0 ? 0 : options.maxFetch > 0 ? options.maxFetch : DEFAULT_MAX_FETCH;
+    this.#maxFetch = maxFetchOf(options.maxFetch);
     this.#roomsFilter = normalizeRoomsFilter(options.rooms);
     // Opt-in envelope authentication (`cluster: { secret }`). The backplane
     // is a TRUST PEER of every node: without a secret, anything that can
@@ -258,11 +275,13 @@ class Cluster extends Emitter {
     // Goodbye first, while the publish path still works: receivers evict
     // immediately instead of waiting out presenceTimeout.
     if (this.#backplane) this.#post(CLUSTER_CHANNEL, { t: 'bye' });
-    for (const off of this.#unsubscribes) this.#safeOff(off);
+    for (let i = 0; i < this.#unsubscribes.length; i++) this.#safeOff(this.#unsubscribes[i]);
     this.#unsubscribes.length = 0;
     // Whatever was waiting on the cluster resolves with what it has.
-    for (const [requestId, request] of Array.from(this.#requests)) {
-      this.#requests.delete(requestId);
+    const requests = Array.from(this.#requests);
+    for (let i = 0; i < requests.length; i++) {
+      const request = requests[i][1];
+      this.#requests.delete(requests[i][0]);
       clearTimeout(request.timer);
       request.settle(true);
     }
@@ -332,8 +351,9 @@ class Cluster extends Emitter {
     const snapshot = this.#local.snapshot();
     if (!this.#roomsFilter) return snapshot;
     const rooms = { __proto__: null };
-    for (const room in snapshot.rooms) {
-      if (this.#roomsFilter(room)) rooms[room] = snapshot.rooms[room];
+    const names = Object.keys(snapshot.rooms);
+    for (let i = 0; i < names.length; i++) {
+      if (this.#roomsFilter(names[i])) rooms[names[i]] = snapshot.rooms[names[i]];
     }
     return { rooms, clients: snapshot.clients };
   }
@@ -349,25 +369,22 @@ class Cluster extends Emitter {
   #tick() {
     const { rooms, clients } = this.#snapshot();
     let hash = 0;
-    let count = 0;
-    for (const room in rooms) {
-      hash = (hash + entryHash(room, rooms[room])) >>> 0;
-      count++;
-    }
-    this.#post(CLUSTER_CHANNEL, { t: 'digest', clients, n: count, h: hash });
+    const names = Object.keys(rooms);
+    for (let i = 0; i < names.length; i++) hash = (hash + entryHash(names[i], rooms[names[i]])) >>> 0;
+    this.#post(CLUSTER_CHANNEL, { t: 'digest', clients, n: names.length, h: hash });
     const now = Date.now();
     const deadline = now - this.#presenceTimeout;
-    for (const [instance, node] of this.#nodes) {
-      if (node.lastSeen < deadline) this.#evict(instance, 'timeout');
+    for (const node of this.#nodes) {
+      if (node[1].lastSeen < deadline) this.#evict(node[0], 'timeout');
     }
     // A sender's replay guard outlives its presence record on purpose — an
     // evicted node's envelopes are exactly what a replay would bring back —
     // and is dropped once the clock alone refuses everything it remembers.
-    for (const [instance, guard] of this.#guards) {
-      if (now - guard.newest > this.#maxSkew) this.#guards.delete(instance);
+    for (const guard of this.#guards) {
+      if (now - guard[1].newest > this.#maxSkew) this.#guards.delete(guard[0]);
     }
-    for (const [key, warned] of this.#refused) {
-      if (warned < deadline) this.#refused.delete(key);
+    for (const refusal of this.#refused) {
+      if (refusal[1] < deadline) this.#refused.delete(refusal[0]);
     }
   }
 
@@ -485,10 +502,10 @@ class Cluster extends Emitter {
       instances[this.#instance] = local;
       total += local;
     }
-    for (const [instance, node] of this.#nodes) {
-      const count = node.rooms.get(room) ?? 0;
+    for (const node of this.#nodes) {
+      const count = node[1].rooms.get(room) ?? 0;
       if (count === 0) continue;
-      instances[instance] = count;
+      instances[node[0]] = count;
       total += count;
     }
     return { total, instances };
@@ -661,12 +678,13 @@ class Cluster extends Emitter {
     node.clients = typeof clients === 'number' ? clients : 0;
     node.rooms = new Map();
     if (rooms && typeof rooms === 'object') {
-      // for...in, not Object.entries: this runs per presence snapshot per peer,
-      // and entries allocated an array plus a pair object for every room —
-      // 2.4× the time on a thousand rooms (bench/object-walk.js).
-      for (const room in rooms) {
-        const count = rooms[room];
-        if (typeof count === 'number' && count > 0) node.rooms.set(room, count);
+      // Not Object.entries: this runs per presence snapshot per peer, and
+      // entries allocated an array plus a pair object for every room — 2.4×
+      // the time on a thousand rooms (bench/object-walk.js).
+      const names = Object.keys(rooms);
+      for (let i = 0; i < names.length; i++) {
+        const count = rooms[names[i]];
+        if (typeof count === 'number' && count > 0) node.rooms.set(names[i], count);
       }
     }
   }
@@ -689,10 +707,12 @@ class Cluster extends Emitter {
   // delivered them makes the settled result incomplete even though nobody
   // is left to wait for.
   #stopWaitingFor(instance) {
-    for (const [requestId, request] of Array.from(this.#requests)) {
+    const requests = Array.from(this.#requests);
+    for (let i = 0; i < requests.length; i++) {
+      const request = requests[i][1];
       if (!request.missing.delete(instance)) continue;
       if (request.missing.size > 0) continue;
-      this.#requests.delete(requestId);
+      this.#requests.delete(requests[i][0]);
       clearTimeout(request.timer);
       request.settle(this.#hasUndelivered(request));
     }
@@ -735,7 +755,8 @@ class Cluster extends Emitter {
       ({ payloads, incomplete }) => {
         const answers = [];
         const errors = [];
-        for (const payload of payloads) {
+        for (let i = 0; i < payloads.length; i++) {
+          const payload = payloads[i];
           if (payload && typeof payload === 'object' && 'error' in payload) errors.push(payload.error);
           else answers.push(payload?.value);
         }
@@ -776,13 +797,14 @@ class Cluster extends Emitter {
     return this.#request('fetch', { sel }, options.timeout ?? this.#requestTimeout).then(({ payloads, incomplete }) => {
       const clients = local;
       let truncated = false;
-      for (const payload of payloads) {
+      for (let i = 0; i < payloads.length; i++) {
+        const payload = payloads[i];
         // push(...payload) is Function.prototype.apply in disguise and throws
         // RangeError once a fan-in exceeds the engine's argument limit — a hard
         // failure on exactly the large deployments this path exists to serve.
-        const list = Array.isArray(payload) ? payload : Array.isArray(payload?.list) ? payload.list : null;
+        const list = replyList(payload);
         if (payload?.truncated === true) truncated = true;
-        if (list) for (let i = 0; i < list.length; i++) clients.push(list[i]);
+        if (list) for (let j = 0; j < list.length; j++) clients.push(list[j]);
       }
       if (incomplete) {
         this.#log.warn({ event: 'cluster.fetch.incomplete', received: clients.length });
@@ -893,12 +915,13 @@ class Cluster extends Emitter {
     return this.#request('bask', { rooms, name, data, timeout }, budget).then(({ payloads, meta, incomplete }) => {
       const answers = [];
       const errors = [];
-      for (const payload of payloads) {
+      for (let i = 0; i < payloads.length; i++) {
+        const payload = payloads[i];
         if (!payload || typeof payload !== 'object') continue;
         // Appended by index, not spread: see the note on fetchClients above.
         const { answers: mine, errors: theirs } = payload;
-        if (Array.isArray(mine)) for (let i = 0; i < mine.length; i++) answers.push(mine[i]);
-        if (Array.isArray(theirs)) for (let i = 0; i < theirs.length; i++) errors.push(theirs[i]);
+        if (Array.isArray(mine)) for (let j = 0; j < mine.length; j++) answers.push(mine[j]);
+        if (Array.isArray(theirs)) for (let j = 0; j < theirs.length; j++) errors.push(theirs[j]);
       }
       return { answers, errors, expected: meta.expected, incomplete };
     });
@@ -939,6 +962,8 @@ class Cluster extends Emitter {
       // waiting out the full timeout would just park the caller.
       if (!this.#post(CLUSTER_CHANNEL, { t: 'q', q: requestId, op, args }, args.data)) {
         this.#requests.delete(requestId);
+        // Settled once: the timer that settles it otherwise is cleared here.
+        // oxlint-disable-next-line promise/no-multiple-resolved
         clearTimeout(request.timer);
         request.settle(true);
       }
@@ -1069,8 +1094,7 @@ class Cluster extends Emitter {
       // would trigger the epoch sweep and settle the request without the
       // answer we are holding in our hands.
       this.#answer(envelope);
-      this.#seen(from, epoch);
-      return;
+      return void this.#seen(from, epoch);
     }
     // EVERY message is a liveness proof — the snapshot only fills silence.
     const node = this.#seen(from, epoch);
@@ -1079,8 +1103,7 @@ class Cluster extends Emitter {
         this.#applySnapshot(node, envelope);
         // Addressed, not broadcast: N answers reach one newcomer instead of
         // N answers reaching N nodes.
-        this.#post(instanceChannel(from), { t: 'state', ...this.#snapshot() });
-        return;
+        return void this.#post(instanceChannel(from), { t: 'state', ...this.#snapshot() });
       case 'state':
         node.syncing = 0;
         return void this.#applySnapshot(node, envelope);
@@ -1089,12 +1112,8 @@ class Cluster extends Emitter {
         if (typeof clients === 'number') node.clients = clients;
         if (typeof n !== 'number' || typeof h !== 'number') return;
         let hash = 0;
-        let count = 0;
-        for (const [room, roomCount] of node.rooms) {
-          hash = (hash + entryHash(room, roomCount)) >>> 0;
-          count++;
-        }
-        if (count === n && hash === h) return; // the view is correct
+        for (const entry of node.rooms) hash = (hash + entryHash(entry[0], entry[1])) >>> 0;
+        if (node.rooms.size === n && hash === h) return; // the view is correct
         // One outstanding sync per node: the answering 'state' clears it,
         // so a slow answer cannot stack requests every tick. The wait is
         // BOUNDED: the answer travels at-most-once too (our own inbox
@@ -1105,8 +1124,7 @@ class Cluster extends Emitter {
         const now = Date.now();
         if (node.syncing && now - node.syncing < this.#presenceInterval * 2) return;
         node.syncing = now;
-        this.#post(instanceChannel(from), { t: 'sync' });
-        return;
+        return void this.#post(instanceChannel(from), { t: 'sync' });
       }
       case 'sync':
         // Addressed: one node's view of us drifted; hand it the table.
@@ -1136,9 +1154,7 @@ class Cluster extends Emitter {
         // command is dropped, never partially run.
         if (typeof op !== 'string') return;
         if (sel !== undefined && (typeof sel !== 'object' || sel === null || Array.isArray(sel))) return;
-        if (rooms !== undefined && (!Array.isArray(rooms) || rooms.some((room) => typeof room !== 'string'))) {
-          return;
-        }
+        if (rooms !== undefined && (!Array.isArray(rooms) || !isStringList(rooms))) return;
         if (op === 'event' && (typeof name !== 'string' || name.length === 0)) return;
         try {
           // `op` arrived from a peer: an unrecognised one is ignored, the same

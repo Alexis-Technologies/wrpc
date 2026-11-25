@@ -316,7 +316,9 @@ class HandshakeState {
   async write(payload = EMPTY) {
     if (!this.writing) throw new Error("encryption: not this side's turn to write");
     const parts = [];
-    for (const token of this.#pattern.messages[this.#index]) {
+    const tokens = this.#pattern.messages[this.#index];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
       if (token === 'e') {
         this.#e = this.#fixedEphemeral
           ? await this.#dh.keyPair(this.#fixedEphemeral)
@@ -352,7 +354,9 @@ class HandshakeState {
       offset += size;
       return part;
     };
-    for (const token of this.#pattern.messages[this.#index]) {
+    const tokens = this.#pattern.messages[this.#index];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
       if (token === 'e') {
         this.#re = Uint8Array.from(take(length));
         if (isZero(this.#re)) throw new Error('encryption: malformed handshake message');
@@ -379,7 +383,9 @@ class HandshakeState {
    */
   async finish() {
     if (!this.done) throw new Error('encryption: the handshake is not finished');
-    const [first, second] = await this.#symmetric.split(this.#rekeyAfter);
+    const states = await this.#symmetric.split(this.#rekeyAfter);
+    const first = states[0];
+    const second = states[1];
     return {
       send: this.#initiator ? first : second,
       receive: this.#initiator ? second : first,

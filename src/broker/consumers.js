@@ -112,6 +112,38 @@ const labelOf = (unitKey, name) => `${unitKey}/${name}`;
 
 const parseJson = (body) => JSON.parse(body);
 
+// The header names a binding copies into `meta`, lower-cased; null for a
+// list that is not one of names.
+const headerNames = (list) => {
+  if (!Array.isArray(list)) return null;
+  const names = [];
+  for (let i = 0; i < list.length; i++) {
+    const name = list[i];
+    if (typeof name !== 'string') return null;
+    names.push(name.toLowerCase());
+  }
+  return names;
+};
+
+// Every handle's `method()`, at once.
+const eachHandle = (handles, method) => {
+  const pending = [];
+  for (let i = 0; i < handles.length; i++) pending.push(handles[i][method]());
+  return Promise.all(pending);
+};
+
+// A client dropped from the cache outlives its last delivery, not longer.
+// Closing it at once settled every call it still held as released — the
+// broker redelivered them, so a cache merely wrapping around under more
+// distinct tokens than `tokenClients` turned into duplicated work, and
+// under prefetch > tokenClients into a livelock where no delivery ever
+// finished. Retired instead: the delivery that finds it so closes it after
+// its own settlement (see onDelivery).
+const retire = (attached) => {
+  if (attached.transport.pending === 0) attached.transport.close();
+  else attached.retired = true;
+};
+
 // How long every slot of a binding may be taken before it is not healthy.
 const DEFAULT_STALL_AFTER = 60_000;
 
@@ -169,9 +201,8 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
   if (!identity || typeof identity !== 'object' || !TRUST.has(identity.trust)) {
     throw new ConfigError(`${label}: identity.trust must be 'none', 'service' or 'token'`);
   }
-  if (!Array.isArray(meta) || !meta.every((name) => typeof name === 'string')) {
-    throw new ConfigError(`${label}: meta must be an array of header names`);
-  }
+  const metaNames = headerNames(meta);
+  if (metaNames === null) throw new ConfigError(`${label}: meta must be an array of header names`);
   if (typeof args !== 'function') throw new ConfigError(`${label}: args must be a function`);
   return {
     queue,
@@ -183,7 +214,7 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
     deadLetter: dead || null,
     sealedFor,
     identity: { trust: identity.trust, session: identity.session ?? null, header: identity.header ?? 'authorization' },
-    meta: meta.map((name) => name.toLowerCase()),
+    meta: metaNames,
     args,
   };
 };
@@ -253,8 +284,14 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   // fail the attach, not leave half the consumers running.
   const plans = [];
   const declared = new Map();
-  for (const entry of router.consumers()) declared.set(labelOf(entry.unitKey, entry.name), entry);
-  for (const key of Object.keys(table)) {
+  const consumers = router.consumers();
+  for (let i = 0; i < consumers.length; i++) {
+    const entry = consumers[i];
+    declared.set(labelOf(entry.unitKey, entry.name), entry);
+  }
+  const keys = Object.keys(table);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     const override = table[key] ?? {};
     const label = `attachConsumers: '${key}'`;
     if (typeof override !== 'object' || Array.isArray(override)) {
@@ -278,13 +315,18 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     plans.push({ key, entry: { unitKey, name, procedure: proc }, policy, queue: key, method: target });
   }
   if (auto) {
-    for (const [key, entry] of declared) {
+    for (const pair of declared) {
+      const key = pair[0];
+      const entry = pair[1];
       if (!Object.hasOwn(table, key)) plans.push({ key, entry, policy: entry.procedure.consume ?? {} });
     }
   }
 
-  const bindings = [];
-  for (const plan of plans) {
+  // Bound, not started: bindConsumer only builds closures, so a binding the
+  // loop refuses further on has started nothing.
+  const handles = [];
+  for (let i = 0; i < plans.length; i++) {
+    const plan = plans[i];
     const { key, entry } = plan;
     const label = `attachConsumers: '${key}'`;
     const policy = normalizePolicy(plan.policy, { label, queue: plan.queue ?? entry.name, maxCalls });
@@ -293,26 +335,24 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
         `${label}: the procedure requires a session, so the binding needs identity.trust 'service' or 'token'`,
       );
     }
-    bindings.push({
+    const binding = {
       key,
       method: plan.method ?? labelOf(entry.unitKey, `consumes.${entry.name}`),
       procedure: entry.procedure,
       policy,
-    });
+    };
+    handles.push(bindConsumer({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, tokenTtl, sealing }));
   }
 
-  const handles = bindings.map((binding) =>
-    bindConsumer({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, tokenTtl, sealing }),
-  );
   try {
-    await Promise.all(handles.map((handle) => handle.start()));
+    await eachHandle(handles, 'start');
   } catch (error) {
-    await Promise.all(handles.map((handle) => handle.stop()));
+    await eachHandle(handles, 'stop');
     throw error;
   }
 
   const onDraining = () => {
-    for (const handle of handles) void handle.pause();
+    for (let i = 0; i < handles.length; i++) void handles[i].pause();
   };
   let stopped = false;
   const stop = async () => {
@@ -320,26 +360,29 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     stopped = true;
     rpc.off('draining', onDraining);
     rpc.off('close', onClose);
-    await Promise.all(handles.map((handle) => handle.stop()));
+    await eachHandle(handles, 'stop');
   };
   const onClose = () => void stop();
   rpc.on('draining', onDraining);
   rpc.on('close', onClose);
   return {
     get bindings() {
-      return handles.map((handle) => handle.describe());
+      const described = [];
+      for (let i = 0; i < handles.length; i++) described.push(handles[i].describe());
+      return described;
     },
     get healthy() {
-      return handles.every((handle) => handle.healthy);
+      for (let i = 0; i < handles.length; i++) if (!handles[i].healthy) return false;
+      return true;
     },
-    pause: () => Promise.all(handles.map((handle) => handle.pause())).then(() => undefined),
-    resume: () => Promise.all(handles.map((handle) => handle.resume())).then(() => undefined),
+    pause: () => eachHandle(handles, 'pause').then(() => undefined),
+    resume: () => eachHandle(handles, 'resume').then(() => undefined),
     // The logout hook: the next delivery under this header value attaches
     // afresh, whatever `tokenTtl` says. The value as messages carry it.
     forget: (token) => {
       if (typeof token !== 'string') throw new ArgumentError('ConsumersHandle.forget: token must be a string');
       let found = false;
-      for (const handle of handles) found = handle.forget(token) || found;
+      for (let i = 0; i < handles.length; i++) found = handles[i].forget(token) || found;
       return found;
     },
     stop,
@@ -378,17 +421,6 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
 
   let shared = null; // the 'none' / 'service' client
   const tokens = new Map(); // token -> { client, transport, retired }, LRU by insertion
-  // A client dropped from the cache outlives its last delivery, not longer.
-  // Closing it at once settled every call it still held as released — the
-  // broker redelivered them, so a cache merely wrapping around under more
-  // distinct tokens than `tokenClients` turned into duplicated work, and
-  // under prefetch > tokenClients into a livelock where no delivery ever
-  // finished. Retired instead: the delivery that finds it so closes it after
-  // its own settlement (see onDelivery).
-  const retire = (attached) => {
-    if (attached.transport.pending === 0) attached.transport.close();
-    else attached.retired = true;
-  };
   const forget = (token) => {
     const cached = tokens.get(token);
     if (!cached) return false;
@@ -439,13 +471,13 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       });
     }
     if (tokens.size > tokenClients) {
-      const [oldest, evicted] = tokens.entries().next().value;
-      tokens.delete(oldest);
+      const oldest = tokens.entries().next().value;
+      tokens.delete(oldest[0]);
       // Not free even so — the next message with that token attaches and
       // restores its session again — and a cache thrashing at its ceiling
       // did it silently. The token is NOT logged: it is a credential.
       log.warn({ event: 'broker.evict', queue: policy.queue, cached: tokens.size, max: tokenClients });
-      retire(evicted);
+      retire(oldest[1]);
     }
     return attached;
   };
@@ -477,7 +509,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     const reason =
       sealing === null || OWN_REFUSALS.has(error)
         ? reasonText(`${code}${error?.message ? ` ${error.message}` : ''}`)
-        : String(code);
+        : `${code}`;
     // `err` alongside the code: the code says a message was dead-lettered,
     // the error says why, and only the code was ever recorded.
     log.warn({
@@ -508,7 +540,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
   let fullSince = 0;
 
   const onDelivery = async (delivery) => {
-    if (stopped || rpc.draining) return void (await settle(delivery, { action: 'release', delay: 0 }));
+    if (stopped || rpc.draining) {
+      await settle(delivery, { action: 'release', delay: 0 });
+      return;
+    }
     let { body, headers } = delivery;
     let unsealed = null;
     if (sealing !== null) {
@@ -542,9 +577,11 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
             draining: rpc.draining,
           });
           const why = opened.refused === 'kid' ? 'unknown key id' : 'the key provider failed';
-          return void (await settle(delivery, decision, 503, refusal(`Sealed delivery refused: ${why}`)));
+          await settle(delivery, decision, 503, refusal(`Sealed delivery refused: ${why}`));
+          return;
         }
-        return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Sealed delivery refused')));
+        await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Sealed delivery refused'));
+        return;
       }
       if (opened.sealed) {
         body = toText(opened.body);
@@ -555,30 +592,34 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
         // stricter than the rollout's, and a plaintext delivery is not
         // served — parity with `unsealed`.
         log.warn({ event: 'broker.refused', queue: policy.queue, reason: 'plaintext' });
-        return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Plaintext delivery refused')));
+        await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Plaintext delivery refused'));
+        return;
       }
     }
-    let args;
+    let args = undefined;
     try {
       args = policy.args(body, headers, delivery);
     } catch (error) {
-      return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, error, unsealed));
+      await settle(delivery, { action: 'dead', delay: 0 }, 400, error, unsealed);
+      return;
     }
     // attach() may refuse (a transport the server will not serve, a bad
     // identity): a bounded retry, then dead — never a delivery that settles
     // nowhere.
-    let attached;
+    let attached = null;
     try {
       attached = clientFor(headers);
     } catch (error) {
       log.error({ err: error, event: 'broker.attach', queue: policy.queue });
       const decision = decide({ code: 500, attempt: delivery.attempt, retry: policy.retry, draining: rpc.draining });
-      return void (await settle(delivery, decision, 500, error, unsealed));
+      await settle(delivery, decision, 500, error, unsealed);
+      return;
     }
     const { client, transport } = attached;
     const id = client.generateId();
     const meta = { messageId: delivery.id, attempt: delivery.attempt, queue: policy.queue };
-    for (const name of policy.meta) {
+    for (let i = 0; i < policy.meta.length; i++) {
+      const name = policy.meta[i];
       const value = headers[name];
       if (value !== undefined) meta[name] = value;
     }

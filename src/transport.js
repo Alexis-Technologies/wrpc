@@ -54,9 +54,16 @@ const SECURITY_HEADERS = {
   'wrpc-version': '1',
 };
 
+const withoutHeader = (headers, name) => {
+  const result = {};
+  const keys = Object.keys(headers);
+  for (let i = 0; i < keys.length; i++) if (keys[i] !== name) result[keys[i]] = headers[keys[i]];
+  return result;
+};
+
 // The same without HSTS, for `http: { hsts: false }` — built once, so a
 // response under that option is a spread like any other, never a `delete`.
-const PLAIN_HEADERS = Object.fromEntries(Object.entries(SECURITY_HEADERS).filter(([name]) => name !== HSTS));
+const PLAIN_HEADERS = withoutHeader(SECURITY_HEADERS, HSTS);
 
 // What an HTTP client that reads framed messages asks for, and what a
 // server looks for before it answers with one. `Accept` rather than a
@@ -172,6 +179,20 @@ const matchesEtag = (header, etag) => {
   return false;
 };
 
+// A REST result's body. An undefined result travels as an encoded `null` —
+// one documented behaviour with and without a codec.
+const restBody = (codec, result) => {
+  if (codec) return codec.encode(result === undefined ? null : result);
+  return result === undefined ? 'null' : JSON.stringify(result);
+};
+
+// The bytes of an answer as the host writes them.
+const bodyBytes = (data) => {
+  if (Buffer.isBuffer(data)) return data;
+  if (typeof data === 'string') return Buffer.from(data);
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+};
+
 // Net-free HTTP transport over an abstract call description:
 // { method, url, headers, body?, remoteAddress?, respond({ status, headers, body }) }.
 // The node Server shell and the framework adapters both speak this shape.
@@ -272,17 +293,7 @@ class ServerHttpTransport extends ServerTransport {
       // 204 promises "no content": the result (if any) is discarded on the
       // wire by contract, not by accident.
       if (status === 204) return this.write('', 204);
-      // An undefined result travels as an encoded `null` — one documented
-      // behaviour with and without a codec.
-      const body =
-        obj.result === undefined
-          ? codec
-            ? codec.encode(null)
-            : 'null'
-          : codec
-            ? codec.encode(obj.result)
-            : JSON.stringify(obj.result);
-      return this.#writeCacheable(body, status);
+      return this.#writeCacheable(restBody(codec, obj.result), status);
     }
     if (!this.#batch) return super.send(obj, code, text);
     if (this.#responded) return true;
@@ -313,9 +324,11 @@ class ServerHttpTransport extends ServerTransport {
     if (collected.length >= ServerHttpTransport.#INDEX_THRESHOLD) return this.#orderedIndexed();
     const pending = collected.slice();
     const answers = [];
-    for (const id of this.#batch) {
-      const index = pending.findIndex((packet) => packet.id === id);
-      if (index < 0) continue;
+    const batch = this.#batch;
+    for (let i = 0; i < batch.length; i++) {
+      let index = 0;
+      while (index < pending.length && pending[index].id !== batch[i]) index++;
+      if (index === pending.length) continue;
       answers.push(pending[index]);
       pending.splice(index, 1);
     }
@@ -385,11 +398,7 @@ class ServerHttpTransport extends ServerTransport {
   write(data, httpCode = 200) {
     if (this.#responded) return true;
     this.#responded = true;
-    const body = Buffer.isBuffer(data)
-      ? data
-      : typeof data === 'string'
-        ? Buffer.from(data)
-        : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    const body = bodyBytes(data);
     const headers = { ...this.headers };
     // An attachments frame is bytes, and says so — a client reads the body
     // as bytes only under this type.
@@ -417,7 +426,7 @@ class ServerHttpTransport extends ServerTransport {
       );
       return true;
     }
-    let encoded;
+    let encoded = null;
     try {
       encoded = encoder.encode(body);
     } catch (error) {

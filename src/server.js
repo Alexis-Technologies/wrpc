@@ -239,7 +239,8 @@ class Server extends Emitter {
       if (typeof this.#engine.stopListening === 'function') this.#engine.stopListening();
       // Standalone engines own the whole stack: their close() both stops
       // the listener and says goodbye to the peers.
-      return void (await shutdown(this.rpc, this.#engine, drain));
+      await shutdown(this.rpc, this.#engine, drain);
+      return;
     }
     // Stop intake first, so a load balancer's next health check fails while
     // the in-flight work is still being finished.

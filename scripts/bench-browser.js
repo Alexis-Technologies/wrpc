@@ -67,7 +67,7 @@ const calls = async () => {
     await tab.addScriptTag({ content: page });
     const version = await browser.version();
     console.log(`Browser call-path benchmark — Chrome ${version}, entry ${path.relative(HERE, ROOT) || '.'}\n`);
-    const results = await tab.evaluate(() => globalThis.__wrpcBench());
+    const results = await tab.evaluate(() => globalThis.wrpcBench());
     for (const { name, opsPerSec } of results) {
       console.log(`  ${name.padEnd(46)}${opsPerSec.toLocaleString('en-US').padStart(14)} ops/sec`);
     }
@@ -123,7 +123,7 @@ const transports = async () => {
       wtUrl: wt?.url,
       wtHash: wt ? JSON.parse(fs.readFileSync(path.join(HERE, 'certs', 'wt-cert.json'), 'utf8')).hash : null,
     };
-    const results = await tab.evaluate((given) => globalThis.__wrpcTransports(given), config);
+    const results = await tab.evaluate((given) => globalThis.wrpcTransports(given), config);
     const header = [
       'transport',
       'first call',

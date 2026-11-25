@@ -17,7 +17,7 @@ const BLOCK = new Uint8Array(CHUNK).fill(7);
 
 // Writes `size` bytes in CHUNK pieces, waiting for 'drain' whenever the
 // transport did not take one — the pacing createBlobUploader() does.
-async function pump(writable, size) {
+const pump = async (writable, size) => {
   for (let sent = 0; sent < size; sent += CHUNK) {
     const piece = size - sent >= CHUNK ? BLOCK : BLOCK.subarray(0, size - sent);
     if (!writable.write(piece)) {
@@ -26,7 +26,7 @@ async function pump(writable, size) {
     }
   }
   writable.end();
-}
+};
 
 const drain = async (readable) => {
   let bytes = 0;

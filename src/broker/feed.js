@@ -33,6 +33,7 @@ const REFUSAL_INTERVAL = 10_000;
 const SIGNED_CAP = 256;
 
 const DECODERS = Object.freeze({
+  __proto__: null,
   json: (text) => JSON.parse(text),
   text: (text) => text,
 });
@@ -51,6 +52,7 @@ const brokerFeed = (broker, topic, options = {}) => {
   const {
     from = 'latest',
     decode = 'json',
+    // oxlint-disable-next-line no-restricted-properties -- the option's public name, not Array#map
     map = null,
     onGap = null,
     secret = null,
@@ -155,19 +157,29 @@ const brokerFeed = (broker, topic, options = {}) => {
     if (shared) openings.set(headers, { name, value: raw.value, entry });
     return entry;
   };
+  // The entry as one reader sees it: the shared opened one under the
+  // entry's own id, or null for one that does not open.
+  const readerEntry = (name, raw, refuse) => {
+    const opened = open(name, raw, refuse);
+    if (opened === null || opened === raw) return opened;
+    return { id: raw.id, headers: opened.headers, value: opened.value };
+  };
 
   return async function* feed(context, args, { lastEventId = null, signal: outer = null } = {}) {
     const name = typeof topic === 'function' ? await topic(context, args) : topic;
     if (typeof name !== 'string' || name.length === 0) {
       throw codedError('brokerFeed: the topic resolver must answer a non-empty string', 500);
     }
-    let { after, code, reason } = position(lastEventId, name);
+    const start = position(lastEventId, name);
+    let after = start.after;
+    let code = start.code;
     let resumedFrom = lastEventId;
-    if (reason !== null) {
+    if (start.reason !== null) {
       // The id itself is peer-controlled text and is NOT logged; its length
       // and the reason are what an operator can act on.
-      const level = reason === 'signature' ? 'warn' : 'debug';
-      context?.log?.[level]({ event: 'broker.feed.resume', topic: name, reason, length: lastEventId.length });
+      const level = start.reason === 'signature' ? 'warn' : 'debug';
+      const length = lastEventId.length;
+      context?.log?.[level]({ event: 'broker.feed.resume', topic: name, reason: start.reason, length });
     }
     // Every read this feed opens is scoped to the feed: a read left behind
     // — the gap read a snapshot ran under, a read a refused position ended
@@ -197,7 +209,8 @@ const brokerFeed = (broker, topic, options = {}) => {
       }
       // A provider that threw (`keys`, with the err) is this side's failure
       // and an error line where a refusal of the entry would be a warn.
-      const level = !loud ? 'debug' : error === undefined ? 'warn' : 'error';
+      let level = 'debug';
+      if (loud) level = error === undefined ? 'warn' : 'error';
       context?.log?.[level]({
         ...(error === undefined ? {} : { err: error }),
         event: 'broker.feed.refused',
@@ -207,10 +220,30 @@ const brokerFeed = (broker, topic, options = {}) => {
         count: tally.count,
       });
     };
-    try {
-      for (;;) {
+    // The end of the feed, however it ends: the reads it opened let go, and
+    // what the debug lines held since the last warn said, so a feed that
+    // ended between two intervals still accounts for every refusal.
+    const finish = () => {
+      outer?.removeEventListener('abort', onAbort);
+      scope.abort();
+      for (const refusal of refusals) {
+        const tally = refusal[1];
+        if (tally.count > tally.logged) {
+          const count = tally.count;
+          context?.log?.info({ event: 'broker.feed.refused', topic: name, reason: refusal[0], count, summary: true });
+        }
+      }
+    };
+    for (;;) {
+      // `reading`: the read is being iterated — a position it refuses is a
+      // gap, where what fails before it (the snapshot, onGap) ends the feed.
+      // `again`: the gap was taken, and the feed goes round without ending.
+      let reading = false;
+      let delivered = false;
+      let again = false;
+      try {
         if (signal.aborted) return;
-        let read;
+        let read = null;
         if (code !== null) {
           if (!onGap) {
             throw codedError(code === 400 ? 'Invalid event id' : 'Event history is no longer available', code);
@@ -230,54 +263,40 @@ const brokerFeed = (broker, topic, options = {}) => {
         } else {
           read = log.read(name, after !== null ? { after, signal } : { from, signal });
         }
-        let delivered = false;
-        try {
-          for await (const raw of read) {
-            delivered = true;
-            after = raw.id;
-            let entry = raw;
-            if (sealing !== null) {
-              const opened = open(name, raw, refuse);
-              if (opened === null) continue;
-              if (opened !== raw) entry = { id: raw.id, headers: opened.headers, value: opened.value };
-            }
-            let value;
-            try {
-              value = decodeValue(entry.value);
-            } catch (error) {
-              // One undecodable entry must not end every subscriber's feed.
-              context?.log?.warn({ event: 'broker.feed.decode', topic: name, id: entry.id, err: error });
-              continue;
-            }
-            if (map !== null) {
-              value = await map(value, entry, context);
-              if (value === undefined) continue;
-            }
-            yield tracked(secret === null ? entry.id : signed(name, entry.id), value);
+        reading = true;
+        for await (const raw of read) {
+          delivered = true;
+          after = raw.id;
+          const entry = sealing === null ? raw : readerEntry(name, raw, refuse);
+          if (entry === null) continue;
+          let value = undefined;
+          try {
+            value = decodeValue(entry.value);
+          } catch (error) {
+            // One undecodable entry must not end every subscriber's feed.
+            context?.log?.warn({ event: 'broker.feed.decode', topic: name, id: entry.id, err: error });
+            continue;
           }
-          return;
-        } catch (error) {
-          // A position the log refuses — at the start (a stale or forged id)
-          // or mid-stream (a reader the retention overtook) — becomes a gap
-          // the application can answer with a snapshot.
-          const refused = error?.code === 410 || (error?.code === 400 && !delivered);
-          if (!refused || signal.aborted) throw error;
-          code = error.code;
-          // What the client itself holds: its own id at the start, the last
-          // token this feed handed it mid-stream.
-          resumedFrom = after === null ? lastEventId : secret === null ? after : signed(name, after);
-          after = null;
+          if (map !== null) value = await map(value, entry, context);
+          if (value === undefined && map !== null) continue;
+          yield tracked(secret === null ? entry.id : signed(name, entry.id), value);
         }
-      }
-    } finally {
-      outer?.removeEventListener('abort', onAbort);
-      scope.abort();
-      // What the debug lines held since the last warn, so a feed that ended
-      // between two intervals still accounts for every refusal.
-      for (const [reason, tally] of refusals) {
-        if (tally.count > tally.logged) {
-          context?.log?.info({ event: 'broker.feed.refused', topic: name, reason, count: tally.count, summary: true });
-        }
+        return;
+      } catch (error) {
+        // A position the log refuses — at the start (a stale or forged id)
+        // or mid-stream (a reader the retention overtook) — becomes a gap
+        // the application can answer with a snapshot.
+        const refused = error?.code === 410 || (error?.code === 400 && !delivered);
+        if (!reading || !refused || signal.aborted) throw error;
+        code = error.code;
+        // What the client itself holds: its own id at the start, the last
+        // token this feed handed it mid-stream.
+        if (after === null) resumedFrom = lastEventId;
+        else resumedFrom = secret === null ? after : signed(name, after);
+        after = null;
+        again = true;
+      } finally {
+        if (!again) finish();
       }
     }
   };

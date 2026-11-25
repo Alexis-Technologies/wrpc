@@ -51,7 +51,7 @@ const load = ({ port, path: route, body }) =>
     duration: DURATION,
   });
 
-async function main() {
+const main = async () => {
   console.log(
     `Node ${process.version} | ${new Date().toISOString()} | ` +
       `${CONNECTIONS} connections, ${PIPELINING} pipelined, ${DURATION} s per stack\n`,
@@ -85,7 +85,7 @@ async function main() {
     }
   }
   console.log(`\nRESULT_JSON:${JSON.stringify(rows)}`);
-}
+};
 
 main().catch((error) => {
   console.error(error);

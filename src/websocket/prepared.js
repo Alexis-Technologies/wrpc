@@ -49,6 +49,9 @@ class PreparedFrames {
   #slots() {
     let frames = this.#deflated;
     if (frames === null) {
+      // Preallocated once per fan-out that deflates: one slot per window
+      // (bench/send-path.js, "room fan-out +deflate").
+      // oxlint-disable-next-line unicorn/no-new-array
       frames = this.#deflated = new Array(SLOTS);
       for (let i = 0; i < SLOTS; i++) frames[i] = null;
     }

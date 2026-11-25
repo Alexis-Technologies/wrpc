@@ -26,9 +26,14 @@ const IDLE_CALLS = 500;
 const percentile = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
 const round = (value, digits = 2) => Number(value.toFixed(digits));
 
-async function main() {
+const skipOf = (kind) => {
+  if (kind === 'wt') return real.wtSkip();
+  return kind === 'webrtc' ? real.rtcSkip() : null;
+};
+
+const main = async () => {
   const kind = process.argv[2];
-  const skipped = kind === 'wt' ? real.wtSkip() : kind === 'webrtc' ? real.rtcSkip() : null;
+  const skipped = skipOf(kind);
   if (skipped) {
     console.log(`RESULT_JSON:${JSON.stringify({ kind, skipped })}`);
     return;
@@ -154,7 +159,7 @@ async function main() {
   if (kind === 'webrtc') real.rtcCleanup();
   console.log(`RESULT_JSON:${JSON.stringify(result)}`);
   setTimeout(() => process.exit(), 2000).unref();
-}
+};
 
 main().catch((error) => {
   console.error(error);

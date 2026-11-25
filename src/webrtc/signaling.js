@@ -107,8 +107,10 @@ const inputJoin = (args) => {
   const { room } = inputRoom(args);
   const data = args.data === undefined ? null : args.data;
   if (data !== null && typeof data === 'object') {
-    const taken = RESERVED_JOIN_DATA.find((key) => Object.hasOwn(data, key));
-    if (taken !== undefined) throw new ArgumentError(`data.${taken} is reserved`);
+    for (let i = 0; i < RESERVED_JOIN_DATA.length; i++) {
+      const key = RESERVED_JOIN_DATA[i];
+      if (Object.hasOwn(data, key)) throw new ArgumentError(`data.${key} is reserved`);
+    }
   }
   return { room, data };
 };
@@ -141,7 +143,9 @@ const normalizeLimits = (limits) => {
     throw new ConfigError('createSignalingUnit: limits must be an object');
   }
   const out = { ...DEFAULT_LIMITS };
-  for (const key of Object.keys(DEFAULT_LIMITS)) {
+  const keys = Object.keys(DEFAULT_LIMITS);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     const value = limits[key];
     if (value === undefined) continue;
     if (value !== false && !(Number.isInteger(value) && value > 0)) {
@@ -164,20 +168,24 @@ const scalarBound = (entry) => {
   if (entry === null) return 4;
   return -1;
 };
+const objectBound = (entry) => {
+  let size = 2;
+  const keys = Object.keys(entry);
+  for (let i = 0; i < keys.length; i++) {
+    const innerSize = scalarBound(entry[keys[i]]);
+    if (innerSize < 0) return -1;
+    size += keys[i].length * 6 + 6 + innerSize;
+  }
+  return size;
+};
 const signalUpperBound = (message) => {
   let bound = 2;
-  for (const key in message) {
-    bound += key.length * 6 + 6;
-    const entry = message[key];
+  const keys = Object.keys(message);
+  for (let i = 0; i < keys.length; i++) {
+    bound += keys[i].length * 6 + 6;
+    const entry = message[keys[i]];
     let size = scalarBound(entry);
-    if (size < 0 && typeof entry === 'object' && !Array.isArray(entry)) {
-      size = 2;
-      for (const inner in entry) {
-        const innerSize = scalarBound(entry[inner]);
-        if (innerSize < 0) return -1;
-        size += inner.length * 6 + 6 + innerSize;
-      }
-    }
+    if (size < 0 && typeof entry === 'object' && !Array.isArray(entry)) size = objectBound(entry);
     if (size < 0) return -1;
     bound += size;
   }

@@ -6,14 +6,10 @@
 // which is why it lives in its own module.
 
 const { Emitter, jsonParse } = require('../utils.js');
-const { WrpcClient, CALL_TIMEOUT, normalizeReconnect } = require('./core.js');
+const { WrpcClient, CALL_TIMEOUT, normalizeReconnect, viewOf } = require('./core.js');
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 const { chunkDecode } = require('../chunks.js');
 const { MAX_STREAMS } = require('../streams.js');
-
-// What a port posted, as bytes; null for anything that is not.
-const viewOf = (data) =>
-  data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
 
 // The page's packet: JSON text, or an attachments frame carrying one (a
 // call with bytes in its args). Anything else — bytes that are no frame,
@@ -69,10 +65,12 @@ class WrpcClientProxy extends Emitter {
   // `wrpc:connect`. On a ServiceWorker (and a dedicated Worker) it is `self`;
   // on a SharedWorker it is the per-page port the `connect` event hands
   // over. Optional chaining because a page can post anything on that port.
-  #onControl = (event) => {
+  #onControl = null;
+
+  #control(event) {
     const type = event.data?.type;
     if (typeof type === 'string' && type.startsWith('wrpc')) this.#handleEvent(event);
-  };
+  }
 
   constructor(options = {}) {
     super();
@@ -91,6 +89,7 @@ class WrpcClientProxy extends Emitter {
     if (typeof self === 'undefined') {
       throw new Error('WrpcClientProxy must run in a worker context');
     }
+    this.#onControl = (event) => this.#control(event);
     // Both listeners, no context sniffing: a ServiceWorker never fires
     // `connect`, a SharedWorker never fires `message` on self.
     self.addEventListener('message', this.#onControl);
@@ -133,14 +132,15 @@ class WrpcClientProxy extends Emitter {
     // starts with none.
     this.#connection.on('close', () => {
       const error = { message: 'The worker lost its connection to the server', code: 503 };
-      for (const [id, port] of this.#pending) {
-        if (this.#feeds.has(id)) port.postMessage(JSON.stringify({ type: 'end', id, error }));
-        else if (this.#calls.has(id)) port.postMessage(JSON.stringify({ type: 'callback', id, error }));
+      for (const entry of this.#pending) {
+        const id = entry[0];
+        if (this.#feeds.has(id)) entry[1].postMessage(JSON.stringify({ type: 'end', id, error }));
+        else if (this.#calls.has(id)) entry[1].postMessage(JSON.stringify({ type: 'callback', id, error }));
       }
       // A server stream will send no more: its readable ends now instead of
       // waiting for bytes forever.
-      for (const [id, holders] of this.#downloads) {
-        this.#to(holders, JSON.stringify({ type: 'stream', id, status: 'terminate' }));
+      for (const entry of this.#downloads) {
+        this.#to(entry[1], JSON.stringify({ type: 'stream', id: entry[0], status: 'terminate' }));
       }
       this.#pending.clear();
       this.#feeds.clear();
@@ -160,28 +160,24 @@ class WrpcClientProxy extends Emitter {
     if (!this.#ports.delete(port)) return;
     const connection = this.#connection;
     const live = connection !== null && connection.active;
-    for (const [id, pending] of this.#pending) {
-      if (pending !== port) continue;
+    for (const entry of this.#pending) {
+      if (entry[1] !== port) continue;
+      const id = entry[0];
       this.#pending.delete(id);
       this.#calls.delete(id);
       const feed = this.#feeds.delete(id);
       const upload = this.#uploads.delete(id);
-      if (live) {
-        connection.send(
-          upload
-            ? { type: 'stream', id, status: 'terminate' }
-            : feed
-              ? { type: 'unsubscribe', id }
-              : { type: 'cancel', id },
-        );
-      }
+      if (!live) continue;
+      if (upload) connection.send({ type: 'stream', id, status: 'terminate' });
+      else if (feed) connection.send({ type: 'unsubscribe', id });
+      else connection.send({ type: 'cancel', id });
     }
-    for (const [id, owner] of this.#uploads) if (owner === port) this.#uploads.delete(id);
+    for (const entry of this.#uploads) if (entry[1] === port) this.#uploads.delete(entry[0]);
     // A server stream this page held: with its last holder gone nobody is
     // left to read it, and the server — which went on sending it to a
     // worker that dropped every chunk — is told to stop.
-    for (const [id, holders] of this.#downloads) {
-      if (holders.delete(port) && holders.size === 0) this.#drop(id);
+    for (const entry of this.#downloads) {
+      if (entry[1].delete(port) && entry[1].size === 0) this.#drop(entry[0]);
     }
   }
 
@@ -226,8 +222,7 @@ class WrpcClientProxy extends Emitter {
       // engines (and in Node), so a closed tab does not pin its port — or
       // the answers it was still waiting for — for the life of the worker.
       port.addEventListener('close', () => this.#release(port));
-      port.start();
-      return;
+      return void port.start();
     }
     if (type === 'wrpc:online') WrpcClient.online();
     else if (type === 'wrpc:offline') WrpcClient.offline();

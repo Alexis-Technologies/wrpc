@@ -114,11 +114,11 @@ const negotiation = () => {
     ['8000 one-letter tokens', 'a,'.repeat(8_000)],
     ['256 B of one-letter tokens (the cap)', `${'a,'.repeat(126)}br`],
   ]) {
-    const iterations = 2_000;
+    const rounds = 2_000;
     const started = performance.now();
-    for (let i = 0; i < iterations; i++) pickEncoding(header, encoders);
+    for (let i = 0; i < rounds; i++) pickEncoding(header, encoders);
     const elapsed = performance.now() - started;
-    report(`adversarial: ${name}`, iterations, elapsed, `   ${((elapsed / iterations) * 1000).toFixed(1)} µs/request`);
+    report(`adversarial: ${name}`, rounds, elapsed, `   ${((elapsed / rounds) * 1000).toFixed(1)} µs/request`);
   }
 };
 

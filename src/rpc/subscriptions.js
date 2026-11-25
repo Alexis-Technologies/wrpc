@@ -32,7 +32,7 @@ const { ConfigError } = require('../errors.js');
 const TRACKED = Symbol.for('wrpc.tracked');
 
 /** Labels a yielded value with the id a resuming client will send back. */
-const tracked = (eventId, data) => ({ [TRACKED]: true, id: String(eventId), data });
+const tracked = (eventId, data) => ({ [TRACKED]: true, id: `${eventId}`, data });
 
 const isTracked = (value) => typeof value === 'object' && value !== null && value[TRACKED] === true;
 
@@ -63,9 +63,11 @@ class EventLog {
       throw new ConfigError('createEventLog: size must be a positive integer');
     }
     this.#size = size;
+    // The ring's slots, preallocated: bench/replay-buffer.js.
+    // oxlint-disable-next-line unicorn/no-new-array
     this.#entries = new Array(size);
     this.#next = start;
-    this.#epoch = epoch === null || epoch === undefined ? Math.random().toString(36).slice(2, 10) : String(epoch);
+    this.#epoch = epoch === null || epoch === undefined ? Math.random().toString(36).slice(2, 10) : `${epoch}`;
     if (this.#epoch.includes('.')) {
       throw new ConfigError('createEventLog: epoch must not contain a dot');
     }
@@ -115,7 +117,7 @@ class EventLog {
    */
   since(lastEventId) {
     if (lastEventId === undefined || lastEventId === null || lastEventId === '') return [];
-    const text = String(lastEventId);
+    const text = `${lastEventId}`;
     const dot = text.lastIndexOf('.');
     if (dot < 0 || text.slice(0, dot) !== this.#epoch) return null; // foreign epoch
     const cursor = Number(text.slice(dot + 1));

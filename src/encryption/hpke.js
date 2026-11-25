@@ -170,18 +170,18 @@ const createHpke = ({ kem, kdf, cipher }) => {
     if (hasPsk !== (pskId !== null && pskId !== undefined)) throw new ArgumentError('hpke: psk and pskId go together');
     if (hasPsk && psk.length < 32) throw new ArgumentError('hpke: a psk is 32 bytes or more');
     const mode = (auth ? MODE_AUTH : MODE_BASE) + (hasPsk ? MODE_PSK : 0);
-    const [pskIdHash, infoHash] = await Promise.all([
+    const hashes = await Promise.all([
       extract(EMPTY, 'psk_id_hash', hasPsk ? pskId : EMPTY),
       extract(EMPTY, 'info_hash', info),
     ]);
-    const context = concat(Uint8Array.of(mode), pskIdHash, infoHash);
+    const context = concat(Uint8Array.of(mode), hashes[0], hashes[1]);
     const secret = await extract(sharedSecret, 'secret', hasPsk ? psk : EMPTY);
-    const [key, baseNonce, exporterSecret] = await Promise.all([
+    const keys = await Promise.all([
       expand(secret, 'key', context, cipher.keyLength),
       expand(secret, 'base_nonce', context, cipher.nonceLength),
       expand(secret, 'exp', context, kdf.hashLength),
     ]);
-    return new HpkeContext(await cipher.key(key), baseNonce, exporterSecret, expand);
+    return new HpkeContext(await cipher.key(keys[0]), keys[1], keys[2], expand);
   };
 
   return Object.freeze({

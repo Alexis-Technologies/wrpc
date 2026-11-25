@@ -46,8 +46,8 @@ const reverse = (code, len) => {
 const LIT_CODES = (() => {
   const codes = new Uint32Array(288);
   for (let sym = 0; sym < 288; sym++) {
-    let code;
-    let len;
+    let code = 0;
+    let len = 0;
     if (sym < 144) {
       code = 0x30 + sym;
       len = 8;
@@ -190,22 +190,17 @@ const pass = (state, dictLen, end, chain) => {
     let bestDist = 0;
     if (pos + MIN_MATCH <= end) {
       const h = hashAt(win, pos);
-      let cand = head[h];
-      let depth = chain;
       const maxLen = Math.min(MAX_MATCH, end - pos);
-      while (cand >= 0 && depth-- > 0) {
+      for (let cand = head[h], depth = chain; cand >= 0 && depth-- > 0; cand = prev[cand]) {
         const dist = pos - cand;
         if (dist > WINDOW) break;
-        if (win[cand + bestLen] === win[pos + bestLen] && win[cand] === win[pos]) {
-          let len = 0;
-          while (len < maxLen && win[cand + len] === win[pos + len]) len++;
-          if (len > bestLen) {
-            bestLen = len;
-            bestDist = dist;
-            if (len === maxLen) break;
-          }
-        }
-        cand = prev[cand];
+        if (win[cand + bestLen] !== win[pos + bestLen] || win[cand] !== win[pos]) continue;
+        let len = 0;
+        while (len < maxLen && win[cand + len] === win[pos + len]) len++;
+        if (len <= bestLen) continue;
+        bestLen = len;
+        bestDist = dist;
+        if (len === maxLen) break;
       }
       prev[pos] = head[h];
       head[h] = pos;

@@ -316,7 +316,10 @@ const ENTRIES = [
   // ConfigError and ArgumentError every refusal of an option or an argument
   // now throws, with its ALX_ERR_ code, instead of a bare TypeError — a
   // longer identifier at every such site this entry bundles, and the
-  // require of src/errors.js in each file. Measured 63,706 B against 63,308.
+  // require of src/errors.js in each file. Measured 63,706 B against 63,308,
+  // and 64,472 B once src/ walks with loops and reads arrays by index (the
+  // rest of alexiskills 1.1: no array iteration method, no array
+  // destructuring), 40 B under the new budget.
   { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'src/webrtc/browser.js', platform: 'browser', budget: 63 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'src/webrtc/index.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
@@ -342,7 +345,7 @@ const selfContained = {
   },
 };
 
-async function bundle(entry, platform, minify) {
+const bundle = async (entry, platform, minify) => {
   const result = await esbuild.build({
     entryPoints: [path.join(ROOT, entry)],
     bundle: true,
@@ -354,13 +357,13 @@ async function bundle(entry, platform, minify) {
     logLevel: 'silent',
   });
   return Buffer.from(result.outputFiles[0].contents);
-}
+};
 
-function kb(bytes) {
+const kb = (bytes) => {
   return `${(bytes / 1024).toFixed(1)} KB`;
-}
+};
 
-async function main() {
+const main = async () => {
   const rows = [];
   const over = [];
   for (const { label, entry, platform, budget } of ENTRIES) {
@@ -397,7 +400,7 @@ async function main() {
   // Reported after the table: seeing every number is what makes a budget
   // failure actionable.
   if (over.length > 0) throw new Error(`bundle size budget exceeded\n  ${over.join('\n  ')}`);
-}
+};
 
 main().catch((error) => {
   // esbuild rejects with an object whose useful part is `errors[].text`; the

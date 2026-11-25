@@ -70,7 +70,9 @@ const shapeKeys = (shape, out, depth = 0) => {
     for (let i = 0; i < shape.length; i++) shapeKeys(shape[i], out, depth + 1);
     return;
   }
-  for (const key of Object.keys(shape)) {
+  const keys = Object.keys(shape);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     out.add(key.endsWith('?') ? key.slice(0, -1) : key);
     shapeKeys(shape[key], out, depth + 1);
   }
@@ -86,15 +88,31 @@ const schemaKeys = (schema, out, depth = 0) => {
   }
   const { properties } = schema;
   if (properties !== null && typeof properties === 'object') {
-    for (const key of Object.keys(properties)) {
-      out.add(key);
-      schemaKeys(properties[key], out, depth + 1);
+    const keys = Object.keys(properties);
+    for (let i = 0; i < keys.length; i++) {
+      out.add(keys[i]);
+      schemaKeys(properties[keys[i]], out, depth + 1);
     }
   }
   if (schema.items !== undefined) schemaKeys(schema.items, out, depth + 1);
   if (schema.anyOf !== undefined) schemaKeys(schema.anyOf, out, depth + 1);
   if (schema.oneOf !== undefined) schemaKeys(schema.oneOf, out, depth + 1);
   if (schema.allOf !== undefined) schemaKeys(schema.allOf, out, depth + 1);
+};
+
+// The unit's inbound handlers and declared outbound events, both named on
+// the wire as `unit/event`.
+const eventKeys = (unit, entry, events, keys) => {
+  const names = Object.keys(entry);
+  for (let i = 0; i < names.length; i++) {
+    events.push(`${unit}/${names[i]}`);
+    const declared = entry[names[i]];
+    if (declared && typeof declared === 'object') {
+      shapeKeys(declared.signature?.args, keys);
+      shapeKeys(declared.data, keys);
+      shapeKeys(declared.returns, keys);
+    }
+  }
 };
 
 /**
@@ -113,22 +131,16 @@ const buildDictionary = (router, { limit = MAX_DICTIONARY } = {}) => {
   const keys = new Set();
   const targets = [];
   const events = [];
-  for (const unit of Object.keys(info)) {
+  const units = Object.keys(info);
+  for (let i = 0; i < units.length; i++) {
+    const unit = units[i];
     const methods = info[unit];
-    for (const name of Object.keys(methods)) {
+    const names = Object.keys(methods);
+    for (let j = 0; j < names.length; j++) {
+      const name = names[j];
       const entry = methods[name];
       if (name === 'on' || name === 'emits') {
-        // The unit's inbound handlers and declared outbound events, both
-        // named on the wire as `unit/event`.
-        for (const event of Object.keys(entry)) {
-          events.push(`${unit}/${event}`);
-          const declared = entry[event];
-          if (declared && typeof declared === 'object') {
-            shapeKeys(declared.signature?.args, keys);
-            shapeKeys(declared.data, keys);
-            shapeKeys(declared.returns, keys);
-          }
-        }
+        eventKeys(unit, entry, events, keys);
         continue;
       }
       targets.push(`${unit}/${name}`);
@@ -145,7 +157,8 @@ const buildDictionary = (router, { limit = MAX_DICTIONARY } = {}) => {
     }
   }
   const parts = [];
-  const sortedKeys = Array.from(keys).sort();
+  const sortedKeys = Array.from(keys);
+  sortedKeys.sort();
   for (let i = 0; i < sortedKeys.length; i++) parts.push(`"${sortedKeys[i]}":`);
   targets.sort();
   for (let i = 0; i < targets.length; i++) parts.push(`"method":"${targets[i]}"`);

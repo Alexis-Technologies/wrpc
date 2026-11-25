@@ -47,13 +47,14 @@ const parseParam = (token, offer) => {
 // handshake rather than silently ignore the header.
 const parseExtensions = (header) => {
   const offers = [];
-  for (const part of header.split(',')) {
-    const tokens = part.split(';');
+  const parts = header.split(',');
+  for (let i = 0; i < parts.length; i++) {
+    const tokens = parts[i].split(';');
     const name = tokens[0].trim();
     if (!name) return null;
     const offer = { name, params: new Map(), valid: true };
-    for (let i = 1; i < tokens.length; i++) {
-      if (!parseParam(tokens[i], offer)) return null;
+    for (let j = 1; j < tokens.length; j++) {
+      if (!parseParam(tokens[j], offer)) return null;
     }
     offers.push(offer);
   }
@@ -93,7 +94,9 @@ const asyncOf = (options) => {
 const acceptOffer = (offer, options) => {
   if (!offer.valid) return null;
   let windowBits = MAX_WINDOW_BITS;
-  for (const [key, value] of offer.params) {
+  for (const entry of offer.params) {
+    const key = entry[0];
+    const value = entry[1];
     if (!KNOWN_PARAMS.has(key)) return null;
     if (key === 'server_max_window_bits') {
       if (value === true) return null; // value is required for this param
@@ -163,7 +166,8 @@ const negotiate = (header, options = {}) => {
   if (!header) return null;
   const offers = parseExtensions(header);
   if (!offers) return { malformed: true };
-  for (const offer of offers) {
+  for (let i = 0; i < offers.length; i++) {
+    const offer = offers[i];
     if (offer.name !== EXTENSION_NAME) continue;
     const accepted = acceptOffer(offer, options);
     if (accepted) return accepted;

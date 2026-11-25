@@ -50,7 +50,9 @@ const normalizeHeaders = (headers) => {
     throw new ConfigError('procedure() http.headers must be an object of header name -> value');
   }
   const result = {};
-  for (const name of Object.keys(headers)) {
+  const names = Object.keys(headers);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
     const value = headers[name];
     if (typeof value !== 'string') throw new ConfigError(`procedure() http.headers['${name}'] must be a string`);
     if (RESERVED_HEADERS.has(name.toLowerCase())) {
@@ -110,9 +112,9 @@ const normalizeHttp = (http) => {
     throw new ConfigError("procedure() http.path must be a string starting with '/'");
   }
   const segments = path === '/' ? [] : path.slice(1).split('/');
-  for (const segment of segments) {
-    if (!PARAM_SEGMENT.test(segment) && !STATIC_SEGMENT.test(segment)) {
-      throw new ConfigError(`procedure() http.path has an invalid segment '${segment}' in '${path}'`);
+  for (let i = 0; i < segments.length; i++) {
+    if (!PARAM_SEGMENT.test(segments[i]) && !STATIC_SEGMENT.test(segments[i])) {
+      throw new ConfigError(`procedure() http.path has an invalid segment '${segments[i]}' in '${path}'`);
     }
   }
   if (status !== null && !(Number.isInteger(status) && status >= 200 && status <= 599)) {
@@ -165,60 +167,84 @@ const effectiveHttp = (http, version, restOptions) => {
   return { ...http, path };
 };
 
+// Every version of every unit in a router's table (unit -> Map(version ->
+// entry)), with the key it is addressed by: 'unit' for the default version,
+// 'unit.vN' otherwise.
+const unitVersions = function* (units) {
+  for (const byUnit of units) {
+    const unit = byUnit[0];
+    for (const byVersion of byUnit[1]) {
+      const version = byVersion[0];
+      const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
+      yield { unit, version, unitKey, entry: byVersion[1] };
+    }
+  }
+};
+
+const makeNode = () => ({ static: new Map(), param: null, terminal: null });
+
+// Walks one verb's trie along a declared path, growing it where the path is
+// new, and answers the node the route ends at; `label` names the route in a
+// conflict.
+const placeRoute = (root, segments, paramNames, method, label) => {
+  let node = root;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (segment.startsWith(':')) {
+      const name = segment.slice(1);
+      if (node.param && node.param.name !== name) {
+        throw new ConfigError(
+          `REST route conflict: ${method} ':${node.param.name}' and ':${name}' at the same position ` +
+            `(${label} vs an earlier route)`,
+        );
+      }
+      node.param ??= { name, node: makeNode() };
+      paramNames.push(name);
+      node = node.param.node;
+      continue;
+    }
+    let next = node.static.get(segment);
+    if (!next) {
+      next = makeNode();
+      node.static.set(segment, next);
+    }
+    node = next;
+  }
+  return node;
+};
+
 // The per-verb segment trie over every procedure's effective http mapping,
 // or null when no procedure declares one. Throws on conflicting routes —
 // a definition error, loud at build time.
 const buildRestTrees = (units, restOptions) => {
-  const makeNode = () => ({ static: new Map(), param: null, terminal: null });
   let trees = null;
-  for (const [unit, versions] of units) {
-    for (const [version, entry] of versions) {
-      const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-      for (const [methodName, proc] of entry.methods) {
-        if (!proc.http) continue;
-        trees ??= new Map();
-        // Effective, not declared: with rest.version, two versions of one
-        // declared path diverge by their '/vN' prefix BEFORE the conflict
-        // check below ever sees them.
-        const http = effectiveHttp(proc.http, version, restOptions);
-        const { method, path } = http;
-        let node = trees.get(method);
-        if (!node) {
-          node = makeNode();
-          trees.set(method, node);
-        }
-        const segments = path === '/' ? [] : path.slice(1).split('/');
-        const paramNames = [];
-        for (const segment of segments) {
-          if (segment.startsWith(':')) {
-            const name = segment.slice(1);
-            if (node.param && node.param.name !== name) {
-              throw new ConfigError(
-                `REST route conflict: ${method} ':${node.param.name}' and ':${name}' at the same position ` +
-                  `(${unitKey}/${methodName} vs an earlier route)`,
-              );
-            }
-            node.param ??= { name, node: makeNode() };
-            paramNames.push(name);
-            node = node.param.node;
-            continue;
-          }
-          let next = node.static.get(segment);
-          if (!next) {
-            next = makeNode();
-            node.static.set(segment, next);
-          }
-          node = next;
-        }
-        if (node.terminal) {
-          const existing = node.terminal;
-          throw new ConfigError(
-            `REST route conflict: ${method} ${path} is declared by both ` +
-              `${existing.unitKey}/${existing.methodName} and ${unitKey}/${methodName}`,
-          );
-        }
-        node.terminal = { proc, unitKey, methodName, paramNames, http };
+  for (const { version, unitKey, entry } of unitVersions(units)) {
+    for (const methodEntry of entry.methods) {
+      const methodName = methodEntry[0];
+      const proc = methodEntry[1];
+      if (!proc.http) continue;
+      trees ??= new Map();
+      // Effective, not declared: with rest.version, two versions of one
+      // declared path diverge by their '/vN' prefix BEFORE the conflict
+      // check below ever sees them.
+      const http = effectiveHttp(proc.http, version, restOptions);
+      const { method, path } = http;
+      let root = trees.get(method);
+      if (!root) {
+        root = makeNode();
+        trees.set(method, root);
       }
+      const segments = path === '/' ? [] : path.slice(1).split('/');
+      const paramNames = [];
+      const node = placeRoute(root, segments, paramNames, method, `${unitKey}/${methodName}`);
+      if (node.terminal) {
+        const existing = node.terminal;
+        throw new ConfigError(
+          `REST route conflict: ${method} ${path} is declared by both ` +
+            `${existing.unitKey}/${existing.methodName} and ${unitKey}/${methodName}`,
+        );
+      }
+      node.terminal = { proc, unitKey, methodName, paramNames, http };
     }
   }
   return trees;
@@ -279,8 +305,8 @@ const matchRestTrees = (trees, method, segments) => {
   // distinguishes "unknown path" (fall through, maybe the conventional mode
   // knows it) from "known path, wrong verb" (405).
   const allowed = [];
-  for (const [verb, tree] of trees) {
-    if (verb !== method && walk(tree, segments)) allowed.push(verb);
+  for (const entry of trees) {
+    if (entry[0] !== method && walk(entry[1], segments)) allowed.push(entry[0]);
   }
   return allowed.length > 0 ? { allowed } : null;
 };
@@ -288,19 +314,18 @@ const matchRestTrees = (trees, method, segments) => {
 /** Every declared REST route — what a host adapter registers natively. */
 const collectRestRoutes = (units, restOptions) => {
   const routes = [];
-  for (const [unit, versions] of units) {
-    for (const [version, entry] of versions) {
-      const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-      for (const [methodName, proc] of entry.methods) {
-        if (!proc.http) continue;
-        routes.push({ unitKey, methodName, proc, http: effectiveHttp(proc.http, version, restOptions) });
-      }
+  for (const { version, unitKey, entry } of unitVersions(units)) {
+    for (const methodEntry of entry.methods) {
+      const proc = methodEntry[1];
+      if (!proc.http) continue;
+      routes.push({ unitKey, methodName: methodEntry[0], proc, http: effectiveHttp(proc.http, version, restOptions) });
     }
   }
   return routes;
 };
 
 module.exports = {
+  unitVersions,
   normalizeHttp,
   publicHttp,
   cacheHeadersFor,

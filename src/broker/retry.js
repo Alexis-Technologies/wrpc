@@ -21,6 +21,12 @@ const DEFAULT_RETRY = Object.freeze({
 const positiveInteger = (value) => Number.isInteger(value) && value > 0;
 const nonNegative = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 
+const statusCodes = (list) => {
+  if (!Array.isArray(list)) return false;
+  for (let i = 0; i < list.length; i++) if (!Number.isInteger(list[i])) return false;
+  return true;
+};
+
 const normalizeRetry = (options, label) => {
   if (options === undefined || options === null) return DEFAULT_RETRY;
   if (options === false) return Object.freeze({ ...DEFAULT_RETRY, attempts: 1 });
@@ -34,7 +40,7 @@ const normalizeRetry = (options, label) => {
   if (!nonNegative(merged.base) || !nonNegative(merged.max) || !(merged.factor > 0)) {
     throw new ConfigError(`${label}: retry.backoff needs non-negative base/max and a positive factor`);
   }
-  if (!Array.isArray(retryOn) || !retryOn.every((code) => Number.isInteger(code))) {
+  if (!statusCodes(retryOn)) {
     throw new ConfigError(`${label}: retry.retryOn must be an array of status codes`);
   }
   return Object.freeze({ attempts, backoff: Object.freeze(merged), retryOn: Object.freeze([...retryOn]) });

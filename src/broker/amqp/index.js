@@ -61,6 +61,8 @@ const OFFSET = /^\d{1,19}$/;
 const STREAM_OFFSET = 'x-stream-offset';
 
 const isFunction = (value) => typeof value === 'function';
+// An offset is a number inside and a string outside.
+const offsetText = (offset) => `${offset}`;
 const token = tokenEncoder({ maxLength: 180 });
 const name = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 // A consumer's channel is re-opened on this schedule after the server
@@ -184,10 +186,10 @@ const createAmqpBroker = (options = {}) => {
 
   // Publishes and waits for the broker's confirm: what makes an append or a
   // produce a promise the caller can trust.
-  const confirmPublish = async (exchange, routingKey, body, options = {}) => {
+  const confirmPublish = async (exchange, routingKey, body, properties = {}) => {
     const channel = await publisher();
     await new Promise((resolve, reject) => {
-      channel.publish(exchange, routingKey, Buffer.from(toBytes(body)), options, (error) => {
+      channel.publish(exchange, routingKey, Buffer.from(toBytes(body)), properties, (error) => {
         if (error) reject(error);
         else resolve();
       });
@@ -250,15 +252,16 @@ const createAmqpBroker = (options = {}) => {
           // without a line. Closed here, so onClose rebinds on a fresh one.
           if (message === null) {
             report('broker.amqp.cancelled', new Error('consumer cancelled'), { queue: 'backplane' });
-            void closeChannel(consumerChannel);
-            return;
+            return void closeChannel(consumerChannel);
           }
           const set = handlers.get(message.fields?.routingKey);
           if (set === undefined) return;
           const text = message.content.toString();
           // Handlers are synchronous (a RoomsBackplane's), so the copy is
           // what lets one unsubscribe from inside its own callback.
-          for (const handler of Array.from(set)) {
+          const list = Array.from(set);
+          for (let i = 0; i < list.length; i++) {
+            const handler = list[i];
             try {
               handler(text);
             } catch (error) {
@@ -322,9 +325,14 @@ const createAmqpBroker = (options = {}) => {
         if (closed || lost || handlers.size === 0) return;
         try {
           await consuming();
-          await Promise.all(Array.from(handlers.keys(), (key) => reconcile(key)));
-          log.warn({ event: 'broker.amqp.backplane.rebind', channels: handlers.size, attempt: attempt + 1 });
-          return;
+          const binds = [];
+          for (const key of handlers.keys()) binds.push(reconcile(key));
+          await Promise.all(binds);
+          return void log.warn({
+            event: 'broker.amqp.backplane.rebind',
+            channels: handlers.size,
+            attempt: attempt + 1,
+          });
         } catch (error) {
           report('broker.amqp.backplane.rebind', error, { attempt: attempt + 1 });
         }
@@ -462,7 +470,7 @@ const createAmqpBroker = (options = {}) => {
       // that one is dropped.)
       const queue = await ensureLog(topic);
       const channel = await topology();
-      let messageCount;
+      let messageCount = 0;
       try {
         ({ messageCount } = await channel.checkQueue(queue));
       } catch (error) {
@@ -549,11 +557,9 @@ const createAmqpBroker = (options = {}) => {
 
   const parseId = (text) => (typeof text === 'string' && OFFSET.test(text) ? text : null);
 
-  // An offset is a number inside and a string outside.
-  const stringifyIds = (inner) => guardedRead(inner, { mapId: String });
+  const stringifyIds = (inner) => guardedRead(inner, { mapId: offsetText });
 
-  const read = (topic, options = {}) => {
-    const { after = null, from = 'latest', signal = null } = options;
+  const read = (topic, { after = null, from = 'latest', signal = null } = {}) => {
     if (from !== 'latest' && from !== 'earliest') {
       throw new ArgumentError("amqp log.read: from must be 'latest' or 'earliest'");
     }
@@ -629,7 +635,7 @@ const createAmqpBroker = (options = {}) => {
     const queue = await ensureLog(topic);
     await confirmPublish('', queue, value, { persistent: true, headers: toHeaders(headers) });
     const offset = await tipOffset(topic);
-    return String(offset === null ? 0 : offset);
+    return `${offset === null ? 0 : offset}`;
   };
 
   // ---------------------------------------------------------------------
@@ -677,9 +683,9 @@ const createAmqpBroker = (options = {}) => {
     await confirmPublish('', main, body, { persistent: true, headers: toHeaders(producerHeaders(headers)) });
   };
 
-  const consume = async (queue, onDelivery, options = {}) => {
+  const consume = async (queue, onDelivery, consumeOptions = {}) => {
     if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
-    const { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
+    const { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('amqp queue.consume', onDelivery, prefetch, deadLetter);
     const main = await ensureQueue(queue, deadLetter);
     const key = `${queue}|${deadLetter ?? ''}`;
@@ -764,7 +770,7 @@ const createAmqpBroker = (options = {}) => {
       const ack = () => channel.ack(message);
       const carry = (extra) => ({ ...headers, [REDELIVERED_HEADER]: '1', ...extra });
       const delivery = Object.freeze({
-        id: String(message.properties?.messageId ?? message.fields?.deliveryTag ?? ''),
+        id: `${message.properties?.messageId ?? message.fields?.deliveryTag ?? ''}`,
         body: message.content.toString(),
         headers,
         attempt,
@@ -774,12 +780,12 @@ const createAmqpBroker = (options = {}) => {
         // a republish — through the TTL queue when it must wait.
         retry: ({ delay = 0 } = {}) =>
           finish(ack, async () => {
-            const headersOut = carry({ [ATTEMPT_HEADER]: String(attempt + 1) });
+            const headersOut = carry({ [ATTEMPT_HEADER]: `${attempt + 1}` });
             if (delay > 0) {
               await confirmPublish('', retryQueue(queue), message.content, {
                 persistent: true,
                 headers: headersOut,
-                expiration: String(Math.round(delay)),
+                expiration: `${Math.round(delay)}`,
               });
             } else {
               await confirmPublish('', main, message.content, { persistent: true, headers: headersOut });
@@ -796,7 +802,7 @@ const createAmqpBroker = (options = {}) => {
               headers: {
                 ...headers,
                 [DEAD_REASON_HEADER]: reasonText(reason),
-                [ATTEMPT_HEADER]: String(attempt),
+                [ATTEMPT_HEADER]: `${attempt}`,
               },
             });
           }),
@@ -875,7 +881,10 @@ const createAmqpBroker = (options = {}) => {
         state.paused = false;
         if (!state.running || state.tag !== null) return;
         // Closed while paused: the re-open (running, or about to) starts it.
-        if (state.channel === null) return void (await reopen());
+        if (state.channel === null) {
+          await reopen();
+          return;
+        }
         await start(state.channel);
       },
       get healthy() {
@@ -1040,7 +1049,9 @@ const createAmqpBroker = (options = {}) => {
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null, timeout } = {}) => {
     if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
-    const [channel, exchangeName] = await Promise.all([directing(), ensureDirect()]);
+    const ready = await Promise.all([directing(), ensureDirect()]);
+    const channel = ready[0];
+    const exchangeName = ready[1];
     const text = typeof body === 'string';
     const messageId = nextId();
     const properties = {
@@ -1053,7 +1064,7 @@ const createAmqpBroker = (options = {}) => {
     if (replyTo !== null && replyTo !== undefined) properties.replyTo = replyTo;
     // A request nobody takes in time is dropped by the broker rather than
     // answered late.
-    if (timeout > 0) properties.expiration = String(Math.round(timeout));
+    if (timeout > 0) properties.expiration = `${Math.round(timeout)}`;
     await new Promise((resolve, reject) => {
       channel.publish(exchangeName, routingKeyOf(address), Buffer.from(toBytes(body)), properties, (error) => {
         // A nack: the broker took nothing — the queue it routed to was
@@ -1076,7 +1087,8 @@ const createAmqpBroker = (options = {}) => {
     ensuredLogs.clear();
     ensuredQueues.clear();
     exchanges.clear();
-    for (const channel of Array.from(channels)) await closeChannel(channel);
+    const open = Array.from(channels);
+    for (let i = 0; i < open.length; i++) await closeChannel(open[i]);
     topology.reset();
     publisher.reset();
     directing.reset();

@@ -85,6 +85,18 @@ const refusals = {
   ended: { closeCode: 408, reason: 'No control stream' },
 };
 
+const checkNonNegative = (value, name, label) => {
+  if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+    throw new ConfigError(`${label}: ${name} must be a non-negative integer (ms)`);
+  }
+};
+
+const checkPositive = (value, name, label) => {
+  if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+    throw new ConfigError(`${label}: ${name} must be a positive integer`);
+  }
+};
+
 /**
  * Hands one WebTransport session to a server as a client: waits for its
  * control stream, wraps the session as a WrpcSocket and attaches it the way
@@ -112,22 +124,10 @@ const checkSessionOptions = (options, label) => {
     throw new ConfigError(`${label}: acceptTimeout must be a positive integer (ms)`);
   }
   normalizeBackpressure(maxBackpressure, label);
-  for (const [name, value] of [
-    ['closeTimeout', closeTimeout],
-    ['idleTimeout', idleTimeout],
-  ]) {
-    if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
-      throw new ConfigError(`${label}: ${name} must be a non-negative integer (ms)`);
-    }
-  }
-  for (const [name, value] of [
-    ['maxHeldStreams', options.maxHeldStreams],
-    ['holdTimeout', options.holdTimeout],
-  ]) {
-    if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
-      throw new ConfigError(`${label}: ${name} must be a positive integer`);
-    }
-  }
+  checkNonNegative(closeTimeout, 'closeTimeout', label);
+  checkNonNegative(idleTimeout, 'idleTimeout', label);
+  checkPositive(options.maxHeldStreams, 'maxHeldStreams', label);
+  checkPositive(options.holdTimeout, 'holdTimeout', label);
   normalizeCompression(compression, label);
 };
 
@@ -326,7 +326,7 @@ const acceptSessions = (server, sessions, options = {}) => {
   // onError, never as a rejection nobody awaited.
   const done = (async () => {
     for (;;) {
-      let next;
+      let next = null;
       try {
         next = await source.next();
       } catch (error) {
@@ -362,6 +362,13 @@ const acceptSessions = (server, sessions, options = {}) => {
   };
 };
 
+// A session's `peerAddress`, a 'host:port' string or an `{ address }`, as
+// the host alone.
+const addressOf = (address) => {
+  if (typeof address === 'string') return address.replace(/:\d+$/, '');
+  return typeof address?.address === 'string' ? address.address : '';
+};
+
 /**
  * The CONNECT request off a @fails-components/webtransport session: its
  * `header` carries the HTTP/3 pseudo-headers and the real ones; `:path`
@@ -371,18 +378,14 @@ const acceptSessions = (server, sessions, options = {}) => {
 const fromFails = (session) => {
   const header = session?.header ?? {};
   const headers = {};
-  for (const name in header) {
+  const names = Object.keys(header);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
     if (name.charCodeAt(0) === 58) continue; // ':'
     const value = header[name];
-    if (value !== undefined && value !== null) headers[name.toLowerCase()] = String(value);
+    if (value !== undefined && value !== null) headers[name.toLowerCase()] = `${value}`;
   }
-  const address = session?.peerAddress;
-  const remoteAddress =
-    typeof address === 'string'
-      ? address.replace(/:\d+$/, '')
-      : typeof address?.address === 'string'
-        ? address.address
-        : '';
+  const remoteAddress = addressOf(session?.peerAddress);
   return { headers, url: typeof header[':path'] === 'string' ? header[':path'] : '/', remoteAddress };
 };
 

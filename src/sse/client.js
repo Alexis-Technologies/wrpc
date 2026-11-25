@@ -281,8 +281,7 @@ class ClientSseTransport extends ClientTransport {
       this.log?.warn({ event: 'sse.gap' });
       this.#channel = null;
       this.#lastEventId = null;
-      this.close();
-      return;
+      return void this.close();
     }
     if (event.event === 'ready') {
       const ready = JSON.parse(event.data);
@@ -332,7 +331,10 @@ class ClientSseTransport extends ClientTransport {
       const response = await doFetch(this.url, { method: 'POST', headers, body: data });
       // 202 is the expected answer: everything a call produces comes back
       // on the event stream, not in this response.
-      if (response.status === 202) return void (await response.body?.cancel?.());
+      if (response.status === 202) {
+        await response.body?.cancel?.();
+        return;
+      }
       const text = await response.text();
       if (response.ok) return void (text && this.emit('message', text));
       // 409: the channel died server-side (retention, restart, another

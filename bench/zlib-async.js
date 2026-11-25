@@ -62,13 +62,18 @@ const sync = (fn, input, iterations) => {
   return ((performance.now() - started) * 1000) / iterations;
 };
 
+const iterationsFor = (length) => {
+  if (length > 200_000) return 100;
+  return length > 20_000 ? 1_000 : 10_000;
+};
+
 const us = (value) => `${value.toFixed(1).padStart(8)} µs`;
 
 const main = async () => {
   console.log('deflate-raw, µs per message: sync | async one at a time | async ×16 in flight  ·  inflate sync | async');
   for (const n of [3, 30, 300, 3000, 12000]) {
     const input = rows(n);
-    const iterations = input.length > 200_000 ? 100 : input.length > 20_000 ? 1_000 : 10_000;
+    const iterations = iterationsFor(input.length);
     const deflated = zlib.deflateRawSync(input);
     const line = [
       `${String(input.length).padStart(9)} B`,

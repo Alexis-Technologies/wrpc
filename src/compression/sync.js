@@ -28,7 +28,9 @@ const EMPTY = new Uint8Array(0);
 const normalizeSyncCompression = (value, name) => {
   const normalized = normalizeCompression(value, name);
   if (normalized === null) return null;
-  for (const { codec } of normalized.codecs) {
+  const codecs = normalized.codecs;
+  for (let i = 0; i < codecs.length; i++) {
+    const codec = codecs[i].codec;
     if (codec.async !== undefined && codec.async !== null) {
       throw new ConfigError(
         `${name}: compression.codec declares async — this carrier has no ordering queue for a promise`,
@@ -80,7 +82,7 @@ const asBuffer = (bytes) =>
 const encodeIfSmaller = (active, body, onError = null) => {
   const bytes = typeof body === 'string' ? Buffer.from(body) : body;
   if (bytes.length < active.threshold) return null;
-  let out;
+  let out = null;
   try {
     out = active.codec.encode(bytes);
   } catch (error) {
@@ -134,6 +136,8 @@ const createFailureReporter = (log, otel = null) => {
 // (`['deflate-raw', 'zstd']`), then the order is swapped.
 const ENVELOPE_PREFIX = 'wrpc-enc:';
 
+const byMarkerLength = (a, b) => b.marker.length - a.marker.length;
+
 const isEncodedEnvelope = (message) => typeof message === 'string' && message.startsWith(ENVELOPE_PREFIX);
 
 /**
@@ -155,9 +159,12 @@ const createEnvelopeCodec = (option, name, maxMessage = DEFAULT_MAX_MESSAGE, fai
   // An id may hold a colon (`deflate-raw+dict:<hash>`), so a marker is
   // matched whole, never parsed — longest first, so one id that is a prefix
   // of another cannot claim its envelopes.
-  const markers = local.codecs
-    .map((entry) => ({ entry, marker: `${ENVELOPE_PREFIX}${entry.id}:`, failed: hear('decode', entry.id) }))
-    .sort((a, b) => b.marker.length - a.marker.length);
+  const markers = [];
+  for (let i = 0; i < local.codecs.length; i++) {
+    const entry = local.codecs[i];
+    markers.push({ entry, marker: `${ENVELOPE_PREFIX}${entry.id}:`, failed: hear('decode', entry.id) });
+  }
+  markers.sort(byMarkerLength);
   const headMarker = `${ENVELOPE_PREFIX}${head.id}:`;
   return {
     id: head.id,

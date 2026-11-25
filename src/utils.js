@@ -14,6 +14,8 @@ const RESOLVED = Promise.resolve();
 
 const consoleWarn = (message) => void globalThis.console.warn(message);
 
+const invoke = async (listener, value) => listener(value);
+
 class Emitter {
   #events = new Map();
   #maxListeners = 10;
@@ -41,7 +43,7 @@ class Emitter {
     // and off() splices without deleting, so an emptied `on` is reachable too.
     if (event.once.size === 0 && on.length < 2) {
       if (on.length === 0) return RESOLVED;
-      let result;
+      let result = undefined;
       try {
         result = on[0](value);
       } catch (error) {
@@ -52,10 +54,14 @@ class Emitter {
     }
     // More than one listener, or a once to sweep: snapshot first, because a
     // listener may call off() while the eager invocation below is still going.
-    const listeners = on.slice();
-    const promises = listeners.map(async (fn) => fn(value));
+    // Each slot of the snapshot then takes its listener's promise.
+    const promises = on.slice();
+    for (let i = 0; i < promises.length; i++) promises[i] = invoke(promises[i], value);
     if (event.once.size > 0) {
       const len = event.on.length;
+      // Preallocate + index cursor + truncate in place of a filter, measured
+      // by bench/emitter.js (the lone once listener row).
+      // oxlint-disable-next-line unicorn/no-new-array
       const remaining = new Array(len);
       let index = 0;
       for (let i = 0; i < len; i++) {
@@ -430,7 +436,7 @@ const resolveGenerateId = (value, label) => {
   };
   if (value === null || value === undefined) return { generate: generateUUID, first: generateUUID() };
   if (typeof value !== 'function') return fail('must be a function');
-  let first;
+  let first = '';
   try {
     first = value();
   } catch (error) {

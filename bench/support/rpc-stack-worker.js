@@ -21,7 +21,7 @@ const PIPELINE = 64;
 
 const pipelined = (call, payload) => () => Promise.all(Array.from({ length: PIPELINE }, () => call(payload)));
 
-async function main() {
+const main = async () => {
   const key = process.argv[2];
   const stack = stacks[key];
   if (!stack) {
@@ -52,6 +52,6 @@ async function main() {
   // A native stack (libquiche, libdatachannel) can hold a thread past its
   // own close; the orchestrator waits on this process, so it must end.
   setTimeout(() => process.exit(), 2000).unref();
-}
+};
 
 main();

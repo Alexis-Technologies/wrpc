@@ -22,7 +22,7 @@ const listen = (server) =>
 // wrpc's REST bridge: a procedure that declares `http: { method, path }` is
 // a real endpoint — the body arrives as `body`, the answer is the plain
 // result, no envelope.
-async function startWrpcRest() {
+const startWrpcRest = async () => {
   const { Server } = require('../../src/server.js');
   const { defineRouter, procedure } = require('../../src/rpc/router.js');
   const router = defineRouter({
@@ -37,25 +37,25 @@ async function startWrpcRest() {
   const server = new Server({ router, host: '127.0.0.1', port: 0, protocol: 'http', logger: false });
   await server.listen();
   return { port: server.address().port, path: '/api/echo', body: ARGS, stop: () => server.close() };
-}
+};
 
 // wrpc's packet mode: the call packet a WebSocket would carry, as the body of
 // one POST; the answer is its callback packet.
-async function startWrpcPacket() {
+const startWrpcPacket = async () => {
   const { createWrpcServer } = require('./wrpc-echo.js');
   const { server, port } = await createWrpcServer({ bench: { echo: { handler: async (args) => args } } });
   const packet = { type: 'call', id: '1', method: 'bench/echo', args: ARGS };
   return { port, path: '/api', body: packet, stop: () => server.close() };
-}
+};
 
-async function startFastify() {
+const startFastify = async () => {
   const fastify = require('fastify')({ logger: false });
   fastify.post('/echo', async (request) => request.body);
   await fastify.listen({ port: 0, host: '127.0.0.1' });
   return { port: fastify.server.address().port, path: '/echo', body: ARGS, stop: () => fastify.close() };
-}
+};
 
-async function startExpress() {
+const startExpress = async () => {
   const express = require('express');
   const app = express();
   app.use(express.json());
@@ -63,11 +63,11 @@ async function startExpress() {
   const server = http.createServer(app);
   const port = await listen(server);
   return { port, path: '/echo', body: ARGS, stop: () => new Promise((resolve) => server.close(resolve)) };
-}
+};
 
 // tRPC v11's standalone HTTP adapter: a mutation is a POST to its path, the
 // input is the body, the answer is `{ result: { data } }`.
-async function startTrpc() {
+const startTrpc = async () => {
   const { initTRPC } = require('@trpc/server');
   const { createHTTPServer } = require('@trpc/server/adapters/standalone');
   const t = initTRPC.create();
@@ -75,11 +75,11 @@ async function startTrpc() {
   const server = createHTTPServer({ router: appRouter });
   const port = await listen(server);
   return { port, path: '/echo', body: ARGS, stop: () => new Promise((resolve) => server.close(resolve)) };
-}
+};
 
 // No framework: node:http reading the body, parsing it and answering it —
 // the ceiling, as the raw echoes are in bench/rpc-comparison.js.
-async function startNodeHttp() {
+const startNodeHttp = async () => {
   const server = http.createServer((request, response) => {
     const chunks = [];
     request.on('data', (chunk) => chunks.push(chunk));
@@ -91,7 +91,7 @@ async function startNodeHttp() {
   });
   const port = await listen(server);
   return { port, path: '/echo', body: ARGS, stop: () => new Promise((resolve) => server.close(resolve)) };
-}
+};
 
 module.exports = {
   'wrpc-rest': { label: 'wrpc (declared REST route)', start: startWrpcRest },

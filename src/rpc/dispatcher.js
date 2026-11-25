@@ -41,6 +41,8 @@ const PROTO_KEY = '__proto__';
 // an exotic type) and the caller falls back to the exact measure.
 const metaUpperBound = (value) => {
   let bound = 2; // the braces
+  // for...in over a small bag JSON.parse made, per packet that carries one:
+  // the enum cache walks it faster than Object.keys (bench/object-walk.js).
   for (const key in value) {
     bound += key.length * 6 + 6; // quotes, colon, comma, escape worst case
     const entry = value[key];
@@ -127,7 +129,9 @@ const parseParams = (params) => (params ? Object.fromEntries(new URLSearchParams
 // Split on the FIRST dot only: 'unit.v1.2/m' must look up version 'v1.2'
 // (a guaranteed miss -> 404), not silently truncate to version 'v1'
 const parseTarget = (target) => {
-  const [unitName, name] = split(target, '/');
+  const parts = split(target, '/');
+  const unitName = parts[0];
+  const name = parts[1];
   const dot = unitName.indexOf('.');
   const unit = dot < 0 ? unitName : unitName.slice(0, dot);
   const version = dot < 0 ? DEFAULT_VERSION : unitName.slice(dot + 1);
@@ -165,9 +169,11 @@ const hasSession = (client) => {
 const refusedFor = (client) => (client.sessionUnavailable === true ? 503 : 403);
 
 const refuseCall = (client, id, code, method, event) => {
-  const level = code === 429 ? 'debug' : code === 503 ? 'info' : 'warn';
-  const shown = clip(method);
-  client.log[level]({ event, code, id: clip(id), method: shown }, `${client.source}\tCALL\t${shown}\t${code}`);
+  let level = 'warn';
+  if (code === 429) level = 'debug';
+  else if (code === 503) level = 'info';
+  const clipped = clip(method);
+  client.log[level]({ event, code, id: clip(id), method: clipped }, `${client.source}\tCALL\t${clipped}\t${code}`);
   client.otel.recordCall(method, 'error', code);
   client.error(code, { id, level: 'debug' });
 };
@@ -193,10 +199,10 @@ const handleRpc = async (client, packet, router) => {
     // The target is UNKNOWN on the metric (an unbounded method string would
     // be a cardinality bomb) but present in the log, where it is the whole
     // point: this is what a stale client or a typo looks like.
-    const shown = clip(method);
+    const clipped = clip(method);
     client.log[levelFor(client, 'call.unknown')](
-      { event: 'call.unknown', code: 404, id: clip(id), method: shown },
-      `${client.source}\tCALL\t${shown}\t404`,
+      { event: 'call.unknown', code: 404, id: clip(id), method: clipped },
+      `${client.source}\tCALL\t${clipped}\t404`,
     );
     client.otel.recordCall(UNKNOWN_TARGET, 'error', 404);
     return void client.error(404, { id, level: 'debug' });
@@ -255,7 +261,7 @@ const handleRpc = async (client, packet, router) => {
     // error span and a duration sample exactly as much as a slow handler does.
     const run = async (handle) => {
       let status = 'ok';
-      let code;
+      let code = undefined;
       let budget = 0;
       try {
         if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
@@ -374,8 +380,8 @@ const refuse = (client, id, code, message, target, details) => {
   client.send({ type: 'end', id, error });
   // The id is the peer's: bounded to 255 by the packet rule, bounded again
   // for a log line, as every peer-supplied text in one is.
-  const said = clip(id);
-  client.warn(`SUBSCRIBE\t${said}\t${code}\t${message}`, { event: 'subscribe.refused', id: said, code });
+  const clipped = clip(id);
+  client.warn(`SUBSCRIBE\t${clipped}\t${code}\t${message}`, { event: 'subscribe.refused', id: clipped, code });
   client.otel.recordCall(target, 'error', code);
 };
 
@@ -414,10 +420,7 @@ const handleSubscribe = async (client, packet, router) => {
   let context = null;
   try {
     if (!client.isReady) await client.ready;
-    if (controller.signal.aborted) {
-      client.subscriptions.delete(id);
-      return;
-    }
+    if (controller.signal.aborted) return void client.subscriptions.delete(id);
     if (!hasSession(client) && proc.access !== 'public') {
       client.subscriptions.delete(id);
       const code = refusedFor(client);
@@ -457,9 +460,9 @@ const handleSubscribe = async (client, packet, router) => {
     }
     // The peer is told, but nobody was: a subscription that dies server-side
     // used to leave no trace at all on this side of the wire.
-    const said = clip(id);
-    const entry = { event: 'subscribe.end', id: said, method: clip(method), code: terminal.error?.code };
-    if (terminal.error) client.log.warn(entry, `${client.source}\tSUBSCRIBE\t${said}\t${terminal.error.code}`);
+    const clipped = clip(id);
+    const entry = { event: 'subscribe.end', id: clipped, method: clip(method), code: terminal.error?.code };
+    if (terminal.error) client.log.warn(entry, `${client.source}\tSUBSCRIBE\t${clipped}\t${terminal.error.code}`);
     else client.log.debug(entry);
     let outcome = 'complete';
     if (terminal.error) outcome = 'error';
@@ -576,8 +579,7 @@ const handleStream = async (client, packet) => {
         // part that had arrived as if it were the whole.
         stream.onCancel = null;
         client.streams.delete(id);
-        stream.fail(`Stream ${stream.label} was terminated by its sender`, CANCELLED);
-        return;
+        return void stream.fail(`Stream ${stream.label} was terminated by its sender`, CANCELLED);
       }
       try {
         await stream.end();
@@ -603,17 +605,17 @@ const handleStream = async (client, packet) => {
       return void client.error(429, { id, error: new Error('Too many open streams'), level: 'debug' });
     }
     {
-      const stream = new WrpcReadable(id, name, size);
-      stream.onCancel = tellSender(client, stream, packet.cancel === true);
+      const readable = new WrpcReadable(id, name, size);
+      readable.onCancel = tellSender(client, readable, packet.cancel === true);
       // Counted when it is over, however that comes about: read to its end
       // (closed), cut short or refused by a cap (failed, with its code), or
       // let go of by its reader (terminated).
-      stream.once('close', () => {
-        const { error } = stream;
-        const outcome = error !== null ? 'failed' : stream.status;
+      readable.once('close', () => {
+        const { error } = readable;
+        const outcome = error !== null ? 'failed' : readable.status;
         client.otel.recordStream('receive', outcome, error === null ? undefined : error.code);
       });
-      client.streams.set(id, stream);
+      client.streams.set(id, readable);
       // What nobody comes to read is not kept for the connection's life.
       client.watchStreams();
     }
@@ -815,8 +817,7 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
     if (error !== null && typeof error === 'object' && (client.cancelStream(packet) || error.code === CANCELLED)) {
       return;
     }
-    client.warn(`ANSWER\t${JSON.stringify(clip(id))}\tno pending ask`);
-    return;
+    return void client.warn(`ANSWER\t${JSON.stringify(clip(id))}\tno pending ask`);
   } else if (type === 'ping') {
     // App-level heartbeat: a browser WebSocket cannot see protocol pings,
     // so liveness is measured with packets the client can observe.
@@ -861,12 +862,10 @@ const parseFrame = (data, options) => {
 const handleMessage = (client, data, router, options = {}) => {
   // A frame is checked before the codec seam: `decodePacket` is the JSON
   // (or codec) parse, and a frame is neither.
-  const parsed =
-    typeof data !== 'string' && isAttachmentsFrame(data)
-      ? parseFrame(data, options)
-      : client.decodePacket
-        ? client.decodePacket(data)
-        : jsonParse(data);
+  let parsed = null;
+  if (typeof data !== 'string' && isAttachmentsFrame(data)) parsed = parseFrame(data, options);
+  else if (client.decodePacket) parsed = client.decodePacket(data);
+  else parsed = jsonParse(data);
   handleParsed(client, parsed, data, router, options);
 };
 
@@ -897,7 +896,8 @@ const handleParsed = (client, parsed, data, router, options = {}) => {
     client.log.debug({ event: 'batch.refused', code: 400, size: packet.length, max: maxBatch });
     return void client.error(400, { error, level: 'debug' });
   }
-  for (const item of packet) {
+  for (let i = 0; i < packet.length; i++) {
+    const item = packet[i];
     handlePacket(client, item && typeof item === 'object' ? item : {}, router, options);
   }
 };

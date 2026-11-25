@@ -96,7 +96,8 @@ const bodyStream = () => {
 const receiveByIterator = async (stream) => {
   const chunks = [];
   for await (const chunk of stream) chunks.push(chunk);
-  return chunks.length === 0 ? null : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
+  if (chunks.length === 0) return null;
+  return chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
 };
 
 const BODIES = 256;

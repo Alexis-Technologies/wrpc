@@ -395,8 +395,7 @@ class StreamMux {
       } catch {
         // Not cancellable: nothing is read from it either way.
       }
-      this.#onRefused?.('unannounced', null);
-      return;
+      return void this.#onRefused?.('unannounced', null);
     }
     void this.#consume(readable);
   }
@@ -446,8 +445,7 @@ class StreamMux {
       if (refused !== null) {
         // The refusal is what is reported; a cancel that fails changes nothing.
         await reader.cancel().catch(() => {});
-        this.#onRefused?.(refused, id);
-        return;
+        return void this.#onRefused?.(refused, id);
       }
       if (id !== null && !entry.refused) this.#ended(id, 'end');
     } catch {

@@ -35,7 +35,9 @@ const DEFAULT_META_MAX = 2048;
 const prefixedData = (headers, limit) => {
   let data = null;
   let bytes = 0;
-  for (const key in headers) {
+  const keys = Object.keys(headers);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     if (!key.startsWith(META_PREFIX)) continue;
     const name = key.slice(META_PREFIX.length);
     // A duplicated header arrives as an array — skipped, refusal-style,
@@ -52,9 +54,10 @@ const prefixedData = (headers, limit) => {
 // bag this function's caller just built, never one it was handed, so writing
 // through it is safe; '__proto__' is skipped before it can be a key at all.
 const kebabKeys = (source, target) => {
-  for (const key in source) {
-    if (key === '__proto__') continue;
-    target[toKebab(key)] = source[key];
+  const keys = Object.keys(source);
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i] === '__proto__') continue;
+    target[toKebab(keys[i])] = source[keys[i]];
   }
   return target;
 };

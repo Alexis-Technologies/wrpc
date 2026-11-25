@@ -62,7 +62,7 @@ const unpack = (bytes) => {
   if (bytes.length < 4) throw new OpenError();
   const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0);
   if (4 + length > bytes.length) throw new OpenError();
-  let header;
+  let header = null;
   try {
     header = JSON.parse(decoder.decode(bytes.subarray(4, 4 + length)));
   } catch {
@@ -85,11 +85,11 @@ const bodyBytes = (body) => {
 const responseKey = async ({ kdf, cipher }, context, enc, nonce) => {
   const secret = await context.export(RESPONSE_LABEL, cipher.keyLength);
   const prk = await kdf.extract(concat(enc, nonce), secret);
-  const [key, iv] = await Promise.all([
+  const derived = await Promise.all([
     kdf.expand(prk, KEY_LABEL, cipher.keyLength),
     kdf.expand(prk, NONCE_LABEL, cipher.nonceLength),
   ]);
-  return { key: await cipher.key(key), iv };
+  return { key: await cipher.key(derived[0]), iv: derived[1] };
 };
 
 // The key of a sealed event stream: the secret only the two ends of the

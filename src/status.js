@@ -12,6 +12,7 @@
 // Generated from node:http's table (Node 24); tests/status.test.js keeps the
 // two in sync.
 const STATUS_CODES = Object.freeze({
+  __proto__: null,
   100: 'Continue',
   101: 'Switching Protocols',
   102: 'Processing',

@@ -243,7 +243,7 @@ class StreamParser {
     // Bytes as they are for a chunk and for either compressed kind — a
     // compressed packet is text only once the transport has inflated it.
     if (kind === KIND_BINARY || kind >= KIND_TEXT_COMPRESSED) return void this.#onMessage(kind, payload);
-    let text;
+    let text = '';
     try {
       text = TEXT_DECODER.decode(payload);
     } catch {
@@ -259,7 +259,7 @@ class StreamParser {
     let head = this.#head;
     const first = reads[head];
     const available = first.length - this.#offset;
-    let out;
+    let out = null;
     if (available > size) {
       out = first.subarray(this.#offset, this.#offset + size);
       this.#offset += size;

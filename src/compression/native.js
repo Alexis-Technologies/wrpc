@@ -129,7 +129,9 @@ const nativeCompressor = ({ algorithm = ID, level, async = null, optional = fals
   if (typeof algorithm !== 'string' || !(algorithm in LEVELS)) {
     throw new ConfigError(`compression: unknown algorithm ${JSON.stringify(algorithm)} — deflate-raw, brotli or zstd`);
   }
-  const [standard, lowest, highest] = LEVELS[algorithm];
+  const levels = LEVELS[algorithm];
+  const lowest = levels[1];
+  const highest = levels[2];
   if (level !== undefined && !(Number.isInteger(level) && level >= lowest && level <= highest)) {
     throw new ConfigError(`compression: ${algorithm} level must be an integer from ${lowest} to ${highest}`);
   }
@@ -137,7 +139,7 @@ const nativeCompressor = ({ algorithm = ID, level, async = null, optional = fals
     if (optional) return null;
     throw new ConfigError('compression: this Node has no zstd in node:zlib (22.15+ / 23.8+)');
   }
-  const { encode, decode } = families[algorithm](lib, level ?? standard, async);
+  const { encode, decode } = families[algorithm](lib, level ?? levels[0], async);
   return { id: algorithm, threshold: THRESHOLD, async, encode, decode };
 };
 

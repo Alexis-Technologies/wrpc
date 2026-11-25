@@ -45,14 +45,20 @@ const requireName = (value, what, label) => {
   }
 };
 
-const copyBody = (body) => (body instanceof Uint8Array ? body.slice() : typeof body === 'string' ? body : toText(body));
+const copyBody = (body) => {
+  if (body instanceof Uint8Array) return body.slice();
+  return typeof body === 'string' ? body : toText(body);
+};
+
+const firstEpoch = (generateId) =>
+  generateId === null ? shortId() : resolveGenerateId(generateId, 'MemoryBroker').first;
 
 class MemoryBroker {
   #closed = false;
-  #epoch;
-  #maxEntries;
-  #log;
-  #backplane;
+  #epoch = '';
+  #maxEntries = 0;
+  #log = null;
+  #backplane = null;
   #topics = new Map(); // topic -> { entries, head, first, next, waiters }
   #queues = new Map(); // queue -> { ready, consumers, cursor, timers }
   #addresses = new Map(); // address -> { plain: Set, groups: Map(group -> { members, cursor }) }
@@ -67,12 +73,7 @@ class MemoryBroker {
   } = {}) {
     // The epoch is the only id this broker mints at random (message ids and
     // inboxes are counters off it), so `generateId` feeds exactly that.
-    this.#epoch =
-      epoch === null
-        ? generateId === null
-          ? shortId()
-          : resolveGenerateId(generateId, 'MemoryBroker').first
-        : String(epoch);
+    this.#epoch = epoch === null ? firstEpoch(generateId) : String(epoch);
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(this.#epoch)) {
       throw new ConfigError('MemoryBroker: epoch must be 1-64 characters of [A-Za-z0-9_-]');
     }
@@ -147,7 +148,7 @@ class MemoryBroker {
       const waiters = Array.from(state.waiters);
       state.waiters.clear();
       queueMicrotask(() => {
-        for (const wake of waiters) wake();
+        for (let i = 0; i < waiters.length; i++) waiters[i]();
       });
     }
     return Promise.resolve(id);
@@ -374,14 +375,14 @@ class MemoryBroker {
           broker.#enqueue(consumer.deadLetter, message.body, {
             ...message.headers,
             [DEAD_REASON_HEADER]: reasonText(reason),
-            [ATTEMPT_HEADER]: String(message.attempt),
+            [ATTEMPT_HEADER]: `${message.attempt}`,
           });
         }),
     });
     consumer.inflight.add(record);
     queueMicrotask(() => {
       if (record.settled) return;
-      let result;
+      let result = undefined;
       try {
         result = consumer.onDelivery(delivery);
       } catch (error) {
@@ -427,10 +428,11 @@ class MemoryBroker {
       const current = this.#addresses.get(address);
       if (!current) return Promise.resolve();
       current.plain.delete(listener);
-      for (const [name, members] of current.groups) {
-        const index = members.list.indexOf(listener);
-        if (index >= 0) members.list.splice(index, 1);
-        if (members.list.length === 0) current.groups.delete(name);
+      for (const groupEntry of current.groups) {
+        const list = groupEntry[1].list;
+        const index = list.indexOf(listener);
+        if (index >= 0) list.splice(index, 1);
+        if (list.length === 0) current.groups.delete(groupEntry[0]);
       }
       if (current.plain.size === 0 && current.groups.size === 0) this.#addresses.delete(address);
       return Promise.resolve();
@@ -450,7 +452,8 @@ class MemoryBroker {
     }
     const payload = copyBody(body);
     const normalized = toHeaders(headers);
-    for (const listener of targets) {
+    for (let i = 0; i < targets.length; i++) {
+      const listener = targets[i];
       const message = {
         body: payload,
         headers: { ...normalized },
@@ -481,12 +484,12 @@ class MemoryBroker {
     for (const state of this.#topics.values()) {
       const waiters = Array.from(state.waiters);
       state.waiters.clear();
-      for (const wake of waiters) wake();
+      for (let i = 0; i < waiters.length; i++) waiters[i]();
     }
     for (const state of this.#queues.values()) {
       for (const timer of state.timers) clearTimeout(timer);
       state.timers.clear();
-      for (const consumer of state.consumers) consumer.active = false;
+      for (let i = 0; i < state.consumers.length; i++) state.consumers[i].active = false;
       state.consumers.length = 0;
     }
     this.#addresses.clear();

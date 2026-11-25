@@ -48,7 +48,9 @@ const createPublisher = (server, broker, table = {}, options = {}) => {
   const declared = rpc.router.introspect(null, { schemas: false });
 
   const events = new Map();
-  for (const name of Object.keys(table)) {
+  const names = Object.keys(table);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
     const label = `createPublisher: '${name}'`;
     const slash = name.indexOf('/');
     if (slash <= 0 || slash === name.length - 1) throw new ConfigError(`${label}: an event name is 'unit/event'`);

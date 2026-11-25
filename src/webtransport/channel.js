@@ -509,7 +509,7 @@ class WtChannel {
       if (this.#onCodecError !== null) this.#onCodecError(this.#active.encode.id, error);
       plain();
     };
-    let encoded;
+    let encoded = null;
     try {
       encoded = this.#active.encode.codec.encode(bytes);
     } catch (error) {
@@ -564,6 +564,7 @@ class WtChannel {
       const timer = setTimeout(resolve, this.#closeTimeout);
       void this.#inbound.idle.then(() => {
         clearTimeout(timer);
+        // oxlint-disable-next-line promise/no-multiple-resolved -- the first of the timer and the idle wins
         resolve();
       });
     });

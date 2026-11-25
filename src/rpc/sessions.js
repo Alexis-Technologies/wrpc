@@ -179,9 +179,9 @@ class MemorySessionStore {
 
   #evict() {
     if (this.#ttl > 0) {
-      for (const [token, entry] of this.#sessions) {
-        if (!this.#expired(entry)) break; // oldest first: stop at the first live one
-        this.#sessions.delete(token);
+      for (const session of this.#sessions) {
+        if (!this.#expired(session[1])) break; // oldest first: stop at the first live one
+        this.#sessions.delete(session[0]);
         this.#otel.recordSession('expire', 'ok');
       }
     }
@@ -297,7 +297,7 @@ class SessionManager {
       first = false;
       // A store whose set() throws instead of rejecting would otherwise
       // throw out of a microtask — the process, not the session.
-      let saved;
+      let saved = null;
       try {
         saved = Promise.resolve(this.store.set(token, state, options));
       } catch (error) {

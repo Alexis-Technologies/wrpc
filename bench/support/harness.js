@@ -12,7 +12,7 @@ const FIRST_CALL_MS = 10_000;
 // warmup call is the canary: racing ONLY that one keeps the guard out of the
 // measured loop, where a per-iteration timer would allocate and skew the very
 // numbers this file exists to report.
-async function firstCall(name, fn) {
+const firstCall = async (name, fn) => {
   let timer;
   const stalled = new Promise((_resolve, reject) => {
     timer = setTimeout(
@@ -25,9 +25,9 @@ async function firstCall(name, fn) {
   } finally {
     clearTimeout(timer);
   }
-}
+};
 
-async function bench(name, fn, options = {}) {
+const bench = async (name, fn, options = {}) => {
   const warmup = options.warmup ?? WARMUP_ITERATIONS;
   const measureMs = options.measureMs ?? MEASURE_MS;
   // A pipelined fn issues several calls per iteration, so ops and iterations
@@ -47,6 +47,6 @@ async function bench(name, fn, options = {}) {
   const opsPerSec = Math.round(((iterations * opsPerIteration) / elapsed) * 1000);
   console.log(`${name.padEnd(60)} ${opsPerSec.toLocaleString('en-US').padStart(12)} ops/sec`);
   return { name, opsPerSec };
-}
+};
 
 module.exports = { bench, WARMUP_ITERATIONS, MEASURE_MS };

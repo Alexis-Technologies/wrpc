@@ -78,6 +78,8 @@ const joinWatcher = (flavor, consumer, { timeout = 30_000, step = 20 } = {}) => 
       const stop = listen(consumer, events.GROUP_JOIN, () => {
         stop();
         clearTimeout(timer);
+        // The timer is cleared and the listener gone: whichever fires first stops the other.
+        // oxlint-disable-next-line promise/no-multiple-resolved
         resolve(true);
       });
       const timer = setTimeout(() => {
@@ -119,7 +121,7 @@ const healthWatcher = (flavor, consumer, { onDown, onUp }) => {
   ];
   if (events.GROUP_JOIN) stops.push(listen(consumer, events.GROUP_JOIN, () => onUp()));
   return () => {
-    for (const stop of stops) stop();
+    for (let i = 0; i < stops.length; i++) stops[i]();
   };
 };
 

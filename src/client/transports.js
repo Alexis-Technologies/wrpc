@@ -433,6 +433,12 @@ const decodeQuietly = (codec, data) => {
   }
 };
 
+// The answer to the first ping, or null for a message that is none.
+const readPong = (codec, data) => {
+  if (codec) return decodeQuietly(codec, data);
+  return isPongText(data) ? jsonParse(data) : null;
+};
+
 class ClientEventTransport extends ClientTransport {
   static instance = null;
 
@@ -483,7 +489,7 @@ class ClientEventTransport extends ClientTransport {
       // transport's — the core never asked for it. Under a packet codec it
       // is the codec's, like everything the other end writes.
       if (negotiating) {
-        const pong = codec ? decodeQuietly(codec, data) : isPongText(data) ? jsonParse(data) : null;
+        const pong = readPong(codec, data);
         if (pong?.type === 'pong') {
           negotiating = false;
           this.#modern = pong.v !== undefined;

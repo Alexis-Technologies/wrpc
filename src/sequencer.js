@@ -71,7 +71,7 @@ class Sequencer {
     this.#pending++;
     const run = () => {
       if (!later) return async ? value.then(deliver, recover) : deliver(value);
-      let result;
+      let result = undefined;
       try {
         result = value();
       } catch (error) {

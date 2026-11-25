@@ -148,6 +148,24 @@ const normalizeHeartbeat = (options) => {
   return merged;
 };
 
+// A REST answer's body through codec.rest. Error statuses decode through
+// the same codec — the wire error object arrives codec-framed exactly like
+// a result.
+const decodeRest = (rest, body) => {
+  try {
+    return body.length === 0 ? undefined : rest.decode(body);
+  } catch {
+    return null;
+  }
+};
+
+// A message's bytes as a view, or null for what is not bytes (the proxy's
+// ports read them the same way).
+const viewOf = (data) => {
+  if (data instanceof Uint8Array) return data;
+  return data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+};
+
 const toByteView = async (input) => {
   if (typeof input.arrayBuffer === 'function') {
     const buffer = await input.arrayBuffer();
@@ -179,19 +197,21 @@ const PREVALIDATE_PARTS = [
 
 const compilePrevalidate = (ajv, schema) => {
   const parts = [];
-  for (const [part, argsKey] of PREVALIDATE_PARTS) {
+  for (const entry of PREVALIDATE_PARTS) {
+    const part = entry[0];
     if (schema[part] === undefined) continue;
-    parts.push([part, argsKey, ajv.compile(schema[part])]);
+    parts.push([part, entry[1], ajv.compile(schema[part])]);
   }
   if (parts.length === 0) return null;
   return (args) => {
     const value = args && typeof args === 'object' ? args : {};
     let issues = null;
-    for (const [part, argsKey, validate] of parts) {
-      if (validate(value[argsKey] ?? {})) continue;
+    for (const entry of parts) {
+      const validate = entry[2];
+      if (validate(value[entry[1]] ?? {})) continue;
       issues ??= [];
       for (const item of validate.errors ?? []) {
-        issues.push({ message: item.message, path: `/${part}${item.instancePath ?? ''}` });
+        issues.push({ message: item.message, path: `/${entry[0]}${item.instancePath ?? ''}` });
       }
     }
     if (issues) {
@@ -343,12 +363,9 @@ class ClientTransport extends Emitter {
     // packet holding bytes leaves as an attachments frame (attachments.js)
     // unless the client opted out or the peer speaks revision 1, where the
     // bytes are the JSON 1.0 made of them; a codec owns the wire and skips it.
-    const wire = this.codec
-      ? this.codec.encode(obj)
-      : this.attachments !== false && this.revision === 2 && hasBytes(obj)
-        ? encodeAttachments(obj)
-        : JSON.stringify(obj);
-    this.write(wire, obj?.meta);
+    if (this.codec) return void this.write(this.codec.encode(obj), obj?.meta);
+    const framed = this.attachments !== false && this.revision === 2 && hasBytes(obj);
+    this.write(framed ? encodeAttachments(obj) : JSON.stringify(obj), obj?.meta);
   }
 
   // Drop the connection without waiting for a close handshake. The default
@@ -358,10 +375,8 @@ class ClientTransport extends Emitter {
     this.close();
   }
 
-  // eslint-disable-next-line class-methods-use-this
   online() {}
 
-  // eslint-disable-next-line class-methods-use-this
   offline() {}
 
   // Synthesizes an error callback for every CALL packet a failed
@@ -449,8 +464,7 @@ class WrpcClient extends Emitter {
   static initialize() {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', WrpcClient.online);
-      window.addEventListener('offline', WrpcClient.offline);
-      return;
+      return void window.addEventListener('offline', WrpcClient.offline);
     }
     if (typeof self !== 'undefined') {
       self.addEventListener('online', WrpcClient.online);
@@ -574,6 +588,7 @@ class WrpcClient extends Emitter {
 
   constructor(url, transport, options = {}) {
     super({ warn: emitterWarning(options.logger) });
+    this.#onDeadline = () => this.#expire();
     const { callTimeout, proxy, random, generateId, logger, telemetry, querystring, validation, codec } = options;
     const { authenticate } = options;
     // Presents this connection's credential: awaited inside open() on the
@@ -926,7 +941,7 @@ class WrpcClient extends Emitter {
   // old socket would otherwise double-schedule reconnects on the new one.
   #unbindTransport() {
     if (!this.#boundHandlers) return;
-    for (const [event, handler] of this.#boundHandlers) this.#transport.off(event, handler);
+    for (const pair of this.#boundHandlers) this.#transport.off(pair[0], pair[1]);
     this.#boundHandlers = null;
   }
 
@@ -1032,7 +1047,7 @@ class WrpcClient extends Emitter {
       // attachments frame carrying a packet. Classified synchronously, so
       // a packet and the chunk behind it stay in wire order; the ws
       // transport sets binaryType to 'arraybuffer' for exactly this.
-      const view = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+      const view = viewOf(data);
       if (view !== null && this.#attachments && isAttachmentsFrame(view)) {
         return void this.#handleFrame(view).catch(escalate);
       }
@@ -1490,8 +1505,7 @@ class WrpcClient extends Emitter {
     const { flush } = this.#batch;
     if (flush === 'microtask') {
       this.#flushTimer = 'microtask';
-      queueMicrotask(() => this.flush());
-      return;
+      return void queueMicrotask(() => this.flush());
     }
     this.#flushTimer = unref(setTimeout(() => this.flush(), flush));
   }
@@ -1530,8 +1544,8 @@ class WrpcClient extends Emitter {
         // Only the codec knows its framing, so the batch array is encoded
         // whole — per-item texts served the size accounting (a documented
         // double encode on this deliberate slow path).
-        const packets = new Array(pending.length);
-        for (let i = 0; i < pending.length; i++) packets[i] = pending[i].packet;
+        const packets = [];
+        for (let i = 0; i < pending.length; i++) packets.push(pending[i].packet);
         frame = this.#codec.encode(packets);
       } else {
         // Concatenated in place: map() built a throwaway array of the very
@@ -1559,11 +1573,14 @@ class WrpcClient extends Emitter {
   // wire — dropping it here is both cheaper and safer than racing a `cancel`
   // packet ahead of the `call` it refers to.
   #unqueue(id) {
-    const index = this.#pending.findIndex((entry) => entry.packet.id === id);
-    if (index < 0) return false;
-    const [entry] = this.#pending.splice(index, 1);
-    this.#pendingBytes -= entry.size;
-    return true;
+    const pending = this.#pending;
+    for (let i = 0; i < pending.length; i++) {
+      if (pending[i].packet.id !== id) continue;
+      this.#pendingBytes -= pending[i].size;
+      pending.splice(i, 1);
+      return true;
+    }
+    return false;
   }
 
   getStream(id) {
@@ -1643,7 +1660,7 @@ class WrpcClient extends Emitter {
   // An attachments frame: its packet, bytes restored, handled exactly as
   // the same packet parsed from text would be.
   async #handleFrame(view) {
-    let packet;
+    let packet = null;
     try {
       packet = decodeAttachments(view);
     } catch (error) {
@@ -1689,8 +1706,9 @@ class WrpcClient extends Emitter {
     if (type === 'event') {
       // An event carrying an id is an ask: the server wants an answer, and
       // that is a different contract from fan-out delivery to listeners.
-      if (typeof id === 'string' && id) return void (await this.#answerAsk(name, packet.data, id));
-      return void (await this.#handleEvent(name, packet.data));
+      if (typeof id === 'string' && id) await this.#answerAsk(name, packet.data, id);
+      else await this.#handleEvent(name, packet.data);
+      return;
     }
     if (!id) throw new Error('Packet structure error');
     if (type === 'callback') return void this.#settle(packet);
@@ -1821,7 +1839,8 @@ class WrpcClient extends Emitter {
     const responder = typeof name === 'string' ? this.#responders.get(name) : undefined;
     if (!responder) {
       this.send({ type: 'callback', id, error: { message: `No responder for '${name}'`, code: 501 } });
-      return void (await this.emit('unhandled-event', { name, data, id }));
+      await this.emit('unhandled-event', { name, data, id });
+      return;
     }
     try {
       const result = await responder(data);
@@ -1862,7 +1881,8 @@ class WrpcClient extends Emitter {
         // of that unit was unhandled — and the second CALLED the server's
         // `emit` procedure with each event that arrived.
         if (eventName && apiUnit instanceof Emitter && UNIT.listenerCount.call(apiUnit, eventName) > 0) {
-          return void (await UNIT.emit.call(apiUnit, eventName, data));
+          await UNIT.emit.call(apiUnit, eventName, data);
+          return;
         }
       }
     }
@@ -1909,8 +1929,7 @@ class WrpcClient extends Emitter {
         };
       }
       this.#streams.set(id, readableStream);
-      this.#watchStreams();
-      return;
+      return void this.#watchStreams();
     }
     // A terminate promises nothing, so one for a stream this end does not
     // hold is not an error: its announcement was refused here, or the stream
@@ -1925,8 +1944,7 @@ class WrpcClient extends Emitter {
       // may be right behind this packet. And a failure for its reader, not
       // an end — the sender took back the bytes it had promised.
       this.#streams.delete(id);
-      stream.fail(`Stream ${stream.label} was terminated by its sender`, 499);
-      return;
+      return void stream.fail(`Stream ${stream.label} was terminated by its sender`, 499);
     }
     // A chunk still being turned into bytes (#handleBinary) is counted
     // before its stream's end is.
@@ -2282,7 +2300,7 @@ class WrpcClient extends Emitter {
     const encodeBody = () => (rest ? rest.encode(args.body) : JSON.stringify(args.body));
     const body = safeMethod || args?.body === undefined ? undefined : encodeBody();
     const url = this.#restUrl(http, args);
-    let res;
+    let res = null;
     try {
       // On REST there is no packet, so per-call meta and connection meta are
       // the SAME channel — the server unpacks the request's whole declared
@@ -2295,18 +2313,7 @@ class WrpcClient extends Emitter {
       throw new WrpcError({ message: `HTTP request failed: ${error?.message ?? error}`, code: 503 });
     }
     if (res.status === 204) return undefined;
-    let parsed;
-    if (rest) {
-      // Error statuses decode through the same codec — the wire error
-      // object arrives codec-framed exactly like a result.
-      try {
-        parsed = res.body.length === 0 ? undefined : rest.decode(res.body);
-      } catch {
-        parsed = null;
-      }
-    } else {
-      parsed = jsonParse(res.text);
-    }
+    const parsed = rest ? decodeRest(rest, res.body) : jsonParse(res.text);
     if (res.status >= 200 && res.status < 300) return parsed;
     const wire = parsed && typeof parsed === 'object' && typeof parsed.message === 'string' ? parsed : null;
     throw new WrpcError({
@@ -2319,7 +2326,7 @@ class WrpcClient extends Emitter {
   #restUrl(http, args) {
     const params = args?.params ?? {};
     const segments = http.path === '/' ? [] : http.path.slice(1).split('/');
-    const parts = new Array(segments.length);
+    const parts = [];
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i];
       if (segment.startsWith(':')) {
@@ -2330,9 +2337,9 @@ class WrpcClient extends Emitter {
             code: 400,
           });
         }
-        parts[i] = encodeURIComponent(String(value));
+        parts.push(encodeURIComponent(String(value)));
       } else {
-        parts[i] = segment;
+        parts.push(segment);
       }
     }
     const baseUrl = this.#transport.url ?? this.url;
@@ -2340,7 +2347,7 @@ class WrpcClient extends Emitter {
     if (parts.length > 0) url += `/${parts.join('/')}`;
     const query = args?.query;
     if (query && Object.keys(query).length > 0) {
-      const text = this.#querystring ? this.#querystring.stringify(query) : String(new URLSearchParams(query));
+      const text = this.#querystring ? this.#querystring.stringify(query) : `${new URLSearchParams(query)}`;
       if (text) url += `?${text}`;
     }
     return url;
@@ -2419,13 +2426,15 @@ class WrpcClient extends Emitter {
     this.#deadlineTimer = setTimeout(this.#onDeadline, Math.max(0, at - Date.now()));
   }
 
-  #onDeadline = () => {
+  #onDeadline = null;
+
+  #expire() {
     this.#deadlineTimer = null;
-    const now = Date.now();
+    const time = Date.now();
     let next = 0;
     for (const lane of this.#lanes.values()) {
       for (const bucket of lane.buckets.values()) {
-        if (bucket.end > now) {
+        if (bucket.end > time) {
           if (next === 0 || bucket.end < next) next = bucket.end;
           break;
         }
@@ -2435,7 +2444,7 @@ class WrpcClient extends Emitter {
       if (lane.buckets.size === 0) this.#lanes.delete(lane.ms);
     }
     if (next !== 0) this.#armDeadline(next);
-  };
+  }
 
   #timeoutCall(id) {
     const call = this.#calls.get(id);
@@ -2572,7 +2581,7 @@ class WrpcClient extends Emitter {
         // it, goes out as the SAME REST request an external consumer would
         // send — one endpoint, two audiences. Every other transport speaks
         // packets as always.
-        let fn;
+        let fn = null;
         if (info.http && this.#transport.rest === true) {
           fn = (args = {}, options = {}) => {
             const refused = guard(args);
@@ -2680,4 +2689,5 @@ module.exports = {
   META_MAX,
   unref,
   toByteView,
+  viewOf,
 };

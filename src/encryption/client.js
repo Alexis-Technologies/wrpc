@@ -118,8 +118,8 @@ const createEncryption = (options = {}) => {
     timer.unref?.();
     const outbound = new Sequencer(fail);
     const inbound = new Sequencer(fail);
-    let resolveReady;
-    let rejectReady;
+    let resolveReady = null;
+    let rejectReady = null;
     const ready = new Promise((resolve, reject) => {
       resolveReady = resolve;
       rejectReady = reject;
@@ -264,7 +264,7 @@ const createEncryption = (options = {}) => {
  * should be, and this is for the ones that cannot.
  */
 const fetchServerKey = async (url, { fetch = globalThis.fetch } = {}) => {
-  const base = String(url).replace(/^ws/, 'http').replace(/\/+$/, '');
+  const base = `${url}`.replace(/^ws/, 'http').replace(/\/+$/, '');
   const response = await fetch(`${base}/encryption-key`);
   if (!response.ok) throw new Error(`encryption: no key at ${base}/encryption-key (${response.status})`);
   const { key } = await response.json();
