@@ -24,4 +24,4 @@ const connect = (url, options) => WrpcClient.connect(url, options);
 // ClientTransport is exported for transports that live in their own subpath
 // (see src/sse/client.js); it is deliberately NOT re-exported from the
 // package barrel, where transports stay type-only.
-module.exports = { WrpcClient, WrpcClientProxy, WrpcError, ClientTransport, isClientTransport, connect, metaHeaders };
+module.exports = { WrpcClient, WrpcError, ClientTransport, isClientTransport, metaHeaders, WrpcClientProxy, connect };

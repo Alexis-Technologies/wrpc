@@ -13,6 +13,30 @@ const { ConfigError, ClosedError } = require('../errors.js');
 
 const { WebSocket } = globalThis;
 
+// What a client that reads framed messages asks an HTTP server for: a 2.x
+// server answers a result holding bytes as a frame only to a request that
+// names it, and a 1.0 server ignores the header. CORS-safelisted, so it adds
+// no preflight.
+const ACCEPT_FRAMES = 'application/octet-stream, application/json';
+
+const isPongText = (data) => typeof data === 'string' && data.startsWith('{"type":"pong"');
+
+// What the other end wrote, through the codec — null for anything it does
+// not decode (an injected codec may throw on a message it did not make).
+const decodeQuietly = (codec, data) => {
+  try {
+    return codec.decode(data);
+  } catch {
+    return null;
+  }
+};
+
+// The answer to the first ping, or null for a message that is none.
+const readPong = (codec, data) => {
+  if (codec) return decodeQuietly(codec, data);
+  return isPongText(data) ? jsonParse(data) : null;
+};
+
 class ClientWsTransport extends ClientTransport {
   // Carries `options.encryption` (@alexify/wrpc/encryption): the handshake
   // runs inside open(), and every frame after it is sealed.
@@ -235,12 +259,6 @@ class ClientWsTransport extends ClientTransport {
   }
 }
 
-// What a client that reads framed messages asks an HTTP server for: a 2.x
-// server answers a result holding bytes as a frame only to a request that
-// names it, and a 1.0 server ignores the header. CORS-safelisted, so it adds
-// no preflight.
-const ACCEPT_FRAMES = 'application/octet-stream, application/json';
-
 class ClientHttpTransport extends ClientTransport {
   // Carries `options.encryption`: no session here, so every request is
   // sealed to the pinned server key on its own (HPKE) — by wrapping fetch.
@@ -436,24 +454,6 @@ class ClientHttpTransport extends ClientTransport {
     send();
   }
 }
-
-const isPongText = (data) => typeof data === 'string' && data.startsWith('{"type":"pong"');
-
-// What the other end wrote, through the codec — null for anything it does
-// not decode (an injected codec may throw on a message it did not make).
-const decodeQuietly = (codec, data) => {
-  try {
-    return codec.decode(data);
-  } catch {
-    return null;
-  }
-};
-
-// The answer to the first ping, or null for a message that is none.
-const readPong = (codec, data) => {
-  if (codec) return decodeQuietly(codec, data);
-  return isPongText(data) ? jsonParse(data) : null;
-};
 
 class ClientEventTransport extends ClientTransport {
   static instance = null;

@@ -331,4 +331,4 @@ class ClientWtTransport extends ClientTransport {
 
 WrpcClient.transport.wt = ClientWtTransport;
 
-module.exports = { ClientWtTransport, UNAVAILABLE };
+module.exports = { UNAVAILABLE, ClientWtTransport };

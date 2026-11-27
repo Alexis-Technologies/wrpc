@@ -18,40 +18,6 @@ const {
   checkLimit,
 } = require('../utils.js');
 const { ConfigError, ArgumentError, WrpcError, ClosedError, ProtocolError } = require('../errors.js');
-
-// A timeout as a timer takes it: a number of milliseconds, up to 2^31 - 1.
-// `callTimeout: '300'` — a value straight out of an environment variable —
-// used to be added to Date.now() as a string: a deadline a quadrillion
-// milliseconds away, so no call ever timed out, and a one-millisecond timer
-// re-armed eight hundred times a second with a TimeoutOverflowWarning each.
-const timeoutOf = (name, value) => {
-  if (typeof value === 'number' && value > 0 && value < 2 ** 31) return value;
-  throw new ConfigError(`WrpcClient: ${name} must be a number of milliseconds from 1 to 2^31 - 1`);
-};
-
-// How many cancelled calls a client remembers the ids of (see #cancel).
-const MAX_CANCELLED = 1024;
-
-// The wait between two attempts of a retried call: over at `ms`, or the
-// moment the caller's signal aborts — it used to sleep the whole backoff
-// first. Not unref'd: a call is awaited across it, and on a request
-// transport nothing else holds the loop, so a script exited mid-retry.
-const pause = (ms, signal) => {
-  let wake = null;
-  const woken = new Promise((resolve) => {
-    wake = resolve;
-  });
-  const timer = setTimeout(wake, ms);
-  signal?.addEventListener('abort', wake, { once: true });
-  return woken.then(() => {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', wake);
-  });
-};
-
-// The Emitter's own methods, for the one place that must not read them off a
-// unit (see #handleEvent).
-const UNIT = Emitter.prototype;
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
@@ -69,6 +35,13 @@ const { createLoggerWriter, emitterWarning } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
 const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
 
+// How many cancelled calls a client remembers the ids of (see #cancel).
+const MAX_CANCELLED = 1024;
+
+// The Emitter's own methods, for the one place that must not read them off a
+// unit (see #handleEvent).
+const UNIT = Emitter.prototype;
+
 const CALL_TIMEOUT = 7 * 1000;
 
 // Cap on the transport handshake. Connection setup is the one phase with no
@@ -82,9 +55,6 @@ const CONNECT_TIMEOUT_ERROR = { message: 'Connect timeout', code: 408 };
 // What a call that outlived callTimeout rejects with: 408, coded like every
 // other client-produced refusal, so `error.code` checks work here too.
 const REQUEST_TIMEOUT_ERROR = { message: 'Request timeout', code: 408 };
-
-// Monotonic where available; Date.now is the fallback for a host without it.
-const now = () => (typeof performance === 'object' ? performance.now() : Date.now());
 const RECONNECT_TIMEOUT = 2 * 1000;
 
 // 499, nginx's "client closed request": the caller took the call back, so
@@ -110,6 +80,63 @@ const RECONNECT = {
 // from JavaScript until the first call times out. Sending `{type:'ping'}`
 // and expecting `{type:'pong'}` is the only liveness signal available.
 const HEARTBEAT = { interval: 30 * 1000, timeout: 10 * 1000 };
+
+// Call batching. Several calls issued in the same tick travel as ONE frame
+// (a JSON array), which on HTTP is one request instead of N and on a
+// WebSocket is one frame instead of N. Only `call` packets batch: a ping, a
+// cancel or an unsubscribe is a control packet whose whole point is to
+// arrive now.
+const BATCH = { flush: 'microtask', maxSize: 16, maxBytes: 64 * 1024 };
+
+// Client-side pre-validation: the introspected input schema parts compiled
+// by an app-injected ajv (`validation: { ajv }`), so a doomed call rejects
+// locally with the SAME 400 + details it would earn from the server —
+// without the round trip. wrpc imports no schema library; without the
+// injection this costs nothing.
+const PREVALIDATE_PARTS = [
+  ['params', 'params'],
+  ['querystring', 'query'],
+  ['body', 'body'],
+];
+
+// A header value must stay latin-1 or fetch throws a TypeError deep inside
+// the transport, long after the mistake was made.
+const HEADER_SAFE = /^[ -~]*$/;
+
+// Mirrors the server's metaMaxBytes default: past it the server drops the
+// entire declared bag, so refusing here is the difference between a visible
+// warning and a label that silently stopped arriving.
+const META_MAX = 2048;
+
+// A timeout as a timer takes it: a number of milliseconds, up to 2^31 - 1.
+// `callTimeout: '300'` — a value straight out of an environment variable —
+// used to be added to Date.now() as a string: a deadline a quadrillion
+// milliseconds away, so no call ever timed out, and a one-millisecond timer
+// re-armed eight hundred times a second with a TimeoutOverflowWarning each.
+const timeoutOf = (name, value) => {
+  if (typeof value === 'number' && value > 0 && value < 2 ** 31) return value;
+  throw new ConfigError(`WrpcClient: ${name} must be a number of milliseconds from 1 to 2^31 - 1`);
+};
+
+// The wait between two attempts of a retried call: over at `ms`, or the
+// moment the caller's signal aborts — it used to sleep the whole backoff
+// first. Not unref'd: a call is awaited across it, and on a request
+// transport nothing else holds the loop, so a script exited mid-retry.
+const pause = (ms, signal) => {
+  let wake = null;
+  const woken = new Promise((resolve) => {
+    wake = resolve;
+  });
+  const timer = setTimeout(wake, ms);
+  signal?.addEventListener('abort', wake, { once: true });
+  return woken.then(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', wake);
+  });
+};
+
+// Monotonic where available; Date.now is the fallback for a host without it.
+const now = () => (typeof performance === 'object' ? performance.now() : Date.now());
 
 // Heartbeat timers are unref'd so the beat itself never keeps a process
 // alive — the live socket is already a ref'd handle, so an idle-but-connected
@@ -138,13 +165,6 @@ const normalizeReconnect = (options) => {
   if (!(merged.stableAfter >= 0)) merged.stableAfter = merged.minDelay;
   return merged;
 };
-
-// Call batching. Several calls issued in the same tick travel as ONE frame
-// (a JSON array), which on HTTP is one request instead of N and on a
-// WebSocket is one frame instead of N. Only `call` packets batch: a ping, a
-// cancel or an unsubscribe is a control packet whose whole point is to
-// arrive now.
-const BATCH = { flush: 'microtask', maxSize: 16, maxBytes: 64 * 1024 };
 
 const normalizeBatch = (options) => {
   const { batch } = options;
@@ -197,17 +217,6 @@ const toByteView = async (input) => {
 // `details` is the optional wire field, absent on most errors.
 const toWrpcError = (wire) => new WrpcError(wire.message, { code: wire.code, details: wire.details });
 
-// Client-side pre-validation: the introspected input schema parts compiled
-// by an app-injected ajv (`validation: { ajv }`), so a doomed call rejects
-// locally with the SAME 400 + details it would earn from the server —
-// without the round trip. wrpc imports no schema library; without the
-// injection this costs nothing.
-const PREVALIDATE_PARTS = [
-  ['params', 'params'],
-  ['querystring', 'query'],
-  ['body', 'body'],
-];
-
 const compilePrevalidate = (ajv, schema) => {
   const parts = [];
   for (const entry of PREVALIDATE_PARTS) {
@@ -248,10 +257,6 @@ const toHeaderValue = (value) => {
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 };
-
-// A header value must stay latin-1 or fetch throws a TypeError deep inside
-// the transport, long after the mistake was made.
-const HEADER_SAFE = /^[ -~]*$/;
 
 // Normalizes one declared bag: keys to kebab, and — when the values will
 // become header values — through toHeaderValue. Refusal-style like the
@@ -296,11 +301,6 @@ const metaHeaders = (meta, prefixed) => {
   }
   return out;
 };
-
-// Mirrors the server's metaMaxBytes default: past it the server drops the
-// entire declared bag, so refusing here is the difference between a visible
-// warning and a label that silently stopped arriving.
-const META_MAX = 2048;
 
 // The connect URL of a transport whose constructor cannot set real headers
 // — the WHATWG WebSocket by spec, a browser WebTransport too: connection-
@@ -348,6 +348,34 @@ const mapScheme = (url, name) => {
   if (name === 'ws') return url.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
   return url.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
 };
+
+// The structural check every registered transport must pass — the ONE
+// injection seam third parties are told to add into, and (before this) the
+// only one with neither a validator nor a contract test. Prototype-level:
+// what connect() constructs is the class, so the class's prototype is what
+// can answer for every future instance.
+const isClientTransport = (Transport) => {
+  if (typeof Transport !== 'function') return false;
+  const proto = Transport.prototype;
+  return (
+    Boolean(proto) &&
+    typeof proto.open === 'function' &&
+    typeof proto.close === 'function' &&
+    typeof proto.write === 'function' &&
+    typeof proto.on === 'function'
+  );
+};
+
+// The status a transport hands the calls a refused SEALED request carried
+// (src/encryption/http.js throws EncryptionRefusedError): only the closed
+// set the sealing layer vouches for — a retired key, a clock, a required
+// mode — because the outer status of anything else is unauthenticated.
+// Here and not in encryption/http.js: the transports must not load HPKE.
+const refusedStatus = (error) =>
+  error?.code === 'ALX_ERR_ENCRYPTION_REFUSED' &&
+  (error.statusCode === 400 || error.statusCode === 409 || error.statusCode === 426)
+    ? error.statusCode
+    : 503;
 
 class ClientTransport extends Emitter {
   active = false;
@@ -431,23 +459,6 @@ class ClientTransport extends Emitter {
     this.emit('message', this.codec ? this.codec.encode(frame) : JSON.stringify(frame));
   }
 }
-
-// The structural check every registered transport must pass — the ONE
-// injection seam third parties are told to add into, and (before this) the
-// only one with neither a validator nor a contract test. Prototype-level:
-// what connect() constructs is the class, so the class's prototype is what
-// can answer for every future instance.
-const isClientTransport = (Transport) => {
-  if (typeof Transport !== 'function') return false;
-  const proto = Transport.prototype;
-  return (
-    Boolean(proto) &&
-    typeof proto.open === 'function' &&
-    typeof proto.close === 'function' &&
-    typeof proto.write === 'function' &&
-    typeof proto.on === 'function'
-  );
-};
 
 class WrpcClient extends Emitter {
   // The registry (CLAUDE.md's late-registration idiom): ./transports.js and
@@ -2690,31 +2701,20 @@ class WrpcClient extends Emitter {
   }
 }
 
-// The status a transport hands the calls a refused SEALED request carried
-// (src/encryption/http.js throws EncryptionRefusedError): only the closed
-// set the sealing layer vouches for — a retired key, a clock, a required
-// mode — because the outer status of anything else is unauthenticated.
-// Here and not in encryption/http.js: the transports must not load HPKE.
-const refusedStatus = (error) =>
-  error?.code === 'ALX_ERR_ENCRYPTION_REFUSED' &&
-  (error.statusCode === 400 || error.statusCode === 409 || error.statusCode === 426)
-    ? error.statusCode
-    : 503;
-
 module.exports = {
-  refusedStatus,
-  WrpcClient,
   WrpcError,
-  ClientTransport,
-  isClientTransport,
   WRPC_V1,
   WRPC_V2,
   CALL_TIMEOUT,
-  normalizeReconnect,
-  metaHeaders,
-  connectUrl,
   META_MAX,
   unref,
-  toByteView,
+  normalizeReconnect,
   viewOf,
+  toByteView,
+  metaHeaders,
+  connectUrl,
+  isClientTransport,
+  refusedStatus,
+  ClientTransport,
+  WrpcClient,
 };
