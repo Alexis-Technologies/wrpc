@@ -6,12 +6,36 @@ const { ConfigError, ArgumentError, ClosedError, TransportError } = require('./e
 // Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
 // to become a rejection: a throw escaping emit() would land in a socket
 // handler. `void emitter.emit('close')` is for events whose listeners are
-// wRPC's own; one the application listens to gets a `.catch` (src/CLAUDE.md). The async-arrow wrapper on
-// the slow path buys exactly that, at one closure and one promise per listener
-// per emit. The overwhelmingly common shape is a single sync listener — a
+// wRPC's own; one the application listens to gets a `.catch` (src/CLAUDE.md).
+// The async-arrow wrapper on the slow path buys exactly that, at one closure
+// and one promise per listener per emit. The overwhelmingly common shape is a single sync listener — a
 // transport's 'message', a stream's chunk push — so it is spelled out by hand:
 // 4.0 -> 14.3 M emit/s awaited, 4.8 -> 63.9 M fire-and-forget; bench/emitter.js.
 const RESOLVED = Promise.resolve();
+
+const DEFAULT_HIGH_WATER_MARK = 1024;
+
+// camelCase -> kebab-case for declared header and meta keys, applied on BOTH
+// ends so `schema.headers` and the meta bag see one casing convention whatever
+// transport carried them. Two passes: the acronym pass keeps XMLHttpRequest
+// from becoming x-m-l-http-request, the boundary pass does the ordinary case
+// change. The output is all-lowercase and both patterns need an uppercase
+// char, so toKebab(toKebab(x)) === toKebab(x) by construction.
+//
+// Two deliberate non-goals. Underscores are left alone: user_id -> user-id
+// would silently merge two keys an application may have meant to keep apart,
+// widening the rule from "one casing convention" to "one spelling convention".
+// And collisions are not detected — userId and userID both yield user-id,
+// last write wins — because a per-key guard costs an Object.hasOwn on a
+// byte-budgeted path and would be the one place this pipeline warns about a
+// single key rather than refusing the bag.
+//
+// It also cannot repair what it never sees: every HTTP stack lowercases header
+// names before wrpc is reached, so an external caller's `x-wrpc-meta-userId`
+// arrives as `userid` with the word boundary already gone. The guarantee holds
+// for keys wrpc's own client produced; everyone else writes kebab themselves.
+const KEBAB_ACRONYM = /([A-Z]+)([A-Z][a-z])/g;
+const KEBAB_BOUNDARY = /([a-z0-9])([A-Z])/g;
 
 const consoleWarn = (message) => void globalThis.console.warn(message);
 
@@ -30,6 +54,119 @@ const settled = (promises) =>
       throw error;
     }),
   );
+
+const jsonParse = (data = null) => {
+  if (data === null) return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+};
+
+const createEventStream = (options) => new EventStream(options);
+
+// Reconnect pacing: truncated exponential backoff with AWS "full jitter"
+// (https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/).
+//
+//   window = min(maxDelay, minDelay * factor ** attempt)
+//   delay  = jitter ? random_between(0, window) : window
+//
+// Jittering the WHOLE window rather than adding a small offset is what
+// actually breaks up the thundering herd: after a server restart, a thousand
+// clients that all disconnected in the same millisecond would otherwise all
+// come back in the same millisecond. `attempt` is 0-based, so the first
+// retry waits inside the minDelay window.
+const backoffDelay = ({ attempt = 0, minDelay, maxDelay, factor = 2, jitter = true, random = Math.random }) => {
+  const growth = factor > 0 ? factor ** attempt : 1;
+  // Infinity * 0 is NaN, and an overflowing exponential must still cap.
+  const window = Math.min(maxDelay, minDelay * growth);
+  const capped = Number.isFinite(window) ? window : maxDelay;
+  if (!jitter) return Math.round(capped);
+  return Math.round(random() * capped);
+};
+
+// Structural check for an injected wire codec. The packet half —
+// { encode(packet) -> string, decode(text) -> packet, contentType? } — is
+// text-only by design: binary output would collide with the chunk framing
+// on ws and the line protocol on SSE. The optional `rest` section is a BODY
+// codec for REST mode — { encode(value), decode(body), contentType? } —
+// where binary is fine (whole HTTP bodies, no framing to collide with).
+// A codec may carry either half or both; a declared rest section must be
+// complete. Shared here because both the server core and the browser
+// client run it.
+const isRestSection = (value) =>
+  value !== null &&
+  typeof value === 'object' &&
+  typeof value.encode === 'function' &&
+  typeof value.decode === 'function' &&
+  (value.contentType === undefined || typeof value.contentType === 'string');
+
+const isCodec = (value) => {
+  if (value === null || typeof value !== 'object') return false;
+  const packet = typeof value.encode === 'function' && typeof value.decode === 'function';
+  if (value.rest !== undefined && !isRestSection(value.rest)) return false;
+  return packet || value.rest !== undefined;
+};
+const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUNDARY, '$1-$2').toLowerCase();
+
+// One resolver for every `generateId` option in the package. The three
+// call-site spellings this replaces had drifted — one threw, one fell back
+// silently, one assigned only when the value happened to be a function —
+// so a user who mistyped the option learned about it in three different
+// ways, or in none.
+//
+// A bad generator is a TypeError at construction, on every option alike. In
+// 1.x the three that shipped in 1.0 (`RpcServer`, `WrpcClient`, `PeerHost`)
+// could not throw — they had silently ignored a bad value, and turning that
+// into a throw inside a major is the kind of break the stability policy
+// exists to prevent — so they logged `options.generateId` and fell back to
+// uuid v4, with the promise that 2.0 would make them throw. 2.0 does.
+//
+// The generator is PROBED once here rather than trusted: one that answers a
+// number or an empty string otherwise produces ids that fail much later, on
+// the wire, as a malformed packet. The 255-character cap is the binary chunk
+// header's own limit (see createStream in src/client/core.js), applied to
+// every id so one generator cannot be valid for calls and invalid for
+// streams.
+//
+// The probe's id comes back as `first` rather than being thrown away, and
+// every caller that needs an id AT construction — a server's instanceId, a
+// signaler's instance — uses it. That is what keeps the probe free: a
+// counter-based generator still starts at 1, and "the instance is generated
+// once" stays true. A caller with no such id discards `first` and pays one.
+//
+// Returning a pair rather than a self-replacing wrapper is deliberate: the
+// generator runs per call packet, and a wrapper would put a branch on that
+// path forever to save one id at boot.
+const resolveGenerateId = (value, label) => {
+  const fail = (message) => {
+    throw new ConfigError(`${label}: generateId ${message}`);
+  };
+  if (value === null || value === undefined) return { generate: generateUUID, first: generateUUID() };
+  if (typeof value !== 'function') return fail('must be a function');
+  let first = '';
+  try {
+    first = value();
+  } catch (error) {
+    return fail(`threw when called: ${error.message}`);
+  }
+  if (typeof first !== 'string' || first.length === 0 || first.length > 255) {
+    return fail('must return a non-empty string of at most 255 characters');
+  }
+  return { generate: value, first };
+};
+
+// A limit an option sets — a count, a number of bytes, of milliseconds: a
+// non-negative integer, or Infinity for none. Checked where the option is
+// taken, because what a limit that is none of these did was worse than a
+// throw: every limit is one comparison, and a comparison with '64mb' or NaN
+// is always false — the limit was silently lifted — while `null` and -1
+// refused everything.
+const checkLimit = (label, name, value) => {
+  if ((Number.isInteger(value) && value >= 0) || value === Infinity) return value;
+  throw new ConfigError(`${label}: ${name} must be a non-negative integer or Infinity`);
+};
 
 class Emitter {
   #events = new Map();
@@ -167,17 +304,6 @@ class Emitter {
   }
 }
 
-const jsonParse = (data = null) => {
-  if (data === null) return null;
-  try {
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
-};
-
-const DEFAULT_HIGH_WATER_MARK = 1024;
-
 // Push -> pull adapter: the missing primitive between "something calls me
 // with a value" (an emitter, a backplane message, a websocket frame) and
 // "someone is `for await`-ing values". Used on the server to feed a
@@ -292,28 +418,6 @@ class EventStream {
   }
 }
 
-const createEventStream = (options) => new EventStream(options);
-
-// Reconnect pacing: truncated exponential backoff with AWS "full jitter"
-// (https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/).
-//
-//   window = min(maxDelay, minDelay * factor ** attempt)
-//   delay  = jitter ? random_between(0, window) : window
-//
-// Jittering the WHOLE window rather than adding a small offset is what
-// actually breaks up the thundering herd: after a server restart, a thousand
-// clients that all disconnected in the same millisecond would otherwise all
-// come back in the same millisecond. `attempt` is 0-based, so the first
-// retry waits inside the minDelay window.
-const backoffDelay = ({ attempt = 0, minDelay, maxDelay, factor = 2, jitter = true, random = Math.random }) => {
-  const growth = factor > 0 ? factor ** attempt : 1;
-  // Infinity * 0 is NaN, and an overflowing exponential must still cap.
-  const window = Math.min(maxDelay, minDelay * growth);
-  const capped = Number.isFinite(window) ? window : maxDelay;
-  if (!jitter) return Math.round(capped);
-  return Math.round(random() * capped);
-};
-
 // Counting semaphore with a bounded wait queue (ported from metautil):
 // enter() resolves when a slot frees up, rejects on queue overflow or
 // after `timeout` ms in the queue.
@@ -406,119 +510,15 @@ class Semaphore {
   }
 }
 
-// Structural check for an injected wire codec. The packet half —
-// { encode(packet) -> string, decode(text) -> packet, contentType? } — is
-// text-only by design: binary output would collide with the chunk framing
-// on ws and the line protocol on SSE. The optional `rest` section is a BODY
-// codec for REST mode — { encode(value), decode(body), contentType? } —
-// where binary is fine (whole HTTP bodies, no framing to collide with).
-// A codec may carry either half or both; a declared rest section must be
-// complete. Shared here because both the server core and the browser
-// client run it.
-const isRestSection = (value) =>
-  value !== null &&
-  typeof value === 'object' &&
-  typeof value.encode === 'function' &&
-  typeof value.decode === 'function' &&
-  (value.contentType === undefined || typeof value.contentType === 'string');
-
-const isCodec = (value) => {
-  if (value === null || typeof value !== 'object') return false;
-  const packet = typeof value.encode === 'function' && typeof value.decode === 'function';
-  if (value.rest !== undefined && !isRestSection(value.rest)) return false;
-  return packet || value.rest !== undefined;
-};
-
-// camelCase -> kebab-case for declared header and meta keys, applied on BOTH
-// ends so `schema.headers` and the meta bag see one casing convention whatever
-// transport carried them. Two passes: the acronym pass keeps XMLHttpRequest
-// from becoming x-m-l-http-request, the boundary pass does the ordinary case
-// change. The output is all-lowercase and both patterns need an uppercase
-// char, so toKebab(toKebab(x)) === toKebab(x) by construction.
-//
-// Two deliberate non-goals. Underscores are left alone: user_id -> user-id
-// would silently merge two keys an application may have meant to keep apart,
-// widening the rule from "one casing convention" to "one spelling convention".
-// And collisions are not detected — userId and userID both yield user-id,
-// last write wins — because a per-key guard costs an Object.hasOwn on a
-// byte-budgeted path and would be the one place this pipeline warns about a
-// single key rather than refusing the bag.
-//
-// It also cannot repair what it never sees: every HTTP stack lowercases header
-// names before wrpc is reached, so an external caller's `x-wrpc-meta-userId`
-// arrives as `userid` with the word boundary already gone. The guarantee holds
-// for keys wrpc's own client produced; everyone else writes kebab themselves.
-const KEBAB_ACRONYM = /([A-Z]+)([A-Z][a-z])/g;
-const KEBAB_BOUNDARY = /([a-z0-9])([A-Z])/g;
-const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUNDARY, '$1-$2').toLowerCase();
-
-// One resolver for every `generateId` option in the package. The three
-// call-site spellings this replaces had drifted — one threw, one fell back
-// silently, one assigned only when the value happened to be a function —
-// so a user who mistyped the option learned about it in three different
-// ways, or in none.
-//
-// A bad generator is a TypeError at construction, on every option alike. In
-// 1.x the three that shipped in 1.0 (`RpcServer`, `WrpcClient`, `PeerHost`)
-// could not throw — they had silently ignored a bad value, and turning that
-// into a throw inside a major is the kind of break the stability policy
-// exists to prevent — so they logged `options.generateId` and fell back to
-// uuid v4, with the promise that 2.0 would make them throw. 2.0 does.
-//
-// The generator is PROBED once here rather than trusted: one that answers a
-// number or an empty string otherwise produces ids that fail much later, on
-// the wire, as a malformed packet. The 255-character cap is the binary chunk
-// header's own limit (see createStream in src/client/core.js), applied to
-// every id so one generator cannot be valid for calls and invalid for
-// streams.
-//
-// The probe's id comes back as `first` rather than being thrown away, and
-// every caller that needs an id AT construction — a server's instanceId, a
-// signaler's instance — uses it. That is what keeps the probe free: a
-// counter-based generator still starts at 1, and "the instance is generated
-// once" stays true. A caller with no such id discards `first` and pays one.
-//
-// Returning a pair rather than a self-replacing wrapper is deliberate: the
-// generator runs per call packet, and a wrapper would put a branch on that
-// path forever to save one id at boot.
-const resolveGenerateId = (value, label) => {
-  const fail = (message) => {
-    throw new ConfigError(`${label}: generateId ${message}`);
-  };
-  if (value === null || value === undefined) return { generate: generateUUID, first: generateUUID() };
-  if (typeof value !== 'function') return fail('must be a function');
-  let first = '';
-  try {
-    first = value();
-  } catch (error) {
-    return fail(`threw when called: ${error.message}`);
-  }
-  if (typeof first !== 'string' || first.length === 0 || first.length > 255) {
-    return fail('must return a non-empty string of at most 255 characters');
-  }
-  return { generate: value, first };
-};
-
-// A limit an option sets — a count, a number of bytes, of milliseconds: a
-// non-negative integer, or Infinity for none. Checked where the option is
-// taken, because what a limit that is none of these did was worse than a
-// throw: every limit is one comparison, and a comparison with '64mb' or NaN
-// is always false — the limit was silently lifted — while `null` and -1
-// refused everything.
-const checkLimit = (label, name, value) => {
-  if ((Number.isInteger(value) && value >= 0) || value === Infinity) return value;
-  throw new ConfigError(`${label}: ${name} must be a non-negative integer or Infinity`);
-};
-
 module.exports = {
-  Emitter,
   jsonParse,
-  checkLimit,
+  createEventStream,
+  backoffDelay,
   isCodec,
   toKebab,
-  Semaphore,
-  backoffDelay,
-  EventStream,
-  createEventStream,
   resolveGenerateId,
+  checkLimit,
+  Emitter,
+  EventStream,
+  Semaphore,
 };

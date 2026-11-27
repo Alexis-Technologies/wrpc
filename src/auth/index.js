@@ -14,6 +14,12 @@
 const { META_PARAM, META_HEADER, META_PREFIX, BEARER_PROTOCOL } = require('../wire.js');
 const { ConfigError } = require('../errors.js');
 
+// Server-side token transports (the sessions.transport injection). Both are
+// non-ambient: the credential is script-attached, so the safe-method CSRF
+// rule does not apply and write() has nothing to stamp.
+
+const MAX_DECLARED = 2048;
+
 // Client-side token stores. The contract is three functions, sync or async
 // (IndexedDB is only reachable through async, so every caller awaits):
 //   { get(key), set(key, value), delete(key) }
@@ -144,12 +150,6 @@ const bearerAuth = ({ store, signIn, refresh, key = 'tokens', on }) => {
   }
   return options;
 };
-
-// Server-side token transports (the sessions.transport injection). Both are
-// non-ambient: the credential is script-attached, so the safe-method CSRF
-// rule does not apply and write() has nothing to stamp.
-
-const MAX_DECLARED = 2048;
 // ^ Mirrors the server's metaMaxBytes DEFAULT, for the raw fallbacks below
 // only: every core call site hands read() the already-parsed `declared` /
 // `meta` bags, capped on the CONFIGURABLE limit — the fallbacks serve

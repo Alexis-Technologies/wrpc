@@ -102,4 +102,4 @@ const createRedisSessionStore = (options = {}) => {
   return store;
 };
 
-module.exports = { createRedisSessionStore, DEFAULT_SESSION_PREFIX: DEFAULT_PREFIX };
+module.exports = { DEFAULT_SESSION_PREFIX: DEFAULT_PREFIX, createRedisSessionStore };

@@ -36,10 +36,31 @@ const DEFAULT_THRESHOLD = 1024;
 const DEFAULT_ASYNC_THRESHOLD = 256 * 1024;
 const DEFAULT_BROTLI_QUALITY = 4;
 const DEFAULT_ZSTD_LEVEL = 1;
-
-const integerIn = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
 // RFC 9110 §5.6.2 `token` — what a content-coding is.
 const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+// RFC 9110 §12.5.3: a comma-separated list of codings, each with an optional
+// `;q=` weight; `*` stands for any coding not named. Answers the FIRST
+// encoder of the server's list the request accepts — named with a weight
+// above zero, or covered by such a wildcard and not itself refused. The
+// server's order decides, as in nginx: a client's weights say what it
+// accepts, and which acceptable coding costs this server least is not the
+// client's to know. A hand-rolled scan rather than a regex: this runs per
+// HTTP response once the option is on, and the header is peer-controlled,
+// so no split-per-token array or Map on a value an attacker can make long
+// (the per-token slice/trim/lowercase stays). Two bounds keep it honest:
+// a header longer than MAX_ACCEPT_ENCODING is treated as absent — a real
+// one is 20–100 bytes, and identity is always a correct answer (RFC 9110
+// §12.5.3) — and the search for the next ';' is remembered, so a header
+// with no ';' at all is one pass, not a pass per token: before that,
+// 8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of
+// commas 3.8 ms, unauthenticated (bench/http-compression.js "adversarial";
+// after: refused at the cap in under 0.1 µs, and 4.4 µs for the 256 B
+// the cap lets through, 6.8 before).
+// The encoders are a handful, so a bit each.
+const MAX_ACCEPT_ENCODING = 256;
+
+const integerIn = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
 
 // One coding, in the shape the transports read:
 //   token                 the Content-Encoding value
@@ -181,27 +202,6 @@ const normalizeCompression = (value, name, { streaming = false, zlib: lib = zlib
   return Object.freeze({ threshold, filter, async, encoders: Object.freeze(encoders) });
 };
 
-// RFC 9110 §12.5.3: a comma-separated list of codings, each with an optional
-// `;q=` weight; `*` stands for any coding not named. Answers the FIRST
-// encoder of the server's list the request accepts — named with a weight
-// above zero, or covered by such a wildcard and not itself refused. The
-// server's order decides, as in nginx: a client's weights say what it
-// accepts, and which acceptable coding costs this server least is not the
-// client's to know. A hand-rolled scan rather than a regex: this runs per
-// HTTP response once the option is on, and the header is peer-controlled,
-// so no split-per-token array or Map on a value an attacker can make long
-// (the per-token slice/trim/lowercase stays). Two bounds keep it honest:
-// a header longer than MAX_ACCEPT_ENCODING is treated as absent — a real
-// one is 20–100 bytes, and identity is always a correct answer (RFC 9110
-// §12.5.3) — and the search for the next ';' is remembered, so a header
-// with no ';' at all is one pass, not a pass per token: before that,
-// 8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of
-// commas 3.8 ms, unauthenticated (bench/http-compression.js "adversarial";
-// after: refused at the cap in under 0.1 µs, and 4.4 µs for the 256 B
-// the cap lets through, 6.8 before).
-// The encoders are a handful, so a bit each.
-const MAX_ACCEPT_ENCODING = 256;
-
 const pickEncoding = (header, encoders) => {
   if (typeof header !== 'string' || header.length === 0 || header.length > MAX_ACCEPT_ENCODING) return null;
   const length = header.length;
@@ -332,9 +332,9 @@ const encodedWriter = (writer, encoder, failed = null) => {
 };
 
 module.exports = {
-  MAX_ACCEPT_ENCODING,
   DEFAULT_THRESHOLD,
   DEFAULT_ASYNC_THRESHOLD,
+  MAX_ACCEPT_ENCODING,
   normalizeCompression,
   pickEncoding,
   chooseEncoding,

@@ -31,6 +31,17 @@ const encoder = new TextEncoder();
 // fatal: a header that is not UTF-8 is a malformed frame, not U+FFFD soup.
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
+const NONE = 0;
+const BYTES = 1;
+const DEEP = 2;
+const CYCLE = 3;
+
+// A backplane envelope wraps the packet — or a command's args — at most two
+// levels deeper than a packet holds its data: its frame reaches that much
+// further, so bytes a direct send delivers are delivered across instances
+// too (at 31 levels they arrived as `{"0":…}` there).
+const ENVELOPE_DEPTH = MAX_DEPTH + 2;
+
 const isBytes = (value) => value instanceof Uint8Array || ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
 
 // An object with toJSON() IS its projection: JSON.stringify serializes what
@@ -40,11 +51,6 @@ const isBytes = (value) => value instanceof Uint8Array || ArrayBuffer.isView(val
 // of its own. The projection is never called here (acks.test.js pins one
 // call per fan-out); it travels as JSON, as it always did.
 const isOpaque = (value) => typeof value.toJSON === 'function';
-
-const NONE = 0;
-const BYTES = 1;
-const DEEP = 2;
-const CYCLE = 3;
 
 // The fast walk keeps no memory of what it visited — that is what keeps it
 // at the cost bench/attachments.js measures (rows(400): 17 µs, 160 ns on
@@ -259,17 +265,11 @@ const decodeAttachments = (bytes, maxDepth = MAX_DEPTH) => {
   return packet;
 };
 
-// A backplane envelope wraps the packet — or a command's args — at most two
-// levels deeper than a packet holds its data: its frame reaches that much
-// further, so bytes a direct send delivers are delivered across instances
-// too (at 31 levels they arrived as `{"0":…}` there).
-const ENVELOPE_DEPTH = MAX_DEPTH + 2;
-
 module.exports = {
-  hasBytes,
-  encodeAttachments,
-  decodeAttachments,
-  isAttachmentsFrame,
   FRAME_ATTACHMENTS,
   ENVELOPE_DEPTH,
+  hasBytes,
+  encodeAttachments,
+  isAttachmentsFrame,
+  decodeAttachments,
 };

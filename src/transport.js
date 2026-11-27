@@ -13,6 +13,65 @@ const { isPromise } = require('./compression/ids.js');
 const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachments.js');
 const { ArgumentError } = require('./errors.js');
 
+// HSTS for the host that answered, and no more than that: this used to say
+// `includeSubdomains; preload` on every response — a commitment for the whole
+// domain tree, and consent to a browser preload list that takes months to
+// leave, made by a library on behalf of whoever owns the domain. That
+// decision is theirs: `http.hsts` takes the header they want, or `false`.
+const HSTS = 'Strict-Transport-Security';
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  [HSTS]: 'max-age=31536000',
+  'Content-Type': 'application/json',
+  // The HTTP side's version marker, on every response — the ws subprotocol
+  // ladder's counterpart (protocol.md#versioning): the newest revision the
+  // server speaks. 1 here, which is what 1.0 answers; a server that reads
+  // framed messages answers 2 through buildHeaders, and that is how an HTTP
+  // client learns it may send one.
+  'wrpc-version': '1',
+};
+
+// What an HTTP client that reads framed messages asks for, and what a
+// server looks for before it answers with one. `Accept` rather than a
+// header of wrpc's own: it is CORS-safelisted, so it costs no preflight a
+// 1.0 server — or an application's own `cors.headers` list, which REPLACES
+// the default — would refuse.
+// Building an id index makes a batch's ordering O(n), but the Map costs
+// more than the quadratic it removes until the batch gets big: the linear
+// scan wins 1.23x at 4 answers and 1.05x at 8, and loses 1.18x at 16 and
+// 3.91x at 128 (docs/guide/performance.md) — so the switch sits between 8
+// and 16; the client's default batch.maxSize of 16 is the first measured
+// size where the index wins. Re-run bench/batch-ordering.js before moving
+// either.
+const INDEX_THRESHOLD = 12;
+const FRAME_TYPE = 'application/octet-stream';
+
+const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
+// `x-wrpc-channel` (which event stream a POST belongs to), `last-event-id`
+// (the SSE resume header) and `x-wrpc-meta` (per-request client metadata)
+// are not CORS-safelisted, so a cross-origin peer's preflight fails before
+// the request is ever sent unless they are named here. An application whose
+// clients declare CUSTOM connection headers over http/sse must widen the
+// list via `cors.headers` the same way.
+const DEFAULT_CORS_HEADERS = `Content-Type, ${CHANNEL_HEADER}, last-event-id, ${META_HEADER}`;
+
+const CORS_META_PREFIX = META_PREFIX;
+// The per-key meta spelling (metaFormat: 'prefixed') sends one real request
+// header per key, and CORS has no wildcard for header names — so every key a
+// cross-origin client will send has to be named. Run through toKebab so
+// `metaHeaders: ['userId']` grants `x-wrpc-meta-user-id`: the name the client
+// actually sends, not the one the config happened to spell.
+//
+// Memoized on the cors OBJECT: the string derives only from the immutable
+// option (assigned once in RpcServer's constructor), yet buildHeaders runs
+// on every HTTP call — preflight, packet POST, REST, SSE — and the toKebab
+// regex passes made it cost ~1.9 µs/request with six camelCase metaHeaders,
+// against ~20 ns for the whole buildHeaders once memoized
+// (bench/cors-headers.js). Only the STRING is cached;
+// the headers object stays per-request (it carries per-origin fields and is
+// mutated by callers).
+const ALLOW_CACHE = new WeakMap();
+
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
 //
@@ -36,82 +95,19 @@ const parseCookies = (cookie) => {
   return Object.fromEntries(values);
 };
 
-// HSTS for the host that answered, and no more than that: this used to say
-// `includeSubdomains; preload` on every response — a commitment for the whole
-// domain tree, and consent to a browser preload list that takes months to
-// leave, made by a library on behalf of whoever owns the domain. That
-// decision is theirs: `http.hsts` takes the header they want, or `false`.
-const HSTS = 'Strict-Transport-Security';
-const SECURITY_HEADERS = {
-  'X-Content-Type-Options': 'nosniff',
-  [HSTS]: 'max-age=31536000',
-  'Content-Type': 'application/json',
-  // The HTTP side's version marker, on every response — the ws subprotocol
-  // ladder's counterpart (protocol.md#versioning): the newest revision the
-  // server speaks. 1 here, which is what 1.0 answers; a server that reads
-  // framed messages answers 2 through buildHeaders, and that is how an HTTP
-  // client learns it may send one.
-  'wrpc-version': '1',
-};
-
 const withoutHeader = (headers, name) => {
   const result = {};
   const keys = Object.keys(headers);
   for (let i = 0; i < keys.length; i++) if (keys[i] !== name) result[keys[i]] = headers[keys[i]];
   return result;
 };
-
-// The same without HSTS, for `http: { hsts: false }` — built once, so a
-// response under that option is a spread like any other, never a `delete`.
-const PLAIN_HEADERS = withoutHeader(SECURITY_HEADERS, HSTS);
-
-// What an HTTP client that reads framed messages asks for, and what a
-// server looks for before it answers with one. `Accept` rather than a
-// header of wrpc's own: it is CORS-safelisted, so it costs no preflight a
-// 1.0 server — or an application's own `cors.headers` list, which REPLACES
-// the default — would refuse.
-// Building an id index makes a batch's ordering O(n), but the Map costs
-// more than the quadratic it removes until the batch gets big: the linear
-// scan wins 1.23x at 4 answers and 1.05x at 8, and loses 1.18x at 16 and
-// 3.91x at 128 (docs/guide/performance.md) — so the switch sits between 8
-// and 16; the client's default batch.maxSize of 16 is the first measured
-// size where the index wins. Re-run bench/batch-ordering.js before moving
-// either.
-const INDEX_THRESHOLD = 12;
-const FRAME_TYPE = 'application/octet-stream';
 const readsFrames = (headers) => {
   const accept = headers?.accept;
   return typeof accept === 'string' && accept.includes(FRAME_TYPE);
 };
-
-const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
-// `x-wrpc-channel` (which event stream a POST belongs to), `last-event-id`
-// (the SSE resume header) and `x-wrpc-meta` (per-request client metadata)
-// are not CORS-safelisted, so a cross-origin peer's preflight fails before
-// the request is ever sent unless they are named here. An application whose
-// clients declare CUSTOM connection headers over http/sse must widen the
-// list via `cors.headers` the same way.
-const DEFAULT_CORS_HEADERS = `Content-Type, ${CHANNEL_HEADER}, last-event-id, ${META_HEADER}`;
-
-const CORS_META_PREFIX = META_PREFIX;
 // `headers` accepts an array purely so composing a list stays readable; the
 // string form is what the header value has always been and is untouched.
 const corsHeaderList = (value) => (Array.isArray(value) ? value.join(', ') : value);
-// The per-key meta spelling (metaFormat: 'prefixed') sends one real request
-// header per key, and CORS has no wildcard for header names — so every key a
-// cross-origin client will send has to be named. Run through toKebab so
-// `metaHeaders: ['userId']` grants `x-wrpc-meta-user-id`: the name the client
-// actually sends, not the one the config happened to spell.
-//
-// Memoized on the cors OBJECT: the string derives only from the immutable
-// option (assigned once in RpcServer's constructor), yet buildHeaders runs
-// on every HTTP call — preflight, packet POST, REST, SSE — and the toKebab
-// regex passes made it cost ~1.9 µs/request with six camelCase metaHeaders,
-// against ~20 ns for the whole buildHeaders once memoized
-// (bench/cors-headers.js). Only the STRING is cached;
-// the headers object stays per-request (it carries per-origin fields and is
-// mutated by callers).
-const ALLOW_CACHE = new WeakMap();
 const allowedHeaders = (cors) => {
   if (!cors) return DEFAULT_CORS_HEADERS;
   const cached = ALLOW_CACHE.get(cors);
@@ -219,6 +215,10 @@ const bodyBytes = (data) => {
   if (typeof data === 'string') return Buffer.from(data);
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 };
+
+// The same without HSTS, for `http: { hsts: false }` — built once, so a
+// response under that option is a spread like any other, never a `delete`.
+const PLAIN_HEADERS = withoutHeader(SECURITY_HEADERS, HSTS);
 
 // Net-free HTTP transport over an abstract call description:
 // { method, url, headers, body?, remoteAddress?, respond({ status, headers, body }) }.
@@ -627,13 +627,13 @@ ServerTransport.transport = {
 };
 
 module.exports = {
-  ServerTransport,
-  buildHeaders,
-  readsFrames,
-  isOriginAllowed,
-  parseCookies,
   publicErrorMessage,
   publicErrorDetails,
   wireError,
+  ServerTransport,
   SECURITY_HEADERS,
+  parseCookies,
+  readsFrames,
+  buildHeaders,
+  isOriginAllowed,
 };

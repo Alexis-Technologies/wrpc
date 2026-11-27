@@ -525,11 +525,11 @@ class SseChannels {
 }
 
 module.exports = {
-  ServerSseTransport,
-  SseChannel,
-  SseChannels,
-  SSE_HEADERS,
   CHANNEL_HEADER,
   DEFAULT_RETENTION,
   DEFAULT_REPLAY,
+  SSE_HEADERS,
+  ServerSseTransport,
+  SseChannel,
+  SseChannels,
 };

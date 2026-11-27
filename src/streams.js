@@ -35,6 +35,15 @@ const STREAM_IDLE_TIMEOUT = 30_000;
 const MAX_STREAMS = 256;
 const MAX_STREAM_BUFFER = 64 * 1024 * 1024;
 
+// The writables waiting to hear that their transport closed, by transport,
+// behind ONE 'close' listener on it. Each writable used to add its own: the
+// eleventh upload in flight on a client printed a MaxListenersExceededWarning
+// (a client is an Emitter of ten), and every listener added was compared with
+// all the others first. The listener is there while a writable waits and no
+// longer: a transport outlives its streams — a client's for every reconnect —
+// and is left as it was found.
+const closing = new WeakMap();
+
 // A stream's name as a message may carry it. The name is the SENDER's: a
 // megabyte of it, with a line break in the middle, was a megabyte in the
 // receiver's error log with a line of the sender's own writing in it. A
@@ -54,6 +63,104 @@ const announce = (stream, name) => {
   stream.emit(name).catch((error) => {
     if (stream.listenerCount('error') > 0) stream.emit('error', error).catch(noop);
   });
+};
+const awaitClose = (transport, shut) => {
+  let hub = closing.get(transport);
+  if (hub === undefined) {
+    const waiting = new Set();
+    const listener = () => {
+      closing.delete(transport);
+      transport.off?.('close', listener);
+      // A copy: each of them lets go of its own entry as it shuts.
+      const shuts = Array.from(waiting);
+      for (let i = 0; i < shuts.length; i++) shuts[i]();
+    };
+    hub = { waiting, listener };
+    closing.set(transport, hub);
+    transport.on('close', listener);
+  }
+  hub.waiting.add(shut);
+  return hub;
+};
+// A writable that finished is not waiting any more; the last one out takes
+// the listener with it.
+const forgetClose = (transport, hub, shut) => {
+  if (!hub.waiting.delete(shut) || hub.waiting.size > 0 || closing.get(transport) !== hub) return;
+  closing.delete(transport);
+  transport.off?.('close', hub.listener);
+};
+
+// What a set of readables holds for readers that have not taken it: the
+// bytes sent into them and not read yet, and what each queued chunk costs
+// to keep (CHUNK_COST).
+//
+// `paced` says that the carrier can hold its peer back — a socket that is
+// paused while a chunk waits for room. A stream that has a reader is then
+// bounded by its high-water mark and is not counted: it is paced, not held.
+// Where the carrier cannot (uWebSockets.js, a WebRTC channel, a broker
+// session, a browser's WebSocket) whatever the peer sends arrives, reader or
+// not, so what a stream's reader is behind by counts like an unread
+// stream's — it used to be bounded by nothing but a thousand chunks.
+//
+// Summed when asked, over a connection's open streams (`maxStreams` of them
+// at most) and only for a chunk of a stream whose reader is not keeping up —
+// a count kept in step would need every readable to report its reads and
+// its end back, for a sum that is one addition per open stream. One function
+// for whoever feeds readables and caps what they hold: the server's
+// dispatcher, a client.
+const heldBytes = (streams, paced) => {
+  let bytes = 0;
+  for (const stream of streams.values()) {
+    if (!stream.streaming || (paced && stream.consuming)) continue;
+    bytes += stream.bytesReceived - stream.bytesRead + stream.queued * CHUNK_COST;
+  }
+  return bytes;
+};
+
+// Why `stream` may not take one more chunk of `length` bytes under `cap` —
+// the message it fails with (413) — or null when it may. The one rule for
+// every feeder of readables: a server's dispatcher, a client.
+//
+// Asked for a chunk of a stream nobody reads (every one of them is kept),
+// and, where the carrier cannot pause, of one whose reader is behind by more
+// than a high-water mark of chunks. A reader that keeps up costs nothing
+// here: the sum is not taken — 15 million a second whether 1 or 256 streams
+// are open. The sum is an addition per open stream: 14 million a second for
+// a chunk of the one stream nobody reads, 1.1 million with 256 of them
+// (bench/stream-buffer.js) — the cost of a peer that opened every stream it
+// may and read none, and not worth a count kept in step on every chunk of
+// every stream.
+const overCap = (streams, stream, length, cap, paced) => {
+  const isUnread = !stream.consuming;
+  if (!stream.streaming || !(isUnread || (!paced && stream.queued > DEFAULT_HIGH_WATER_MARK))) return null;
+  if (heldBytes(streams, paced) + length + CHUNK_COST <= cap) return null;
+  if (isUnread) return 'Too many bytes in streams nobody reads yet';
+  return `Stream ${stream.label} is too far ahead of its reader`;
+};
+
+// Ends what nobody came to read: a stream that has had no reader and no
+// byte since the last sweep. An upload whose call was refused before its
+// handler read it, a download no page asked for, a stream its sender
+// announced and left — each held its bytes, and its slot, for as long as the
+// connection lived; enough of them and the connection's next upload was
+// refused for room they were never going to give back.
+//
+// The stream FAILS (408): what it held is let go of, and its sender is told
+// to stop — unless it arrived whole, when there is nothing left to stop.
+// Then the sweep reads it, as the reader that comes for a stream nobody came
+// for: a failed stream is kept until a reader has been told why, and it is
+// that wait — the one its sender's `end` is parked in — that forgets the
+// stream. One whose sender has not ended it yet stays, failed and empty,
+// until it does: what is still on its way is dropped, not answered.
+const sweepStreams = (streams) => {
+  for (const stream of streams.values()) {
+    if (!stream.idle()) continue;
+    if (stream.streaming) {
+      if (stream.bytesReceived === stream.size) stream.onCancel = null;
+      stream.fail(`Stream ${stream.label} was never read`, 408);
+    }
+    if (stream.error !== null) void stream.read();
+  }
 };
 
 class WrpcReadable extends Emitter {
@@ -350,40 +457,6 @@ class WrpcReadable extends Emitter {
   }
 }
 
-// The writables waiting to hear that their transport closed, by transport,
-// behind ONE 'close' listener on it. Each writable used to add its own: the
-// eleventh upload in flight on a client printed a MaxListenersExceededWarning
-// (a client is an Emitter of ten), and every listener added was compared with
-// all the others first. The listener is there while a writable waits and no
-// longer: a transport outlives its streams — a client's for every reconnect —
-// and is left as it was found.
-const closing = new WeakMap();
-const awaitClose = (transport, shut) => {
-  let hub = closing.get(transport);
-  if (hub === undefined) {
-    const waiting = new Set();
-    const listener = () => {
-      closing.delete(transport);
-      transport.off?.('close', listener);
-      // A copy: each of them lets go of its own entry as it shuts.
-      const shuts = Array.from(waiting);
-      for (let i = 0; i < shuts.length; i++) shuts[i]();
-    };
-    hub = { waiting, listener };
-    closing.set(transport, hub);
-    transport.on('close', listener);
-  }
-  hub.waiting.add(shut);
-  return hub;
-};
-// A writable that finished is not waiting any more; the last one out takes
-// the listener with it.
-const forgetClose = (transport, hub, shut) => {
-  if (!hub.waiting.delete(shut) || hub.waiting.size > 0 || closing.get(transport) !== hub) return;
-  closing.delete(transport);
-  transport.off?.('close', hub.listener);
-};
-
 class WrpcWritable extends Emitter {
   #waitingDrain = false;
   #closed = false;
@@ -570,88 +643,15 @@ class WrpcWritable extends Emitter {
   }
 }
 
-// What a set of readables holds for readers that have not taken it: the
-// bytes sent into them and not read yet, and what each queued chunk costs
-// to keep (CHUNK_COST).
-//
-// `paced` says that the carrier can hold its peer back — a socket that is
-// paused while a chunk waits for room. A stream that has a reader is then
-// bounded by its high-water mark and is not counted: it is paced, not held.
-// Where the carrier cannot (uWebSockets.js, a WebRTC channel, a broker
-// session, a browser's WebSocket) whatever the peer sends arrives, reader or
-// not, so what a stream's reader is behind by counts like an unread
-// stream's — it used to be bounded by nothing but a thousand chunks.
-//
-// Summed when asked, over a connection's open streams (`maxStreams` of them
-// at most) and only for a chunk of a stream whose reader is not keeping up —
-// a count kept in step would need every readable to report its reads and
-// its end back, for a sum that is one addition per open stream. One function
-// for whoever feeds readables and caps what they hold: the server's
-// dispatcher, a client.
-const heldBytes = (streams, paced) => {
-  let bytes = 0;
-  for (const stream of streams.values()) {
-    if (!stream.streaming || (paced && stream.consuming)) continue;
-    bytes += stream.bytesReceived - stream.bytesRead + stream.queued * CHUNK_COST;
-  }
-  return bytes;
-};
-
-// Why `stream` may not take one more chunk of `length` bytes under `cap` —
-// the message it fails with (413) — or null when it may. The one rule for
-// every feeder of readables: a server's dispatcher, a client.
-//
-// Asked for a chunk of a stream nobody reads (every one of them is kept),
-// and, where the carrier cannot pause, of one whose reader is behind by more
-// than a high-water mark of chunks. A reader that keeps up costs nothing
-// here: the sum is not taken — 15 million a second whether 1 or 256 streams
-// are open. The sum is an addition per open stream: 14 million a second for
-// a chunk of the one stream nobody reads, 1.1 million with 256 of them
-// (bench/stream-buffer.js) — the cost of a peer that opened every stream it
-// may and read none, and not worth a count kept in step on every chunk of
-// every stream.
-const overCap = (streams, stream, length, cap, paced) => {
-  const isUnread = !stream.consuming;
-  if (!stream.streaming || !(isUnread || (!paced && stream.queued > DEFAULT_HIGH_WATER_MARK))) return null;
-  if (heldBytes(streams, paced) + length + CHUNK_COST <= cap) return null;
-  if (isUnread) return 'Too many bytes in streams nobody reads yet';
-  return `Stream ${stream.label} is too far ahead of its reader`;
-};
-
-// Ends what nobody came to read: a stream that has had no reader and no
-// byte since the last sweep. An upload whose call was refused before its
-// handler read it, a download no page asked for, a stream its sender
-// announced and left — each held its bytes, and its slot, for as long as the
-// connection lived; enough of them and the connection's next upload was
-// refused for room they were never going to give back.
-//
-// The stream FAILS (408): what it held is let go of, and its sender is told
-// to stop — unless it arrived whole, when there is nothing left to stop.
-// Then the sweep reads it, as the reader that comes for a stream nobody came
-// for: a failed stream is kept until a reader has been told why, and it is
-// that wait — the one its sender's `end` is parked in — that forgets the
-// stream. One whose sender has not ended it yet stays, failed and empty,
-// until it does: what is still on its way is dropped, not answered.
-const sweepStreams = (streams) => {
-  for (const stream of streams.values()) {
-    if (!stream.idle()) continue;
-    if (stream.streaming) {
-      if (stream.bytesReceived === stream.size) stream.onCancel = null;
-      stream.fail(`Stream ${stream.label} was never read`, 408);
-    }
-    if (stream.error !== null) void stream.read();
-  }
-};
-
 module.exports = {
-  WrpcReadable,
-  WrpcWritable,
-  shown,
-  heldBytes,
-  overCap,
-  sweepStreams,
   CHUNK_COST,
   STREAM_IDLE_TIMEOUT,
   MAX_STREAMS,
   MAX_STREAM_BUFFER,
+  shown,
+  heldBytes,
+  overCap,
+  sweepStreams,
+  WrpcReadable,
+  WrpcWritable,
 };

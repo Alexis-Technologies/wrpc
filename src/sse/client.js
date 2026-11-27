@@ -36,6 +36,8 @@ const { ConfigError, TransportError, ClosedError, WrpcError } = require('../erro
 // the default of the other carriers): past it the stream is an error.
 const MAX_MESSAGE = 16 * 1024 * 1024;
 
+const joinUrl = (base, path) => (base.endsWith('/') ? base.slice(0, -1) : base) + path;
+
 class SseParser {
   #pieces = [];
   #open = 0;
@@ -128,8 +130,6 @@ class SseParser {
     return event;
   }
 }
-
-const joinUrl = (base, path) => (base.endsWith('/') ? base.slice(0, -1) : base) + path;
 
 class ClientSseTransport extends ClientTransport {
   // Carries `options.encryption`, per request like http — see open().
@@ -374,4 +374,4 @@ class ClientSseTransport extends ClientTransport {
 
 WrpcClient.transport.sse = ClientSseTransport;
 
-module.exports = { ClientSseTransport, SseParser, CHANNEL_HEADER };
+module.exports = { CHANNEL_HEADER, SseParser, ClientSseTransport };

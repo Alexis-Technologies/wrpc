@@ -10,12 +10,12 @@
 const { isPromise } = require('./compression/ids.js');
 
 const RESOLVED = Promise.resolve();
-const noop = () => {};
 
 // How many asynchronous decodes a transport starts before it holds the
 // rest back — a thunk in its slot, a paused reader (WebTransport): a burst
 // of compressed frames used to start an inflate per frame at once.
 const INFLIGHT_LIMIT = 4;
+const noop = () => {};
 
 /**
  * Keeps messages in order around a codec that may answer asynchronously.
@@ -99,4 +99,4 @@ class Sequencer {
   }
 }
 
-module.exports = { Sequencer, INFLIGHT_LIMIT };
+module.exports = { INFLIGHT_LIMIT, Sequencer };

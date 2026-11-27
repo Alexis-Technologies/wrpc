@@ -227,10 +227,6 @@ const DISABLED = Object.freeze({
 });
 
 module.exports = {
-  targetAttributes,
-  startSpanWith,
-  recordSpanError,
-  endSpanHandle,
   SPAN_STATUS_ERROR,
   SCOPE_NAME,
   SPAN_KIND_SERVER,
@@ -241,8 +237,12 @@ module.exports = {
   TRACESTATE,
   SETTER,
   GETTER,
-  hasMethod,
   resolvePropagation,
+  hasMethod,
   resolveTracerAndMeter,
+  targetAttributes,
+  startSpanWith,
+  recordSpanError,
+  endSpanHandle,
   DISABLED,
 };

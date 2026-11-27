@@ -70,16 +70,6 @@ Examples:
   wrpc types http://localhost:8000/api --out api.d.ts --schema api.static.js
   wrpc types http://localhost:8000/api --out -`;
 
-// What the command refuses: a bad argument, an answer it cannot use. The
-// shim in bin/wrpc.js prints the message and exits 1.
-class CliError extends Error {
-  constructor(message, options = {}) {
-    super(message, options);
-    this.name = 'CliError';
-    this.code = 'ALX_ERR_CLI';
-  }
-}
-
 // What goes to the terminal carries text the SERVER chose — a unit name, a
 // type name, an error message — and a terminal obeys what it is sent: an
 // escape sequence recolours, retitles or rewrites what is on screen, a line
@@ -88,19 +78,6 @@ class CliError extends Error {
 // line breaks of a stack trace, which is this process's own text.
 const CONTROL = /\p{Cc}|\u2028|\u2029/gu;
 const MAX_LINE = 2048;
-const escaped = (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
-const printable = (text, lines = false) => {
-  const cut = text.length > MAX_LINE ? `${text.slice(0, MAX_LINE)}…` : text;
-  return cut.replace(CONTROL, (char) => (lines && char === '\n' ? char : escaped(char)));
-};
-
-const append = (target, items) => {
-  for (let i = 0; i < items.length; i++) target.push(items[i]);
-};
-
-const fail = (message) => {
-  throw new CliError(message);
-};
 
 // argv
 
@@ -114,6 +91,34 @@ const FLAGS_WITH_VALUE = new Set([
   '--openapi',
   '--timeout',
 ]);
+
+// The wire error object every non-2xx wrpc answer carries.
+const OPENAPI_ERROR_SCHEMA = {
+  type: 'object',
+  properties: {
+    message: { type: 'string' },
+    code: { type: 'number' },
+    details: {},
+  },
+  required: ['message', 'code'],
+};
+
+// the server
+
+const INTROSPECT = 'system/introspect';
+const escaped = (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+const printable = (text, lines = false) => {
+  const cut = text.length > MAX_LINE ? `${text.slice(0, MAX_LINE)}…` : text;
+  return cut.replace(CONTROL, (char) => (lines && char === '\n' ? char : escaped(char)));
+};
+
+const append = (target, items) => {
+  for (let i = 0; i < items.length; i++) target.push(items[i]);
+};
+
+const fail = (message) => {
+  throw new CliError(message);
+};
 
 const toStdout = (target) => (target === '-' ? 1 : 0);
 
@@ -471,17 +476,6 @@ const openApiParameters = (part, location, target, warn) => {
   return parameters;
 };
 
-// The wire error object every non-2xx wrpc answer carries.
-const OPENAPI_ERROR_SCHEMA = {
-  type: 'object',
-  properties: {
-    message: { type: 'string' },
-    code: { type: 'number' },
-    details: {},
-  },
-  required: ['message', 'code'],
-};
-
 const renderOpenApi = (introspection, options = {}) => {
   const { url = '', warn = () => {} } = options;
   if (!isFieldMap(introspection)) fail('The server did not answer introspection with an object');
@@ -581,10 +575,6 @@ const renderStatic = (introspection, options = {}) => {
   if (format === 'esm') return [...header, `export default ${json};`, ''].join('\n');
   return ["'use strict';", '', ...header, `module.exports = ${json};`, ''].join('\n');
 };
-
-// the server
-
-const INTROSPECT = 'system/introspect';
 
 // The answer, read under a cap: how long it is belongs to whoever answered.
 // A Response with no readable body (a fetch that is not the platform's) is
@@ -717,19 +707,29 @@ const main = async (argv, io = {}) => {
   }
 };
 
+// What the command refuses: a bad argument, an answer it cannot use. The
+// shim in bin/wrpc.js prints the message and exits 1.
+class CliError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'CliError';
+    this.code = 'ALX_ERR_CLI';
+  }
+}
+
 module.exports = {
-  CliError,
   DEFAULT_TIMEOUT,
   MAX_ANSWER,
-  MAX_DEPTH,
   TYPE_NAMES,
+  MAX_DEPTH,
   USAGE,
-  fetchIntrospection,
-  main,
   parseArgs,
   quoteKey,
-  renderOpenApi,
-  renderStatic,
   renderType,
   renderTypes,
+  renderOpenApi,
+  renderStatic,
+  fetchIntrospection,
+  main,
+  CliError,
 };

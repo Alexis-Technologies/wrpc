@@ -56,22 +56,6 @@ const bindLevel = (sink, level) => {
 
 const noop = () => {};
 
-const DISABLED = Object.freeze({
-  [LOG_WRITER]: true,
-  enabled: false,
-  debugEnabled: false,
-  // Returning `this` is what makes the per-connection and per-call children
-  // free when logging is off: no allocation, no closure, no branch.
-  child() {
-    return this;
-  },
-  log: noop,
-  info: noop,
-  debug: noop,
-  warn: noop,
-  error: noop,
-});
-
 // Console takes a message, not an entry. An Error with no message of its own
 // is passed through as the argument so the host prints its stack, which is
 // what the plain `console.error(error)` calls this replaced used to do.
@@ -167,4 +151,20 @@ const emitterWarning = (logger) => {
   return writer.enabled ? (message) => writer.warn({ event: 'emitter.listeners' }, message) : null;
 };
 
-module.exports = { createLoggerWriter, emitterWarning, LOG_WRITER };
+const DISABLED = Object.freeze({
+  [LOG_WRITER]: true,
+  enabled: false,
+  debugEnabled: false,
+  // Returning `this` is what makes the per-connection and per-call children
+  // free when logging is off: no allocation, no closure, no branch.
+  child() {
+    return this;
+  },
+  log: noop,
+  info: noop,
+  debug: noop,
+  warn: noop,
+  error: noop,
+});
+
+module.exports = { LOG_WRITER, createLoggerWriter, emitterWarning };

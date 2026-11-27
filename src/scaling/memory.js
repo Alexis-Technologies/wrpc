@@ -5,6 +5,8 @@ const { ArgumentError } = require('../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 
+const createMemoryBackplane = (options) => new MemoryBackplane(options);
+
 // In-process backplane: the reference implementation of the contract, and
 // what makes multi-instance fan-out testable (and useful) without a broker —
 // two RpcServer instances sharing one MemoryBackplane behave exactly like two
@@ -82,6 +84,4 @@ class MemoryBackplane {
   }
 }
 
-const createMemoryBackplane = (options) => new MemoryBackplane(options);
-
-module.exports = { MemoryBackplane, createMemoryBackplane, DEFAULT_PREFIX };
+module.exports = { DEFAULT_PREFIX, createMemoryBackplane, MemoryBackplane };

@@ -28,9 +28,9 @@ const isBackplane = (value) =>
 module.exports = {
   MemoryBackplane,
   createMemoryBackplane,
+  DEFAULT_PREFIX,
   createRedisAdapter,
   createRedisSessionStore,
   DEFAULT_SESSION_PREFIX,
   isBackplane,
-  DEFAULT_PREFIX,
 };

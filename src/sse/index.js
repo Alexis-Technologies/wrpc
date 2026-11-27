@@ -14,11 +14,11 @@ const { ServerSseTransport, SseChannel, SseChannels, SSE_HEADERS, CHANNEL_HEADER
 const { ClientSseTransport, SseParser } = require('./client.js');
 
 module.exports = {
-  ClientSseTransport,
-  SseParser,
   ServerSseTransport,
   SseChannel,
   SseChannels,
   SSE_HEADERS,
   CHANNEL_HEADER,
+  ClientSseTransport,
+  SseParser,
 };
