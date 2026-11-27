@@ -220,14 +220,14 @@ const decompressAsync = (payload, maxLength, callback) => {
 
 module.exports = {
   EXTENSION_NAME,
+  TRAILER,
   DEFAULT_THRESHOLD,
   DEFAULT_ASYNC_THRESHOLD,
   MIN_WINDOW_BITS,
   MAX_WINDOW_BITS,
-  TRAILER,
   parseExtensions,
-  negotiate,
   assertDeflateOptions,
+  negotiate,
   compress,
   decompress,
   compressAsync,

@@ -5,6 +5,40 @@ const zlib = require('node:zlib');
 const { TRAILER } = require('./permessageDeflate.js');
 const { ClosedError } = require('../errors.js');
 
+// One write + Z_SYNC_FLUSH on a zlib stream, collecting the output. The
+// stream's 'data' and 'error' listeners are attached for the duration of
+// the operation only: a context serves one message at a time.
+const run = (stream, input, maxLength, callback) => {
+  const chunks = [];
+  let total = 0;
+  let settled = false;
+  const finish = (error, output) => {
+    if (settled) return;
+    settled = true;
+    stream.off('data', onData);
+    stream.off('error', onError);
+    callback(error, output);
+  };
+  const onData = (chunk) => {
+    total += chunk.length;
+    if (total > maxLength) {
+      const error = new RangeError('Inflated message exceeds the size cap');
+      error.code = 'ERR_BUFFER_TOO_LARGE';
+      // The stream holds the bomb's state; it is not reused after this.
+      stream.close();
+      return void finish(error);
+    }
+    chunks.push(chunk);
+  };
+  const onError = (error) => finish(error);
+  stream.on('data', onData);
+  stream.on('error', onError);
+  stream.write(input);
+  stream.flush(zlib.constants.Z_SYNC_FLUSH, () => {
+    finish(null, chunks.length === 1 ? chunks[0] : Buffer.concat(chunks));
+  });
+};
+
 // The per-connection half of permessage-deflate with context takeover
 // (RFC 7692 7.1.1): one long-lived deflate stream, one long-lived inflate
 // stream, each keeping its window across messages so a message may
@@ -117,39 +151,5 @@ class DeflateContext {
     this.#inflate = null;
   }
 }
-
-// One write + Z_SYNC_FLUSH on a zlib stream, collecting the output. The
-// stream's 'data' and 'error' listeners are attached for the duration of
-// the operation only: a context serves one message at a time.
-const run = (stream, input, maxLength, callback) => {
-  const chunks = [];
-  let total = 0;
-  let settled = false;
-  const finish = (error, output) => {
-    if (settled) return;
-    settled = true;
-    stream.off('data', onData);
-    stream.off('error', onError);
-    callback(error, output);
-  };
-  const onData = (chunk) => {
-    total += chunk.length;
-    if (total > maxLength) {
-      const error = new RangeError('Inflated message exceeds the size cap');
-      error.code = 'ERR_BUFFER_TOO_LARGE';
-      // The stream holds the bomb's state; it is not reused after this.
-      stream.close();
-      return void finish(error);
-    }
-    chunks.push(chunk);
-  };
-  const onError = (error) => finish(error);
-  stream.on('data', onData);
-  stream.on('error', onError);
-  stream.write(input);
-  stream.flush(zlib.constants.Z_SYNC_FLUSH, () => {
-    finish(null, chunks.length === 1 ? chunks[0] : Buffer.concat(chunks));
-  });
-};
 
 module.exports = { DeflateContext };

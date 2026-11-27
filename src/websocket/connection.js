@@ -1055,4 +1055,4 @@ class Connection extends EventEmitter {
   }
 }
 
-module.exports = { Connection, CLOSE_TIMEOUT, MAX_PAYLOAD, TURN_BUDGET, turnBudgetOf };
+module.exports = { MAX_PAYLOAD, CLOSE_TIMEOUT, TURN_BUDGET, turnBudgetOf, Connection };

@@ -4,6 +4,8 @@ const { CONTROL_OPCODES, DATA_OPCODES, OPCODES, CLOSE_CODES, RSV1 } = require('.
 const { Frame } = require('./frame.js');
 const { Result } = require('./result.js');
 
+const { isUtf8: nativeIsUtf8 } = require('node:buffer');
+
 const FIN_MASK = 0x80;
 const RSV_MASK = 0x70;
 const OPCODE_MASK = 0x0f;
@@ -26,7 +28,13 @@ const VALID_CLOSE_CODES = new Set([
   CLOSE_CODES.INTERNAL_SERVER_ERROR,
 ]);
 
-const { isUtf8: nativeIsUtf8 } = require('node:buffer');
+const PARSE_ERR_CODES = {
+  MESSAGE_TOO_BIG: 'ALX_ERR_PARSE_MESSAGE_TOO_BIG',
+  PROTOCOL_ERROR_COMMON: 'ALX_ERR_PARSE_PROTOCOL',
+  PROTOCOL_ERROR_RSV: 'ALX_ERR_PARSE_RSV',
+  PROTOCOL_ERROR_CTRL_TOO_LONG: 'ALX_ERR_PARSE_CONTROL_TOO_LONG',
+  INVALID_PAYLOAD: 'ALX_ERR_PARSE_INVALID_PAYLOAD',
+};
 
 // The scalar JS loop below stays for SHORT buffers (a native call has fixed
 // overhead that dominates under ~24 bytes — the same threshold ws uses) and
@@ -116,14 +124,6 @@ class ParseError extends Error {
     this.code = options.code;
   }
 }
-
-const PARSE_ERR_CODES = {
-  MESSAGE_TOO_BIG: 'ALX_ERR_PARSE_MESSAGE_TOO_BIG',
-  PROTOCOL_ERROR_COMMON: 'ALX_ERR_PARSE_PROTOCOL',
-  PROTOCOL_ERROR_RSV: 'ALX_ERR_PARSE_RSV',
-  PROTOCOL_ERROR_CTRL_TOO_LONG: 'ALX_ERR_PARSE_CONTROL_TOO_LONG',
-  INVALID_PAYLOAD: 'ALX_ERR_PARSE_INVALID_PAYLOAD',
-};
 
 class FrameParser {
   // Parses only the frame header (through the mask key, when present).
@@ -237,9 +237,4 @@ class FrameParser {
   }
 }
 
-module.exports = {
-  FrameParser,
-  ParseError,
-  PARSE_ERR_CODES,
-  isValidUTF8,
-};
+module.exports = { PARSE_ERR_CODES, isValidUTF8, ParseError, FrameParser };

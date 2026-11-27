@@ -35,6 +35,11 @@ const PROTOCOL_ERROR_REASONS = {
   CTRL_TOO_LONG: 'Control frame too long',
 };
 
+// Uint32Array element order follows the host CPU; the word-XOR fast path
+// composes its mask for little-endian layout, so big-endian hosts (Node
+// supports linux-s390x) must take the byte-wise path or corrupt payloads.
+const LITTLE_ENDIAN = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
+
 const truncateCloseReason = (reason) => {
   const bytes = Buffer.from(reason, ENCODING);
   if (bytes.length <= MAX_CLOSE_REASON) return reason;
@@ -42,11 +47,6 @@ const truncateCloseReason = (reason) => {
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
   return bytes.subarray(0, end).toString(ENCODING);
 };
-
-// Uint32Array element order follows the host CPU; the word-XOR fast path
-// composes its mask for little-endian layout, so big-endian hosts (Node
-// supports linux-s390x) must take the byte-wise path or corrupt payloads.
-const LITTLE_ENDIAN = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
 
 // XOR-masks `payload` in place: byte-wise head up to 4-byte alignment, then
 // 32 bits per iteration through a Uint32Array view (~8x the naive loop —
@@ -270,4 +270,4 @@ class Frame {
   }
 }
 
-module.exports = { Frame, EMPTY_PING, EMPTY_PONG, applyMask, headerSize, writeHeader, encodeFrame, encodeFrameFrom };
+module.exports = { EMPTY_PING, EMPTY_PONG, applyMask, headerSize, writeHeader, encodeFrame, encodeFrameFrom, Frame };

@@ -7,6 +7,14 @@ const { EventEmitter } = require('node:events');
 const { Connection, turnBudgetOf } = require('./connection.js');
 const permessageDeflate = require('./permessageDeflate.js');
 
+// The protocol revision marker (see docs/reference/protocol.md#versioning).
+// A wrpc client OFFERS it; with no app-configured protocols the server
+// echoes it back, which is what stamps the wire with a version both sides
+// can rely on. A peer that offers nothing gets no subprotocol and speaks
+// 1.0 — additive, nothing breaks. Re-exported below, as it always was.
+const { getPathname, gateVerdict, negotiateProtocol } = require('./upgrade.js');
+const { ConfigError } = require('../errors.js');
+
 const MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const PING_INTERVAL = 10000;
 const EOL = '\r\n';
@@ -19,14 +27,6 @@ const UPGRADE = [
 ].join(EOL);
 
 const hasToken = (value, token) => !!value && value.toLowerCase().includes(token);
-
-// The protocol revision marker (see docs/reference/protocol.md#versioning).
-// A wrpc client OFFERS it; with no app-configured protocols the server
-// echoes it back, which is what stamps the wire with a version both sides
-// can rely on. A peer that offers nothing gets no subprotocol and speaks
-// 1.0 — additive, nothing breaks. Re-exported below, as it always was.
-const { getPathname, gateVerdict, negotiateProtocol } = require('./upgrade.js');
-const { ConfigError } = require('../errors.js');
 
 const writeResponse = (socket, headerLines) => {
   socket.cork();
@@ -312,4 +312,4 @@ class WebsocketServer extends EventEmitter {
   }
 }
 
-module.exports = { WebsocketServer, MAGIC };
+module.exports = { MAGIC, WebsocketServer };
