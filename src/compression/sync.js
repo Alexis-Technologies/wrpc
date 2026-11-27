@@ -17,6 +17,19 @@ const { ConfigError } = require('../errors.js');
 const DEFAULT_MAX_MESSAGE = 16 * 1024 * 1024;
 const EMPTY = new Uint8Array(0);
 
+// A backplane message is a string. A compressed envelope is the JSON text
+// (signed already, when the cluster signs) deflated and base64'd under
+// `wrpc-enc:<id>:` — JSON never starts with a `w`, so the first character
+// tells the two apart, and a receiver that holds no such codec, or none,
+// knows it holds something it cannot read rather than garbage.
+//
+// Nothing is negotiated on a backplane, so the list means something else
+// here: an instance ENCODES with the head of its list and DECODES any
+// codec on it — the marker names which. That is what makes a change of
+// codec a rollout without a lost message: first every instance lists both
+// (`['deflate-raw', 'zstd']`), then the order is swapped.
+const ENVELOPE_PREFIX = 'wrpc-enc:';
+
 /**
  * `normalizeCompression`, then two checks at construction rather than at
  * the first message, on EVERY codec of the list — any of them may be the
@@ -123,19 +136,6 @@ const createFailureReporter = (log, otel = null) => {
   };
 };
 
-// A backplane message is a string. A compressed envelope is the JSON text
-// (signed already, when the cluster signs) deflated and base64'd under
-// `wrpc-enc:<id>:` — JSON never starts with a `w`, so the first character
-// tells the two apart, and a receiver that holds no such codec, or none,
-// knows it holds something it cannot read rather than garbage.
-//
-// Nothing is negotiated on a backplane, so the list means something else
-// here: an instance ENCODES with the head of its list and DECODES any
-// codec on it — the marker names which. That is what makes a change of
-// codec a rollout without a lost message: first every instance lists both
-// (`['deflate-raw', 'zstd']`), then the order is swapped.
-const ENVELOPE_PREFIX = 'wrpc-enc:';
-
 const byMarkerLength = (a, b) => b.marker.length - a.marker.length;
 
 const isEncodedEnvelope = (message) => typeof message === 'string' && message.startsWith(ENVELOPE_PREFIX);
@@ -187,11 +187,11 @@ const createEnvelopeCodec = (option, name, maxMessage = DEFAULT_MAX_MESSAGE, fai
 };
 
 module.exports = {
+  negotiate,
+  codecById,
   DEFAULT_MAX_MESSAGE,
   ENVELOPE_PREFIX,
   normalizeSyncCompression,
-  negotiate,
-  codecById,
   headerNegotiator,
   maxMessageOf,
   encodeIfSmaller,

@@ -32,45 +32,6 @@ const STORED_MAX = 65535;
 // pass, 9 exhaustive, the default what pays on wrpc-sized messages.
 const CHAIN_BY_LEVEL = [4, 4, 8, 16, 24, 32, 32, 64, 128, 256];
 
-const reverse = (code, len) => {
-  let r = 0;
-  for (let i = 0; i < len; i++) {
-    r = (r << 1) | (code & 1);
-    code >>= 1;
-  }
-  return r;
-};
-
-// The fixed literal/length codes, bit-reversed for LSB-first writing:
-// entry = (reversed code << 4) | length.
-const LIT_CODES = (() => {
-  const codes = new Uint32Array(288);
-  for (let sym = 0; sym < 288; sym++) {
-    let code = 0;
-    let len = 0;
-    if (sym < 144) {
-      code = 0x30 + sym;
-      len = 8;
-    } else if (sym < 256) {
-      code = 0x190 + (sym - 144);
-      len = 9;
-    } else if (sym < 280) {
-      code = sym - 256;
-      len = 7;
-    } else {
-      code = 0xc0 + (sym - 280);
-      len = 8;
-    }
-    codes[sym] = (reverse(code, len) << 4) | len;
-  }
-  return codes;
-})();
-const DIST_CODES = (() => {
-  const codes = new Uint32Array(30);
-  for (let sym = 0; sym < 30; sym++) codes[sym] = (reverse(sym, 5) << 4) | 5;
-  return codes;
-})();
-
 // length (3..258) -> code index 0..28, distance (1..32768) -> code 0..29:
 // direct tables, built once, so emitting a match is two reads.
 const LENGTH_CODE = (() => {
@@ -83,52 +44,25 @@ const LENGTH_CODE = (() => {
   table[MAX_MATCH] = 28;
   return table;
 })();
+
+// The largest message a prepared state takes; a larger one goes through
+// deflateRaw. A browser hands 4 KiB and more to CompressionStream anyway.
+const SCRATCH = 8192;
+
+const reverse = (code, len) => {
+  let r = 0;
+  for (let i = 0; i < len; i++) {
+    r = (r << 1) | (code & 1);
+    code >>= 1;
+  }
+  return r;
+};
 const distCode = (distance) => {
   // 30 codes: a short scan from the top is cheaper than a 32 KiB table.
   let i = 29;
   while (DIST_BASE[i] > distance) i--;
   return i;
 };
-
-class BitWriter {
-  #out;
-  #len = 0;
-  #buf = 0;
-  #cnt = 0;
-
-  constructor(size) {
-    this.#out = new Uint8Array(size);
-  }
-
-  write(value, bits) {
-    this.#buf |= value << this.#cnt;
-    this.#cnt += bits;
-    while (this.#cnt >= 8) {
-      if (this.#len === this.#out.length) this.#grow();
-      this.#out[this.#len++] = this.#buf & 0xff;
-      this.#buf >>>= 8;
-      this.#cnt -= 8;
-    }
-  }
-
-  #grow() {
-    const grown = new Uint8Array(this.#out.length * 2);
-    grown.set(this.#out);
-    this.#out = grown;
-  }
-
-  finish() {
-    if (this.#cnt > 0) {
-      if (this.#len === this.#out.length) this.#grow();
-      this.#out[this.#len++] = this.#buf & 0xff;
-    }
-    return this.#out.subarray(0, this.#len);
-  }
-
-  get length() {
-    return this.#len;
-  }
-}
 
 // Stored blocks: the honest fallback for input fixed codes would not shrink.
 const stored = (input) => {
@@ -264,10 +198,6 @@ const deflateRaw = (input, { dictionary = null, level = 6 } = {}) => {
   return orStored(pass({ win, head, prev, touched: null, dirty: 0 }, dictLen, total, chainOf(level)), data);
 };
 
-// The largest message a prepared state takes; a larger one goes through
-// deflateRaw. A browser hands 4 KiB and more to CompressionStream anyway.
-const SCRATCH = 8192;
-
 /**
  * `encode(bytes) -> raw DEFLATE`, the same bytes deflateRaw answers for the
  * same dictionary and level, without redoing the dictionary's share of the
@@ -318,5 +248,75 @@ const createDeflater = (dictionary = null, level = 6) => {
     return orStored(pass(state, dictLen, dictLen + data.length, chain), data);
   };
 };
+
+// The fixed literal/length codes, bit-reversed for LSB-first writing:
+// entry = (reversed code << 4) | length.
+const LIT_CODES = (() => {
+  const codes = new Uint32Array(288);
+  for (let sym = 0; sym < 288; sym++) {
+    let code = 0;
+    let len = 0;
+    if (sym < 144) {
+      code = 0x30 + sym;
+      len = 8;
+    } else if (sym < 256) {
+      code = 0x190 + (sym - 144);
+      len = 9;
+    } else if (sym < 280) {
+      code = sym - 256;
+      len = 7;
+    } else {
+      code = 0xc0 + (sym - 280);
+      len = 8;
+    }
+    codes[sym] = (reverse(code, len) << 4) | len;
+  }
+  return codes;
+})();
+const DIST_CODES = (() => {
+  const codes = new Uint32Array(30);
+  for (let sym = 0; sym < 30; sym++) codes[sym] = (reverse(sym, 5) << 4) | 5;
+  return codes;
+})();
+
+class BitWriter {
+  #out;
+  #len = 0;
+  #buf = 0;
+  #cnt = 0;
+
+  constructor(size) {
+    this.#out = new Uint8Array(size);
+  }
+
+  write(value, bits) {
+    this.#buf |= value << this.#cnt;
+    this.#cnt += bits;
+    while (this.#cnt >= 8) {
+      if (this.#len === this.#out.length) this.#grow();
+      this.#out[this.#len++] = this.#buf & 0xff;
+      this.#buf >>>= 8;
+      this.#cnt -= 8;
+    }
+  }
+
+  #grow() {
+    const grown = new Uint8Array(this.#out.length * 2);
+    grown.set(this.#out);
+    this.#out = grown;
+  }
+
+  finish() {
+    if (this.#cnt > 0) {
+      if (this.#len === this.#out.length) this.#grow();
+      this.#out[this.#len++] = this.#buf & 0xff;
+    }
+    return this.#out.subarray(0, this.#len);
+  }
+
+  get length() {
+    return this.#len;
+  }
+}
 
 module.exports = { deflateRaw, createDeflater };

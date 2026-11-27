@@ -40,19 +40,6 @@ const { ConfigError } = require('../errors.js');
 const DEFAULT_THRESHOLD = 1024;
 
 /**
- * `{ id, encode(bytes) -> bytes | Promise<bytes>, decode(bytes, maxOutput)
- * -> bytes | Promise<bytes>, threshold? }`. `id` is what the two ends
- * compare: a peer compresses only for a peer that named the same codec.
- */
-const isCompressor = (value) =>
-  typeof value === 'object' &&
-  value !== null &&
-  typeof value.encode === 'function' &&
-  typeof value.decode === 'function' &&
-  typeof value.id === 'string' &&
-  value.id.length > 0;
-
-/**
  * `compression: true | { codec, threshold, async }` into the frozen shape
  * the transports read — `{ codec, id, threshold }` — or null for off, which
  * is also what a platform with no native codec and nothing injected gets.
@@ -67,6 +54,23 @@ const isCompressor = (value) =>
 // (bench/zlib-async.js) — the same default as permessage-deflate's and the
 // HTTP encoder's `async`.
 const DEFAULT_ASYNC_THRESHOLD = 256 * 1024;
+
+// A peer's list is peer-controlled: only so many entries are looked at, and
+// an id is only ever COMPARED with ours — never a key into anything.
+const MAX_PEER_IDS = 16;
+
+/**
+ * `{ id, encode(bytes) -> bytes | Promise<bytes>, decode(bytes, maxOutput)
+ * -> bytes | Promise<bytes>, threshold? }`. `id` is what the two ends
+ * compare: a peer compresses only for a peer that named the same codec.
+ */
+const isCompressor = (value) =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof value.encode === 'function' &&
+  typeof value.decode === 'function' &&
+  typeof value.id === 'string' &&
+  value.id.length > 0;
 
 /**
  * `async: true | { threshold }` into the byte threshold, `null` for off in
@@ -157,10 +161,6 @@ const normalizeCompression = (value, name) => {
   });
 };
 
-// A peer's list is peer-controlled: only so many entries are looked at, and
-// an id is only ever COMPARED with ours — never a key into anything.
-const MAX_PEER_IDS = 16;
-
 /** The entry of `local` named `id`, or null. A handful of codecs: a scan. */
 const codecById = (local, id) => {
   const { codecs } = local;
@@ -202,17 +202,17 @@ const negotiate = (local, peer) => {
 };
 
 module.exports = {
-  DEFAULT_THRESHOLD,
-  DEFAULT_ASYNC_THRESHOLD,
-  DICTIONARY_ID_PREFIX,
-  normalizeAsync,
-  isCompressor,
-  isPromise,
-  normalizeCompression,
-  negotiate,
-  codecById,
   nativeCompressor,
+  DICTIONARY_ID_PREFIX,
+  isPromise,
   dictionaryId,
   Sequencer,
   INFLIGHT_LIMIT,
+  DEFAULT_THRESHOLD,
+  DEFAULT_ASYNC_THRESHOLD,
+  isCompressor,
+  normalizeAsync,
+  normalizeCompression,
+  codecById,
+  negotiate,
 };

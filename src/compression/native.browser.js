@@ -83,4 +83,4 @@ const nativeCompressor = ({ algorithm = ID, optional = false } = {}) => {
   };
 };
 
-module.exports = { nativeCompressor, NATIVE_ID: ID };
+module.exports = { NATIVE_ID: ID, nativeCompressor };

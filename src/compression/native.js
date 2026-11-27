@@ -57,33 +57,6 @@ const LEVELS = Object.freeze({
   zstd: Object.freeze([1, 1, 22]),
 });
 
-/** Whether this zlib has Zstandard — node:zlib does since 22.15 / 23.8. */
-const hasZstd = (lib) => typeof lib.zstdCompressSync === 'function' && typeof lib.zstdDecompressSync === 'function';
-
-const promised = (run, bytes, options) =>
-  new Promise((resolve, reject) => {
-    run(bytes, options, (error, out) => (error ? reject(error) : resolve(out)));
-  });
-
-/**
- * An `encode` that is synchronous under `asyncAbove` bytes (or always, for
- * null) and a promise from the threadpool at and past it. `optionsOf(bytes)`
- * answers the zlib options of one call — Brotli's size hint and zstd's
- * pledged size are per message.
- */
-const thresholdEncoder = (sync, callback, optionsOf, asyncAbove) => {
-  if (asyncAbove === null) return (bytes) => sync(bytes, optionsOf(bytes));
-  return (bytes) =>
-    bytes.length >= asyncAbove ? promised(callback, bytes, optionsOf(bytes)) : sync(bytes, optionsOf(bytes));
-};
-
-/**
- * A raw-deflate `encode` over fixed zlib `options`. Shared with the
- * dictionary codec, whose options carry the dictionary.
- */
-const deflateEncoder = (asyncAbove, options = undefined) =>
-  thresholdEncoder(zlib.deflateRawSync, zlib.deflateRaw, () => options, asyncAbove);
-
 const families = {
   __proto__: null,
   'deflate-raw': (lib, level, async) => {
@@ -117,6 +90,33 @@ const families = {
   },
 };
 
+/** Whether this zlib has Zstandard — node:zlib does since 22.15 / 23.8. */
+const hasZstd = (lib) => typeof lib.zstdCompressSync === 'function' && typeof lib.zstdDecompressSync === 'function';
+
+const promised = (run, bytes, options) =>
+  new Promise((resolve, reject) => {
+    run(bytes, options, (error, out) => (error ? reject(error) : resolve(out)));
+  });
+
+/**
+ * An `encode` that is synchronous under `asyncAbove` bytes (or always, for
+ * null) and a promise from the threadpool at and past it. `optionsOf(bytes)`
+ * answers the zlib options of one call — Brotli's size hint and zstd's
+ * pledged size are per message.
+ */
+const thresholdEncoder = (sync, callback, optionsOf, asyncAbove) => {
+  if (asyncAbove === null) return (bytes) => sync(bytes, optionsOf(bytes));
+  return (bytes) =>
+    bytes.length >= asyncAbove ? promised(callback, bytes, optionsOf(bytes)) : sync(bytes, optionsOf(bytes));
+};
+
+/**
+ * A raw-deflate `encode` over fixed zlib `options`. Shared with the
+ * dictionary codec, whose options carry the dictionary.
+ */
+const deflateEncoder = (asyncAbove, options = undefined) =>
+  thresholdEncoder(zlib.deflateRawSync, zlib.deflateRaw, () => options, asyncAbove);
+
 /**
  * A platform codec. `algorithm` is 'deflate-raw' (default), 'brotli' or
  * 'zstd'; `level` the family's own (Brotli's quality), its measured default
@@ -143,4 +143,4 @@ const nativeCompressor = ({ algorithm = ID, level, async = null, optional = fals
   return { id: algorithm, threshold: THRESHOLD, async, encode, decode };
 };
 
-module.exports = { nativeCompressor, deflateEncoder, hasZstd, NATIVE_ID: ID, ALGORITHMS: Object.keys(LEVELS) };
+module.exports = { NATIVE_ID: ID, hasZstd, deflateEncoder, nativeCompressor, ALGORITHMS: Object.keys(LEVELS) };

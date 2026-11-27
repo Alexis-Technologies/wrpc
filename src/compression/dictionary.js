@@ -60,4 +60,4 @@ const dictionaryCompressor = (dictionary, { level, threshold = DEFAULT_THRESHOLD
   };
 };
 
-module.exports = { dictionaryCompressor, DICTIONARY_ID_PREFIX: ID_PREFIX };
+module.exports = { DICTIONARY_ID_PREFIX: ID_PREFIX, dictionaryCompressor };

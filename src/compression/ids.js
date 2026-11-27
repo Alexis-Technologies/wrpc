@@ -28,4 +28,4 @@ const dictionaryId = (bytes) => {
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 };
 
-module.exports = { dictionaryId, DICTIONARY_ID_PREFIX, isPromise };
+module.exports = { DICTIONARY_ID_PREFIX, isPromise, dictionaryId };

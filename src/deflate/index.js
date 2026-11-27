@@ -23,6 +23,12 @@
 // platform id, and the platform codecs read it.
 
 const { inflateRaw, DeflateError, toBytes } = require('./inflate.js');
+const { deflateRaw, createDeflater } = require('./deflate.js');
+const { dictionaryId, DICTIONARY_ID_PREFIX } = require('../compression/ids.js');
+const { ConfigError } = require('../errors.js');
+
+const NATIVE_ID = 'deflate-raw';
+const DEFAULT_NATIVE_ABOVE = 4096;
 
 // A dictionary may be given as text (a router's, printed) as well as bytes.
 const dictionaryBytes = (value) => {
@@ -33,12 +39,6 @@ const dictionaryBytes = (value) => {
     throw new ConfigError('createDeflateCodec: dictionary must be bytes or a string');
   }
 };
-const { deflateRaw, createDeflater } = require('./deflate.js');
-const { dictionaryId, DICTIONARY_ID_PREFIX } = require('../compression/ids.js');
-const { ConfigError } = require('../errors.js');
-
-const NATIVE_ID = 'deflate-raw';
-const DEFAULT_NATIVE_ABOVE = 4096;
 
 // The platform's CompressionStream, for the large messages — asynchronous.
 const nativeEncode = async (bytes) => {
@@ -113,4 +113,4 @@ const createDeflateCodec = ({
   };
 };
 
-module.exports = { createDeflateCodec, inflateRaw, deflateRaw, DeflateError };
+module.exports = { inflateRaw, DeflateError, deflateRaw, createDeflateCodec };

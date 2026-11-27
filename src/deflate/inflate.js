@@ -2,30 +2,6 @@
 
 const { ArgumentError } = require('../errors.js');
 
-// RFC 1951 inflate in plain JavaScript — the half of @alexify/wrpc/deflate
-// that has to be complete: whatever sits on the other end (node:zlib, a
-// browser's CompressionStream, this codec) picks its own block types, so
-// stored, fixed and dynamic Huffman blocks are all read here. What the
-// platform's DecompressionStream cannot do is the reason this exists — take
-// a preset dictionary, and answer synchronously.
-//
-// Decoding tables are built per tree, sized 1 << (longest code) and indexed
-// by the bit-reversed code, so a symbol is one table read on the peeked
-// bits rather than a bit-by-bit walk; the fixed tables are built once. The
-// output buffer starts with the dictionary's tail in it, so a distance
-// that reaches back into the dictionary is an ordinary copy, and grows by
-// doubling up to `maxOutput` — the cap that bounds a compression bomb to
-// the size a plain message is bounded at. Browser-budgeted: manual loops,
-// typed arrays, no closures on the hot path.
-
-class DeflateError extends Error {
-  constructor(message, options = {}) {
-    super(message, options);
-    this.name = 'DeflateError';
-    this.code = options.code;
-  }
-}
-
 const WINDOW = 32768;
 const MAX_BITS = 15;
 
@@ -174,6 +150,24 @@ const buildTable = (lengths, count) => {
   return { table, bits };
 };
 
+// Bytes in any of the three spellings, or a TypeError naming the caller —
+// the one copy the directory shares.
+const toBytes = (input, label = 'inflate') => {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  throw new ArgumentError(`${label}: expected bytes`);
+};
+
+/**
+ * Raw DEFLATE → bytes, synchronously. `dictionary` preloads the window (its
+ * last 32 KiB); `maxOutput` is the inflated-size cap — past it a
+ * DeflateError (`ALX_ERR_DEFLATE_TOO_LARGE`) rather than a bigger allocation. Every
+ * malformed input is a DeflateError with a code, never a wrong answer.
+ */
+const inflateRaw = (input, { dictionary = null, maxOutput = Infinity } = {}) =>
+  new Inflater(toBytes(input), dictionary === null ? null : toBytes(dictionary), maxOutput).run();
+
 // The fixed trees (RFC 1951 3.2.6), built once.
 const FIXED_LIT = (() => {
   const lengths = new Uint8Array(288);
@@ -189,6 +183,30 @@ const FIXED_DIST = (() => {
   lengths.fill(5);
   return buildTable(lengths, 30);
 })();
+
+// RFC 1951 inflate in plain JavaScript — the half of @alexify/wrpc/deflate
+// that has to be complete: whatever sits on the other end (node:zlib, a
+// browser's CompressionStream, this codec) picks its own block types, so
+// stored, fixed and dynamic Huffman blocks are all read here. What the
+// platform's DecompressionStream cannot do is the reason this exists — take
+// a preset dictionary, and answer synchronously.
+//
+// Decoding tables are built per tree, sized 1 << (longest code) and indexed
+// by the bit-reversed code, so a symbol is one table read on the peeked
+// bits rather than a bit-by-bit walk; the fixed tables are built once. The
+// output buffer starts with the dictionary's tail in it, so a distance
+// that reaches back into the dictionary is an ordinary copy, and grows by
+// doubling up to `maxOutput` — the cap that bounds a compression bomb to
+// the size a plain message is bounded at. Browser-budgeted: manual loops,
+// typed arrays, no closures on the hot path.
+
+class DeflateError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'DeflateError';
+    this.code = options.code;
+  }
+}
 
 class Inflater {
   #input;
@@ -396,32 +414,14 @@ class Inflater {
   }
 }
 
-// Bytes in any of the three spellings, or a TypeError naming the caller —
-// the one copy the directory shares.
-const toBytes = (input, label = 'inflate') => {
-  if (input instanceof Uint8Array) return input;
-  if (input instanceof ArrayBuffer) return new Uint8Array(input);
-  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new ArgumentError(`${label}: expected bytes`);
-};
-
-/**
- * Raw DEFLATE → bytes, synchronously. `dictionary` preloads the window (its
- * last 32 KiB); `maxOutput` is the inflated-size cap — past it a
- * DeflateError (`ALX_ERR_DEFLATE_TOO_LARGE`) rather than a bigger allocation. Every
- * malformed input is a DeflateError with a code, never a wrong answer.
- */
-const inflateRaw = (input, { dictionary = null, maxOutput = Infinity } = {}) =>
-  new Inflater(toBytes(input), dictionary === null ? null : toBytes(dictionary), maxOutput).run();
-
 module.exports = {
-  inflateRaw,
-  DeflateError,
-  buildTable,
-  toBytes,
+  WINDOW,
   LENGTH_BASE,
   LENGTH_EXTRA,
   DIST_BASE,
   DIST_EXTRA,
-  WINDOW,
+  buildTable,
+  toBytes,
+  inflateRaw,
+  DeflateError,
 };
