@@ -67,4 +67,4 @@ const isWtSession = (value) =>
   typeof value.closed.then === 'function' &&
   (value.datagrams === undefined || value.datagrams === null || isWtDatagrams(value.datagrams));
 
-module.exports = { isWtSession, isWtStream, isWtDatagrams };
+module.exports = { isWtStream, isWtDatagrams, isWtSession };

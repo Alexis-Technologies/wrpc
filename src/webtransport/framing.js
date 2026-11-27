@@ -55,6 +55,12 @@ const TEXT_ENCODER = new TextEncoder();
 // U+FFFD the JSON parser then trips over one layer up.
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
+// A datagram is one whole message with no length to announce: its header
+// is the KIND byte alone. Only packets ride datagrams today (KIND_TEXT);
+// the receiver ignores any other kind, since a datagram may be dropped
+// anyway and a wrong one is not worth a hangup.
+const DATAGRAM_HEADER_BYTES = 1;
+
 const toBytes = (input) => {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
@@ -110,12 +116,6 @@ const frameText = (text) => {
   }
   return frame(KIND_TEXT, TEXT_ENCODER.encode(text));
 };
-
-// A datagram is one whole message with no length to announce: its header
-// is the KIND byte alone. Only packets ride datagrams today (KIND_TEXT);
-// the receiver ignores any other kind, since a datagram may be dropped
-// anyway and a wrong one is not worth a hangup.
-const DATAGRAM_HEADER_BYTES = 1;
 
 /** A packet as one datagram: `[KIND_TEXT][UTF-8]`, a fresh buffer. */
 const datagramText = (text) => {
@@ -302,6 +302,7 @@ class StreamParser {
 }
 
 module.exports = {
+  FramingError,
   HEADER_BYTES,
   KIND_TEXT,
   KIND_BINARY,
@@ -310,16 +311,15 @@ module.exports = {
   KIND_BINARY_COMPRESSED,
   DEFAULT_MAX_MESSAGE,
   INLINE_TEXT,
-  FramingError,
+  DATAGRAM_HEADER_BYTES,
   toBytes,
   decodeText,
   parseCaps,
   frame,
-  frameText,
   frameCaps,
-  DATAGRAM_HEADER_BYTES,
+  frameText,
   datagramText,
-  parseDatagram,
   datagramWriter,
+  parseDatagram,
   StreamParser,
 };

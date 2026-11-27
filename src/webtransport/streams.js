@@ -78,6 +78,13 @@ const readId = (frame) => {
   return { id: TEXT_DECODER.decode(frame.subarray(1, 1 + idLength)), offset: 1 + idLength };
 };
 
+const concat = (a, b) => {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+};
+
 class StreamMux {
   #session;
   #emitPacket;
@@ -535,21 +542,14 @@ class StreamMux {
   }
 }
 
-const concat = (a, b) => {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-};
-
 module.exports = {
-  StreamMux,
   STREAM_PREFIX,
   CAPS_STREAMS,
-  MAX_ANNOUNCED,
   DEFAULT_MAX_HELD_STREAMS,
   DEFAULT_HOLD_TIMEOUT,
   DEFAULT_OPEN_TIMEOUT,
+  MAX_ANNOUNCED,
   idHeader,
   readId,
+  StreamMux,
 };

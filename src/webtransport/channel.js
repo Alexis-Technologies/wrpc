@@ -619,11 +619,11 @@ class WtChannel {
 }
 
 module.exports = {
-  WtChannel,
-  closeQuietly,
-  normalizeBackpressure,
   DEFAULT_HIGH_WATER_MARK,
   DEFAULT_LOW_WATER_MARK,
   DEFAULT_MAX_BACKPRESSURE,
   DEFAULT_CLOSE_TIMEOUT,
+  normalizeBackpressure,
+  closeQuietly,
+  WtChannel,
 };

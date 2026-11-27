@@ -28,6 +28,12 @@ const DEFAULT_ACCEPT_TIMEOUT = 10_000;
 // is refused 503 rather than queued behind them.
 const DEFAULT_MAX_PENDING = 256;
 
+const refusals = {
+  timeout: { closeCode: 408, reason: 'No control stream' },
+  stopped: { closeCode: 1001, reason: 'Server is closing' },
+  ended: { closeCode: 408, reason: 'No control stream' },
+};
+
 // The RpcServer behind whatever was handed over: a Server (its `rpc`), an
 // RpcServer, or anything else with attachSocket — a PeerHost does not
 // qualify, it has no socket path.
@@ -77,12 +83,6 @@ const firstStream = async (session, race) => {
   } finally {
     reader.releaseLock();
   }
-};
-
-const refusals = {
-  timeout: { closeCode: 408, reason: 'No control stream' },
-  stopped: { closeCode: 1001, reason: 'Server is closing' },
-  ended: { closeCode: 408, reason: 'No control stream' },
 };
 
 const checkNonNegative = (value, name, label) => {

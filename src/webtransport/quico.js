@@ -15,6 +15,9 @@ const { Readable, Writable } = require('node:stream');
 const { isWtStream } = require('./port.js');
 const { ConfigError, ClosedError } = require('../errors.js');
 
+// The request events that end a session.
+const SESSION_ENDS = ['close', 'end', 'error', 'aborted'];
+
 // A readable whose controller stays reachable — what a node event source
 // is pushed into, and what a close ends.
 const source = () => {
@@ -41,9 +44,6 @@ const source = () => {
     },
   };
 };
-
-// The request events that end a session.
-const SESSION_ENDS = ['close', 'end', 'error', 'aborted'];
 
 const toWtStream = (duplex) => {
   if (isWtStream(duplex)) return duplex;
