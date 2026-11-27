@@ -32,7 +32,7 @@
 // the hot path.
 
 const { chunkEncode } = require('../chunks.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
@@ -65,7 +65,7 @@ const MAX_ANNOUNCED = 4096;
 // without the payload.
 const idHeader = (id) => {
   const bytes = TEXT_ENCODER.encode(id);
-  if (bytes.length > 255) throw new Error(`ID length ${bytes.length} exceeds maximum of 255 characters`);
+  if (bytes.length > 255) throw new ArgumentError(`ID length ${bytes.length} exceeds maximum of 255 characters`);
   const out = new Uint8Array(1 + bytes.length);
   out[0] = bytes.length;
   out.set(bytes, 1);

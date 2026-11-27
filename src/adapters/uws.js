@@ -385,7 +385,7 @@ const createUwsEngine = (engineOptions = {}) => {
     // attachOptions: { path, verifyClient, protocols, handleProtocols,
     //   onHttpCall } — no `server`, this engine owns the network stack.
     attach(attachOptions = {}) {
-      if (attached) throw new Error('createUwsEngine: this engine is already attached');
+      if (attached) throw new ConfigError('createUwsEngine: this engine is already attached');
       attached = true;
       const { path = '/*', onHttpCall } = attachOptions;
       // The writer the Server shell (or an adapter) hands down, as the

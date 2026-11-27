@@ -136,7 +136,14 @@ const ENTRIES = [
   // internal error's text, one 'close' listener per transport for every
   // upload, and the cap on stream announcements nobody claimed in the
   // WebTransport mux. Measured 30,984 B against 30,720 (it stood at 30,474).
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'src/index.browser.js', platform: 'browser', budget: 31 },
+  // 31 -> 32 for what the review against alexiskills 1.2 found the client
+  // owed: an emit that settles once all its listeners have, an observer of a
+  // stream that cannot leave an unhandled rejection (`announce`), a retry
+  // backoff and a drain that wake on their signal, packet POSTs aborted on
+  // close, a ws error that is an Error, and refusals that are a ConfigError
+  // or an ArgumentError with a code. Measured 31,765 B against 31,744 (it
+  // stood at 31,555); the operational codes that come next need the rest.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'src/index.browser.js', platform: 'browser', budget: 32 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'src/websocket/ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'src/engine/index.js', platform: 'node' },

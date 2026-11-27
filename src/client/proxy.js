@@ -10,6 +10,7 @@ const { WrpcClient, CALL_TIMEOUT, normalizeReconnect, viewOf } = require('./core
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 const { chunkDecode } = require('../chunks.js');
 const { MAX_STREAMS } = require('../streams.js');
+const { ConfigError, ArgumentError } = require('../errors.js');
 
 // The page's packet: JSON text, or an attachments frame carrying one (a
 // call with bytes in its args). Anything else — bytes that are no frame,
@@ -87,7 +88,7 @@ class WrpcClientProxy extends Emitter {
     this.#encryption = encryption;
     this.#url = url;
     if (typeof self === 'undefined') {
-      throw new Error('WrpcClientProxy must run in a worker context');
+      throw new ConfigError('WrpcClientProxy must run in a worker context');
     }
     this.#onControl = (event) => this.#control(event);
     // Both listeners, no context sniffing: a ServiceWorker never fires
@@ -207,7 +208,7 @@ class WrpcClientProxy extends Emitter {
     const { type } = event.data;
     if (type === 'wrpc:connect') {
       const port = event.ports[0];
-      if (!port) throw new Error('MessagePort not provided');
+      if (!port) throw new ArgumentError('MessagePort not provided');
       this.#ports.add(port);
       port.addEventListener('message', (messageEvent) => {
         // The page's transport says goodbye before it closes its port: a

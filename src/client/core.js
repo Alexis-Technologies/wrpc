@@ -17,7 +17,7 @@ const {
   resolveGenerateId,
   checkLimit,
 } = require('../utils.js');
-const { WrpcError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 // A timeout as a timer takes it: a number of milliseconds, up to 2^31 - 1.
 // `callTimeout: '300'` — a value straight out of an environment variable —
@@ -68,7 +68,6 @@ const {
 const { createLoggerWriter, emitterWarning } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
 const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 
@@ -861,11 +860,11 @@ class WrpcClient extends Emitter {
     // UP FRONT: a fallback that fails at fall-back time is a fallback
     // nobody tested.
     if (Array.isArray(options.transport)) {
-      if (options.transport.length === 0) throw new Error('transport list must not be empty');
+      if (options.transport.length === 0) throw new ConfigError('transport list must not be empty');
       for (const candidate of options.transport) {
-        if (candidate === 'event') throw new Error("transport list cannot contain 'event' — pass options.worker");
+        if (candidate === 'event') throw new ConfigError("transport list cannot contain 'event' — pass options.worker");
         if (WrpcClient.transport[candidate] === undefined) {
-          throw new Error(`Unknown transport '${candidate}'`);
+          throw new ConfigError(`Unknown transport '${candidate}'`);
         }
         if (!isClientTransport(WrpcClient.transport[candidate])) {
           throw new ConfigError(`Transport '${candidate}' does not satisfy the ClientTransport contract`);
@@ -878,7 +877,7 @@ class WrpcClient extends Emitter {
       : (options.transport ?? (url.startsWith('http') ? 'http' : 'ws'));
     const Transport = WrpcClient.transport[name];
     if (Transport === undefined) {
-      throw new Error(`Unknown transport '${name}'`);
+      throw new ConfigError(`Unknown transport '${name}'`);
     }
     if (!isClientTransport(Transport)) {
       throw new ConfigError(`Transport '${name}' does not satisfy the ClientTransport contract`);
@@ -1606,7 +1605,7 @@ class WrpcClient extends Emitter {
   getStream(id) {
     const stream = this.#streams.get(id);
     if (stream) return stream;
-    throw new Error(`Stream ${shown(id)} is not initialized`);
+    throw new ArgumentError(`Stream ${shown(id)} is not initialized`);
   }
 
   createStream(name, size) {
@@ -1632,7 +1631,7 @@ class WrpcClient extends Emitter {
     // for a 'drain' that never comes.
     let started = false;
     const upload = async () => {
-      if (started) throw new Error('upload() runs once — its stream was already used; create another uploader');
+      if (started) throw new ArgumentError('upload() runs once — its stream was already used; create another uploader');
       started = true;
       try {
         for await (const chunk of blob.stream()) {
@@ -1843,7 +1842,7 @@ class WrpcClient extends Emitter {
       throw new ArgumentError('respond: handler must be a function');
     }
     if (this.#responders.has(name)) {
-      throw new Error(`Duplicate responder for '${name}'`);
+      throw new ArgumentError(`Duplicate responder for '${name}'`);
     }
     this.#responders.set(name, handler);
   }

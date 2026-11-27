@@ -133,7 +133,7 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 90.9 KB | **30.7 KB** | 31.0 KB |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 90.9 KB | **30.7 KB** | 32.0 KB |
 | `@alexify/wrpc` — node (client + server) | 316.8 KB | 106.7 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 35.4 KB | 12.4 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 35.9 KB | 12.6 KB | — |

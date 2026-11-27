@@ -24,6 +24,7 @@
 const { WrpcClient, ClientTransport, connectUrl } = require('./core.js');
 const { normalizeCompression } = require('../compression/index.js');
 const { WtChannel, closeQuietly, normalizeBackpressure } = require('../webtransport/channel.js');
+const { ConfigError } = require('../errors.js');
 
 // The `WebTransportOptions` handed to the constructor as-is.
 const INIT_KEYS = ['serverCertificateHashes', 'congestionControl', 'allowPooling', 'requireUnreliable', 'protocols'];
@@ -109,7 +110,7 @@ class ClientWtTransport extends ClientTransport {
   async #open(options) {
     const wt = options.wt ? { ...this.#options, ...options.wt } : this.#options;
     const WebTransport = wt.WebTransport ?? globalThis.WebTransport;
-    if (typeof WebTransport !== 'function') throw new Error(UNAVAILABLE);
+    if (typeof WebTransport !== 'function') throw new ConfigError(UNAVAILABLE);
     const encryption = options.encryption ?? null;
     // Per-message compression (src/compression): connect()'s `compression`,
     // else the `wt` bag's — and none under encryption.

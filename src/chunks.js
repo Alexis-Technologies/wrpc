@@ -1,12 +1,14 @@
 'use strict';
 
+const { ArgumentError } = require('./errors.js');
+
 const ID_LENGTH_BYTES = 1;
 
 const chunkEncode = (id, payload) => {
   const idBuffer = Buffer.from(id, 'utf8');
   const idLength = idBuffer.length;
   if (idLength > 255) {
-    throw new Error(`ID length ${idLength} exceeds maximum of 255 characters`);
+    throw new ArgumentError(`ID length ${idLength} exceeds maximum of 255 characters`);
   }
   const chunk = new Uint8Array(ID_LENGTH_BYTES + idLength + payload.length);
   chunk[0] = idLength;

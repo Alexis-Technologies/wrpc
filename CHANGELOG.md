@@ -17,6 +17,19 @@ narrower promise — see
   `TypeError: …`; it reads `ConfigError: …` or `ArgumentError: …` now. The
   class still extends `TypeError`, so `instanceof TypeError` holds, but code
   that matched `error.name === 'TypeError'` no longer matches.
+  The refusals that were a bare `Error` are one of the two as well, with
+  their message unchanged: a client's `transport` option (an empty list,
+  `'event'` in one, an unknown name), `WrpcClientProxy` outside a worker,
+  the `event` transport without a worker, a WebRTC transport with neither
+  link nor channel, a mesh without a router, a uWebSockets.js engine
+  attached twice, the `wt` transport where no WebTransport is, an `attach`
+  under `encryption.required` of a transport not declared encrypted
+  (`ConfigError`); a second responder of one name, an
+  unknown stream id (client and server `getStream`), an uploader run twice, a peer dialling itself, a
+  binary stream on SSE, a stream id past 255 bytes, a `wrpc/query` path
+  that names no loaded procedure of the right kind, and an `Emitter`'s
+  duplicate listener or missing event name (`ArgumentError`) — each read
+  `Error: …` and had no code.
 - **Every error class takes `(message, options)`, as `Error` does**, the
   form alexiskills 1.2 asks of every Alexis library: `options` holds
   `cause` — set only when given — and the class's own fields. The

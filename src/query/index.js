@@ -63,11 +63,11 @@ const createQueryUtils = (client, options = {}) => {
   // ['constructor', 'x'] would reach Object.prototype.
   const member = (unit, method) => {
     if (!Object.hasOwn(client.api, unit)) {
-      throw new Error(`wrpc/query: unit '${unit}' is not loaded — await client.load('${unit}') first`);
+      throw new ArgumentError(`wrpc/query: unit '${unit}' is not loaded — await client.load('${unit}') first`);
     }
     const loaded = client.api[unit];
     if (!Object.hasOwn(loaded, method)) {
-      throw new Error(`wrpc/query: unit '${unit}' has no method '${method}'`);
+      throw new ArgumentError(`wrpc/query: unit '${unit}' has no method '${method}'`);
     }
     return loaded[method];
   };
@@ -78,9 +78,9 @@ const createQueryUtils = (client, options = {}) => {
     const method = path[1];
     const found = member(unit, method);
     if (found?.kind === 'subscription') {
-      throw new Error(`wrpc/query: ${unit}/${method} is a subscription — use subscriptionHandler()`);
+      throw new ArgumentError(`wrpc/query: ${unit}/${method} is a subscription — use subscriptionHandler()`);
     }
-    if (!isFunction(found)) throw new Error(`wrpc/query: ${unit}/${method} is not callable`);
+    if (!isFunction(found)) throw new ArgumentError(`wrpc/query: ${unit}/${method} is not callable`);
     return found;
   };
 
@@ -90,9 +90,9 @@ const createQueryUtils = (client, options = {}) => {
     const method = path[1];
     const found = member(unit, method);
     if (isFunction(found)) {
-      throw new Error(`wrpc/query: ${unit}/${method} is a call — use queryOptions() or mutationOptions()`);
+      throw new ArgumentError(`wrpc/query: ${unit}/${method} is a call — use queryOptions() or mutationOptions()`);
     }
-    if (found?.kind !== 'subscription') throw new Error(`wrpc/query: ${unit}/${method} is not a subscription`);
+    if (found?.kind !== 'subscription') throw new ArgumentError(`wrpc/query: ${unit}/${method} is not a subscription`);
     return found;
   };
 

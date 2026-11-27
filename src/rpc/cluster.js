@@ -774,7 +774,7 @@ class Cluster extends Emitter {
       throw new ArgumentError('Cluster.respond: handler must be a function');
     }
     if (this.#responders.has(name)) {
-      throw new Error(`Duplicate responder for '${name}'`);
+      throw new ArgumentError(`Duplicate responder for '${name}'`);
     }
     this.#responders.set(name, handler);
   }

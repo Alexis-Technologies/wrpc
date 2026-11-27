@@ -274,7 +274,7 @@ class WrpcPeer extends Emitter {
       throw new ArgumentError('WrpcPeer.connect: remoteId must be a non-empty string of at most 256 characters');
     }
     await this.start();
-    if (remoteId === this.id) throw new Error('WrpcPeer.connect: cannot connect to self');
+    if (remoteId === this.id) throw new ArgumentError('WrpcPeer.connect: cannot connect to self');
     const instance = isPeerId(options.instance) ? options.instance : null;
     // Dialling it is this side changing its mind about a goodbye.
     this.#goodbyes.delete(remoteId);

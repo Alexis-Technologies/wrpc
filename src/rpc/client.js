@@ -582,7 +582,7 @@ class Client extends Emitter {
     }
     const stream = this.streams.get(id);
     if (stream) return stream;
-    throw new Error(`Stream ${id} is not initialized`);
+    throw new ArgumentError(`Stream ${id} is not initialized`);
   }
 
   createStream(name, size) {

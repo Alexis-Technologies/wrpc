@@ -1,7 +1,7 @@
 'use strict';
 
 const { generateUUID } = require('./runtime/node.js');
-const { ConfigError } = require('./errors.js');
+const { ConfigError, ArgumentError } = require('./errors.js');
 
 // Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
 // to become a rejection: a throw escaping emit() would land in a socket
@@ -103,7 +103,7 @@ class Emitter {
       this.#events.set(eventName, event);
     } else {
       if (event.on.includes(listener)) {
-        throw new Error('Duplicate listeners detected');
+        throw new ArgumentError('Duplicate listeners detected');
       }
       event.on.push(listener);
       if (once) event.once.add(listener);
@@ -146,7 +146,7 @@ class Emitter {
   }
 
   listeners(eventName) {
-    if (!eventName) throw new Error('Expected eventName');
+    if (!eventName) throw new ArgumentError('Expected eventName');
     const event = this.#events.get(eventName);
     // A copy: the live array is what emit() walks, and a caller's splice
     // would remove a listener behind off()'s back.
@@ -154,7 +154,7 @@ class Emitter {
   }
 
   listenerCount(eventName) {
-    if (!eventName) throw new Error('Expected eventName');
+    if (!eventName) throw new ArgumentError('Expected eventName');
     const event = this.#events.get(eventName);
     return event ? event.on.length : 0;
   }

@@ -71,6 +71,46 @@ describe('error codes', () => {
     assert.deepEqual(tableCodes(), thrown, 'the table in docs/reference/errors.md');
   });
 
+  // These threw a bare Error: no code to branch on, and a name that said
+  // nothing of what was wrong — the setup, or an argument.
+  it('should throw ConfigError or ArgumentError, not a bare Error, for a bad setup or argument', async () => {
+    const { WrpcClient, WrpcClientProxy } = require('../../src/client.js');
+    const { Emitter } = require('../../src/utils.js');
+    const { chunkEncode } = require('../../src/chunks.js');
+    const browserChunks = require('../../src/chunks.browser.js');
+    const { createQueryUtils } = require('../../src/query/index.js');
+    const config = (error) => error instanceof ConfigError && error.code === 'ALX_ERR_CONFIG';
+    const argument = (error) => error instanceof ArgumentError && error.code === 'ALX_ERR_ARGUMENT';
+
+    const connecting = (transport) => async () => WrpcClient.connect('ws://127.0.0.1:1', { transport });
+    await assert.rejects(connecting([]), config);
+    await assert.rejects(connecting(['ws', 'event']), config);
+    await assert.rejects(connecting(['ws', 'smoke']), config);
+    await assert.rejects(connecting('smoke'), config);
+    const { ws: ClientWsTransport, event: ClientEventTransport } = WrpcClient.transport;
+    const client = new WrpcClient('ws://127.0.0.1:1', new ClientWsTransport('ws://127.0.0.1:1'), {
+      reconnect: false,
+      heartbeat: false,
+    });
+    client.respond('twice', () => {});
+    assert.throws(() => client.respond('twice', () => {}), argument);
+    assert.throws(() => client.getStream('none'), argument);
+    assert.throws(() => new WrpcClientProxy(), config);
+    await assert.rejects(new ClientEventTransport('').open(), config);
+
+    const emitter = new Emitter();
+    const listener = () => {};
+    emitter.on('x', listener);
+    assert.throws(() => emitter.on('x', listener), argument);
+    assert.throws(() => emitter.listeners(''), argument);
+    assert.throws(() => emitter.listenerCount(''), argument);
+    assert.throws(() => chunkEncode('x'.repeat(256), new Uint8Array(0)), argument);
+    assert.throws(() => browserChunks.chunkEncode('x'.repeat(256), new Uint8Array(0)), argument);
+
+    const query = createQueryUtils({ api: {} });
+    await assert.rejects(() => query.queryOptions(['nope', 'send']).queryFn(), argument);
+  });
+
   it('should give each class its code and keep instanceof TypeError', () => {
     const config = new ConfigError('x');
     const argument = new ArgumentError('y', { cause: config });

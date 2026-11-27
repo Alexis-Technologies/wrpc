@@ -522,7 +522,9 @@ class ClientRtcTransport extends ClientTransport {
     const link = this.#link ?? options.link ?? null;
     const source = link ? null : (this.#source ?? options.channel ?? null);
     if (!link && !source) {
-      throw new Error('WebRTC transport needs a link or a channel: pass options.link or options.channel to connect()');
+      throw new ConfigError(
+        'WebRTC transport needs a link or a channel: pass options.link or options.channel to connect()',
+      );
     }
     if (link && this.#link !== link) {
       this.#link = link;
@@ -742,7 +744,9 @@ class RtcPeerTransport extends ServerTransport {
   ) {
     const raw = isRtcDataChannel(source);
     const channel = raw ? source : (source?.hostChannel ?? null);
-    if (!channel) throw new Error('RtcPeerTransport: no host channel — pass a data channel or a link that has one');
+    if (!channel) {
+      throw new ConfigError('RtcPeerTransport: no host channel — pass a data channel or a link that has one');
+    }
     // A channel that is closing or closed never opens again: refused here,
     // not discovered at the first write.
     if (raw && (channel.readyState === 'closing' || channel.readyState === 'closed')) {

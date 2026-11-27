@@ -216,7 +216,7 @@ class Mesh extends Emitter {
 
   #host(what) {
     const host = this.#peer.host;
-    if (!host) throw new Error(`Mesh.${what}: this peer has no router, so no host to fan out from`);
+    if (!host) throw new ConfigError(`Mesh.${what}: this peer has no router, so no host to fan out from`);
     return host;
   }
 

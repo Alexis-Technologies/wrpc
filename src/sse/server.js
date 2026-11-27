@@ -7,6 +7,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
 const { normalizeCompression, chooseEncoding, markEncoded, encodedWriter } = require('../contentEncoding.js');
 const { createFailureReporter } = require('../compression/sync.js');
+const { ArgumentError } = require('../errors.js');
 
 // Server-Sent Events as a wrpc transport.
 //
@@ -122,7 +123,7 @@ class ServerSseTransport extends ServerTransport {
 
   write(data) {
     if (typeof data !== 'string') {
-      throw new Error('SSE transport carries text only: binary streams need a WebSocket');
+      throw new ArgumentError('SSE transport carries text only: binary streams need a WebSocket');
     }
     return this.emitPacket(data);
   }

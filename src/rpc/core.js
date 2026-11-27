@@ -1234,7 +1234,7 @@ class RpcServer extends Emitter {
     // be vouched for: a WebRTC data channel is (DTLS, end to end), a broker
     // binding is when it seals its own frames.
     if (this.#encryption?.required && encrypted !== true) {
-      throw new Error('RpcServer.attach: encryption is required, and this transport was not declared encrypted');
+      throw new ConfigError('RpcServer.attach: encryption is required, and this transport was not declared encrypted');
     }
     if (persistent === false) {
       if (!hasTransportShape(transport)) {
