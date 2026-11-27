@@ -886,8 +886,8 @@ export class Client extends Emitter {
   readonly encryption: EncryptionInfo | null;
   /** False on a text-only transport (SSE), where binary streams cannot go. */
   readonly binary: boolean;
-  /** Resolves when the transport drained, or when it closed. */
-  drain(): Promise<void>;
+  /** Resolves when the transport drained, when it closed, or when `signal` aborts. */
+  drain(signal?: AbortSignal | null): Promise<void>;
   error(code: number, options?: ErrorOptions): void;
   /**
    * Returns false when the transport is above its high-water mark.

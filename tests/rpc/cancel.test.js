@@ -265,3 +265,32 @@ describe('maxCalls', () => {
     assert.strictEqual(await client.api.slow.quick(), 'fast');
   });
 });
+
+describe('a deadline that passes', () => {
+  // The 408 answered the caller while the handler ran on: its ctx.signal never
+  // fired, and once the call left client.calls no disconnect could fire it.
+  it('should abort the handler signal when the procedure timeout answers 408', async (t) => {
+    let signal = null;
+    const deadlined = defineRouter({
+      slow: {
+        hang: procedure({
+          access: 'public',
+          timeout: 30,
+          handler: (context) => {
+            signal = context.signal;
+            return new Promise(noop);
+          },
+        }),
+      },
+    });
+    const { server, port } = await createServer({ router: deadlined });
+    t.after(() => server.close());
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false });
+    t.after(() => void client.close());
+    await client.load('slow');
+
+    await assert.rejects(client.api.slow.hang(), (error) => error.code === 408);
+    assert.strictEqual(signal.aborted, true);
+    assert.strictEqual(signal.reason.code, 408);
+  });
+});

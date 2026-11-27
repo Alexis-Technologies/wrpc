@@ -522,10 +522,15 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
 
   // Draining: take no new work from the shared address (the other instances
   // do), keep serving the sessions already here until close.
-  const onDraining = () => {
-    const stop = stopService;
+  const onDraining = async () => {
+    const stopListening = stopService;
     stopService = null;
-    if (stop) void stop();
+    if (!stopListening) return;
+    try {
+      await stopListening();
+    } catch (error) {
+      log.error({ err: error, event: 'broker.rpc.stop', phase: 'draining' });
+    }
   };
   let stopped = false;
   const stop = async () => {
@@ -540,7 +545,9 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     for (let i = 0; i < ids.length; i++) endSession(ids[i], 'closing', { detail: 'server closing' });
     await stopInbox();
   };
-  const onClose = () => void stop();
+  // Returned, not voided: RpcServer.close() awaits its 'close' listeners, so
+  // a shutdown ends once the address and the inbox are let go.
+  const onClose = () => stop().catch((error) => log.error({ err: error, event: 'broker.rpc.stop', phase: 'close' }));
   rpc.on('draining', onDraining);
   rpc.on('close', onClose);
 

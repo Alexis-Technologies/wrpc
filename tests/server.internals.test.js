@@ -458,4 +458,44 @@ describe('Server internals', () => {
     t.after(() => server.close());
     await assert.rejects(server.listen(), (error) => error.code === 'EADDRINUSE');
   });
+  // The retry timer had no owner: a close() during the wait let the next
+  // attempt bind a server that had been shut down, and listen() resolve.
+  it('should cancel a listen retry that close() overtakes, and bind nothing', async (t) => {
+    const blocker = await createServer();
+    t.after(() => blocker.server.close());
+    const server = new Server({
+      router,
+      host: '127.0.0.1',
+      port: blocker.port,
+      protocol: 'http',
+      logger: false,
+      timeouts: { bind: 40 },
+      retry: 5,
+    });
+    const listening = server.listen();
+    await timers.setTimeout(10);
+    await server.close();
+    await blocker.server.close();
+    await assert.rejects(listening, (error) => error.cause?.code === 'EADDRINUSE');
+    await timers.setTimeout(60);
+    assert.strictEqual(server.httpServer.listening, false);
+  });
+
+  it('should resolve close() once its close listeners have settled, and survive one that throws', async (t) => {
+    const { RpcServer } = require('../src/rpc/core.js');
+    const { recorder } = require('./helpers/recorder.js');
+    const log = recorder();
+    const rpc = new RpcServer({ router, logger: log.writer, sse: false });
+    let stopped = false;
+    rpc.on('close', async () => {
+      await timers.setTimeout(20);
+      stopped = true;
+    });
+    rpc.on('close', () => {
+      throw new Error('a listener of the application');
+    });
+    await rpc.close();
+    assert.strictEqual(stopped, true, 'close() resolved before its listener finished');
+    assert.strictEqual(log.find('listener.close')?.err?.message, 'a listener of the application');
+  });
 });

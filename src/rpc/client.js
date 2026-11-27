@@ -352,15 +352,22 @@ class Client extends Emitter {
    * producer waiting on a peer that never reads is released by the
    * disconnect rather than parked forever.
    */
-  drain() {
+  // Resolves on the transport's 'drain' or 'close', or when `signal` aborts:
+  // an unsubscribe frees its slot at once, and its generator — with the
+  // `finally` that lets go of what it opened — used to stay parked here
+  // until the peer drained or left.
+  drain(signal = null) {
     return new Promise((resolve) => {
+      if (signal?.aborted) return void resolve();
       const done = () => {
         this.#transport.off('drain', done);
         this.#transport.off('close', done);
+        signal?.removeEventListener('abort', done);
         resolve();
       };
       this.#transport.on('drain', done);
       this.#transport.on('close', done);
+      signal?.addEventListener('abort', done, { once: true });
     });
   }
 

@@ -115,6 +115,26 @@ describe('a stream that is no longer streaming keeps nothing', () => {
       assert.strictEqual(readable.status, 'terminated');
     });
 
+    // 'close' was emitted and the promise dropped: a listener that threw
+    // became an unhandled rejection, which ends a Node process.
+    it('should tell what a close listener threw to the error listeners, never leave it unhandled', async () => {
+      const readable = new WrpcReadable('id', 'blob', 3);
+      const told = [];
+      readable.on('close', () => {
+        throw new Error('a watcher of the application');
+      });
+      readable.on('error', (error) => void told.push(error.message));
+      await readable.terminate();
+      await timers.setTimeout(0);
+      assert.deepStrictEqual(told, ['a watcher of the application']);
+      const quiet = new WrpcReadable('id', 'blob', 3);
+      quiet.on('close', () => {
+        throw new Error('with nobody to tell');
+      });
+      await quiet.terminate();
+      await timers.setTimeout(0);
+    });
+
     it('should drop it after close()', async () => {
       const readable = new WrpcReadable('id', 'blob', 3);
       const read = drain(readable);

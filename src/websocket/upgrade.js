@@ -9,6 +9,19 @@ const { WRPC_V1, WRPC_V2, CARRIER_PROTOCOL } = require('../wire.js');
 
 const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
+// What a `verifyClient` gate answered, read fail-closed: `true` admits and
+// nothing else does. A promise is truthy, so an `async` gate used to admit
+// every peer whatever it resolved to; it is refused as 'async' — the engine
+// says so once — and its rejection is kept from going unhandled.
+const gateVerdict = (verifyClient, info) => {
+  const verdict = verifyClient(info);
+  if (verdict === true) return 'admit';
+  const isPending = verdict !== null && typeof verdict === 'object' && typeof verdict.then === 'function';
+  if (!isPending) return 'refuse';
+  verdict.then(undefined, () => {});
+  return 'async';
+};
+
 /**
  * The subprotocol to answer an offer with (the `Sec-WebSocket-Protocol`
  * header as it arrived): a name, `''` for none, or `false` when the
@@ -46,4 +59,4 @@ const negotiateProtocol = (header, { protocols, handleProtocols }, request) => {
   return '';
 };
 
-module.exports = { getPathname, negotiateProtocol };
+module.exports = { getPathname, gateVerdict, negotiateProtocol };

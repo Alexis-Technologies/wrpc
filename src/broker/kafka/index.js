@@ -34,6 +34,7 @@ const {
   SETTLE_ATTEMPTS,
   SETTLE_BACKOFF,
   reporter,
+  stopOnAbort,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -827,10 +828,11 @@ const createKafkaBroker = (options = {}) => {
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
+      unlisten?.[Symbol.dispose]();
       unwatch();
       await closeConsumer(consumer);
     };
-    if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
+    const unlisten = stopOnAbort(signal, stop);
     return {
       stop,
       pause: async () => {

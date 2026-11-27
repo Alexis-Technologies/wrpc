@@ -135,6 +135,16 @@ const listed = (origins, origin) => (typeof origins === 'string' ? origins === o
 
 // `hsts`: the `http.hsts` option — a header value of the application's, or
 // false for none; left out, the default above.
+// A `cors.origins` function answers synchronously. A promise is truthy, and
+// `Boolean(promise)` used to allow every origin to an `async` check: it is
+// refused instead, its rejection kept from going unhandled.
+const allowedBy = (verdict) => {
+  const isPending = verdict !== null && typeof verdict === 'object' && typeof verdict.then === 'function';
+  if (!isPending) return Boolean(verdict);
+  verdict.then(undefined, () => {});
+  return false;
+};
+
 const buildHeaders = (cors, origin, revision = 1, hsts = undefined) => {
   const headers = {
     ...(hsts === false ? PLAIN_HEADERS : SECURITY_HEADERS),
@@ -149,8 +159,8 @@ const buildHeaders = (cors, origin, revision = 1, hsts = undefined) => {
     return headers;
   }
   headers['Vary'] = 'Origin';
-  const allowed =
-    typeof cors.origins === 'function' ? Boolean(origin && cors.origins(origin)) : listed(cors.origins, origin);
+  const isFunction = typeof cors.origins === 'function';
+  const allowed = isFunction ? Boolean(origin) && allowedBy(cors.origins(origin)) : listed(cors.origins, origin);
   if (allowed) {
     headers['Access-Control-Allow-Origin'] = origin;
     if (cors.credentials) headers['Access-Control-Allow-Credentials'] = 'true';
@@ -161,7 +171,7 @@ const buildHeaders = (cors, origin, revision = 1, hsts = undefined) => {
 const isOriginAllowed = (cors, origin) => {
   if (!cors || !cors.origins) return true;
   if (!origin) return true; // non-browser peers send no Origin header
-  if (typeof cors.origins === 'function') return Boolean(cors.origins(origin));
+  if (typeof cors.origins === 'function') return allowedBy(cors.origins(origin));
   return listed(cors.origins, origin);
 };
 

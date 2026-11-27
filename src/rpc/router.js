@@ -387,20 +387,26 @@ class Procedure {
   // opposite problems with opposite fixes (raise the queue vs. fix the
   // handler). Both `invoke` and `invokeBare` take this path, so the two
   // cannot drift apart.
-  async #acquire(context) {
+  async #acquire(context, deadline) {
     const otel = context.client?.otel;
     // Nothing listening: no clock reads, no counter traffic.
     const started = otel?.enabled ? Date.now() : 0;
     if (started > 0) otel.recordQueue(1);
+    // The deadline bounds the wait too: a call queued behind a hung handler
+    // used to wait for the slot whatever its timeout said, and only then
+    // learn it was late.
+    const waitMs = deadline > 0 ? Math.max(1, deadline - Date.now()) : 0;
+    let entered = false;
     try {
       // Abort-aware: a queued waiter whose caller cancelled or disconnected
       // leaves the queue instead of taking a slot later.
-      await this.semaphore.enter(context.signal ?? null);
+      entered = await this.semaphore.enter(context.signal ?? null, waitMs);
     } catch (error) {
       if (started > 0) otel.recordQueue(-1);
       throw new WrpcError(error.message, { code: 503, expose: true, cause: error });
     }
     if (started > 0) otel.recordQueue(-1, Date.now() - started);
+    if (!entered) throw new WrpcError('Procedure timeout', { code: 408, expose: true });
   }
 
   async invokeBare(context, args) {
@@ -408,7 +414,7 @@ class Procedure {
       throw new WrpcError('This procedure is a subscription: use {type:"subscribe"}', { code: 400, expose: true });
     }
     const deadline = this.timeout > 0 ? Date.now() + this.timeout : 0;
-    if (this.semaphore) await this.#acquire(context);
+    if (this.semaphore) await this.#acquire(context, deadline);
     let handlerStarted = false;
     try {
       if (deadline > 0 && Date.now() >= deadline) {
@@ -450,12 +456,14 @@ class Procedure {
     const cap = this.timeout > 0 ? this.timeout : 0;
     const limit = budget > 0 && (cap === 0 || budget < cap) ? budget : cap;
     const deadline = limit > 0 ? Date.now() + limit : 0;
-    if (this.semaphore) await this.#acquire(context);
-    if (deadline > 0 && Date.now() >= deadline) {
-      throw new WrpcError('Procedure timeout', { code: 408, expose: true });
-    }
+    if (this.semaphore) await this.#acquire(context, deadline);
     let handlerStarted = false;
     try {
+      // Inside the try: a slot taken just as the deadline passed is given
+      // back by the finally below — outside it, that slot was never freed.
+      if (deadline > 0 && Date.now() >= deadline) {
+        throw new WrpcError('Procedure timeout', { code: 408, expose: true });
+      }
       const inputValidator = compiled?.input ?? this.input;
       const outputValidator = compiled?.output ?? this.output;
       if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);

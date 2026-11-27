@@ -104,4 +104,24 @@ describe('client transports', () => {
       assert.ok(calls > 0, 'the injected fetch was never called');
     });
   }
+  // Both the socket's 'error' and 'close' route to one handler, which emitted
+  // what the socket gave it: an Event, never an Error, so a listener read no
+  // message and a log line no stack.
+  it('should emit an Error that carries the socket event when a ws open fails', async () => {
+    const net = require('node:net');
+    const port = await new Promise((resolve) => {
+      const probe = net.createServer().listen(0, '127.0.0.1', () => {
+        const { port: free } = probe.address();
+        probe.close(() => resolve(free));
+      });
+    });
+    const { ws: ClientWsTransport } = WrpcClient.transport;
+    const transport = new ClientWsTransport(`ws://127.0.0.1:${port}/api`);
+    const emitted = [];
+    transport.on('error', (error) => void emitted.push(error));
+    await assert.rejects(transport.open(), (error) => error instanceof Error && error.cause !== undefined);
+    assert.strictEqual(emitted.length, 1);
+    assert.ok(emitted[0] instanceof Error, 'the error listener got an Error');
+    assert.strictEqual(typeof emitted[0].cause?.type, 'string', 'with the socket event as its cause');
+  });
 });

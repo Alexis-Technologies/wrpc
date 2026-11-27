@@ -938,7 +938,10 @@ class RpcServer extends Emitter {
         this.#log.warn({ event: 'onConnect.stalled', peer: client.source, ms: ONCONNECT_STALL_MS });
       }, ONCONNECT_STALL_MS);
       if (typeof stall.unref === 'function') stall.unref();
-      void client.ready.then(() => clearTimeout(stall));
+      // Both ways: a session restore that failed rejects `ready` too — no
+      // stall to report then, and no unhandled rejection of this branch.
+      const unstall = () => clearTimeout(stall);
+      void client.ready.then(unstall, unstall);
     }
     // `on` and a flag, not `once`: a transport may say 'close' twice (an
     // HTTP answer, then its response's own close), and a once-listener
@@ -1770,7 +1773,7 @@ class RpcServer extends Emitter {
     // answer them 503.
     if (!this.#draining) {
       this.#draining = true;
-      this.emit('draining');
+      this.emit('draining').catch((error) => this.#log.error({ err: error, event: 'listener.draining' }));
     }
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -1784,8 +1787,8 @@ class RpcServer extends Emitter {
   async close() {
     // Announced first, while everything still works: a binding that pulls
     // work on its own (a broker consumer) stops fetching before its client
-    // is torn down under it.
-    this.emit('close');
+    // is torn down under it. Awaited last, below.
+    const closing = this.emit('close');
     if (this.#sse) this.#sse.close();
     for (const client of this.#clients) client.close();
     this.#clients.clear();
@@ -1799,6 +1802,11 @@ class RpcServer extends Emitter {
     // never closed here: its lifetime belongs to whoever created it.
     if (this.#backplane) this.#backplane.close();
     this.#rooms.clear();
+    // The listeners had the whole teardown to run; a shutdown that awaits
+    // close() ends once they are done — a broker binding's consumers
+    // stopped, not merely asked to. A listener that throws is a line, never
+    // a close that fails.
+    await closing.catch((error) => this.#log.error({ err: error, event: 'listener.close' }));
   }
 }
 

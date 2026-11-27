@@ -122,6 +122,7 @@ The first table is the request path and the engines; the ones after it are
 | `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
 | `ws.upgrade` | error | The node engine's upgrade handling threw (`err`) — a `verifyClient`, `handleProtocols` or deflate `filter` of the application, or a `'connection'` listener; the socket was answered `500`. Emitted as `'error'` on the `WebsocketServer` too, when something listens |
 | `cors.option` | warn | `options.cors` holds a `key` nothing reads (the allowlist is `origins`; a `cors.origin` key is a `TypeError`) — at construction, so a mistyped option does not leave the origin gate open in silence |
+| `ws.gate.async` | warn | A `verifyClient` gate answered with a promise. A gate answers `true` synchronously or the upgrade is refused (`403`, a `ws.refused` line each) — a promise is truthy, and an `async` gate used to admit every peer. Once per engine |
 | `ws.refused` | warn, debug | A WebSocket upgrade that was not accepted (`status`, the request `path` clipped to 128 characters; on the node engine the `reason` it was answered with). **warn** for `403` — the `verifyClient` gate, which under the shells is the [origin allowlist](./security#origin-on-the-upgrade); **debug** for the rest (a wrong path, a handshake no WebSocket client sends) |
 | `ws.heartbeat` | debug | The node engine terminated a connection that did not answer its protocol ping within `pingInterval` (`peer`) — the one end of a connection the peer's own Close never explains |
 | `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |
@@ -240,6 +241,7 @@ where it has one, the `queue`, `channel`, `topic` or `address`.
 | ------- | ----- | ----- |
 | `broker.ack`, `broker.retry`, `broker.release` | debug | What a delivery's outcome became (`queue`, `method`, `code`, `attempt`, `delay`) — the narration next to `broker.dead`, built only when a logger takes debug |
 | `broker.dispatch` | error | A procedure threw outside the call pipeline while a delivery was dispatched (`queue`, `method`, `id`); the delivery is settled by its code all the same |
+| `broker.stop`, `broker.rpc.stop` | error | Pausing a binding's consumers on `draining`, or stopping them on `close` (`phase`), failed — `attachConsumers` and `attachBrokerRpc` stop with the server, and the server's `close()` waits for them |
 | `broker.settle` | error | The broker refused the settlement of a delivery (`queue`); the message comes back by redelivery — a duplicate, not a loss |
 | `broker.attach` | error | A delivery's client could not be attached (`queue`) — a session store that threw; the delivery is retried, then dead-lettered |
 | `broker.onDeadLetter` | error | The `onDeadLetter` hook threw |
@@ -295,7 +297,7 @@ one — and bound to the remote `peer`.
 | `close` | error | The HTTP server's `close()` reported an error. (The client logs `close` at info: the connection ended) |
 | `hook.error` | warn | An observational router hook — `onResponse`, `onError`, `onDisconnect` and the like — threw (`phase`, `err`): reported and contained, what it observed is unaffected |
 | `onConnect.stalled` | warn | An `onConnect` hook has not settled within the stall window (`peer`, `ms`): the client's calls are waiting on it |
-| `listener.close`, `listener.attach`, `listener.detach` | error | An application listener of a client's `close`, or of a peer host's `attach`/`detach`, threw |
+| `listener.close`, `listener.draining`, `listener.attach`, `listener.detach` | error | An application listener of a client's `close`, of the server's `close`/`draining`, or of a peer host's `attach`/`detach`, threw. The server's `close()` still resolves — it awaits its `close` listeners, and one that fails is this line |
 | `emitter.listeners` | warn | `MaxListenersExceededWarning`: one event of a server, a client, a connection or a peer has more listeners than its `maxListeners` — usually a leak, never a throw. Without a `logger` option it goes to `console.warn`; a peer host and a peer, whose `logger` is `false` unless given, stay silent |
 
 ### Client events
@@ -338,7 +340,7 @@ An error the client has no caller to hand to is **escalated**: logged at
 | `stream.capacity`, `stream.buffer` | Not an `'error'`: the client's own debug lines when it refuses a stream its server announced past `maxStreams` (`429`), or fails one past `maxStreamBuffer` (`413`) — the server's rows of the same names, for the other direction |
 | `subscription.error` | A subscription ended with an error and had no `onError` to tell |
 | `subscription.listener` | A subscription's own `onEnd`/release callback threw |
-| `listener.open`, `listener.close`, `listener.drain`, `listener.reconnecting`, `listener.reconnect-failed`, `listener.heartbeat-timeout`, `listener.authenticate-failed`, `listener.refresh-failed`, `listener.restore-failed`, `listener.transport-fallback` | A listener of yours for that client event threw |
+| `listener.error`, `listener.open`, `listener.close`, `listener.drain`, `listener.reconnecting`, `listener.reconnect-failed`, `listener.heartbeat-timeout`, `listener.authenticate-failed`, `listener.refresh-failed`, `listener.restore-failed`, `listener.transport-fallback` | A listener of yours for that client event threw |
 | `client.error` | An escalated error with no more specific origin |
 
 ### Why some refusals are `debug`

@@ -168,4 +168,18 @@ describe('stream lifecycle', () => {
     assert.strictEqual(await client.api.files.held({}), 0);
     assert.deepStrictEqual(warnings(), []);
   });
+  // A subscription parked on backpressure waited for 'drain' or 'close' and
+  // nothing else: an unsubscribe could not wake it, so its generator's
+  // `finally` waited on the peer.
+  it('should let a signal end the wait for drain', async () => {
+    const transport = new FakeTransport();
+    const client = new Client(transport, { log: null });
+    const controller = new AbortController();
+    const waiting = client.drain(controller.signal);
+    controller.abort();
+    await waiting;
+    assert.strictEqual(transport.listenerCount('drain'), 0);
+    assert.strictEqual(transport.listenerCount('close'), 0);
+    await client.drain(controller.signal);
+  });
 });

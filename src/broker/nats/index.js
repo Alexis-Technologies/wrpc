@@ -37,6 +37,7 @@ const {
   attemptOf,
   producerHeaders,
   reporter,
+  stopOnAbort,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -582,11 +583,12 @@ const createNatsBroker = (options = {}) => {
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
+      unlisten?.[Symbol.dispose]();
       consumers.delete(stop);
       await halt({ leases: true });
     };
     consumers.add(stop);
-    if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
+    const unlisten = stopOnAbort(signal, stop);
     return {
       stop,
       pause: async () => {

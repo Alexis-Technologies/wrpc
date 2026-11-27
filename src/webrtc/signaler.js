@@ -158,7 +158,9 @@ class WrpcSignaler extends Emitter {
         if (typeof payload !== 'object' || payload === null) return;
         return this.#onReplaced(payload);
       },
-      reconnect: () => void this.#reset(),
+      // Nobody awaits a reconnect's re-join: what a listener of 'reset' or
+      // 'error' threw went unhandled. It is told to 'error' instead.
+      reconnect: () => void this.#reset().catch((error) => this.#tell(error)),
     };
     api.on('signal', this.#listeners.signal);
     api.on('join', this.#listeners.join);
@@ -319,6 +321,13 @@ class WrpcSignaler extends Emitter {
     // close() may have run while the calls above were in flight.
     if (this.#closed || this.#replaced) return;
     await this.emit('reset', { id: this.#id, previous, rooms });
+  }
+
+  // A failure nobody awaits, for the 'error' listeners when there are any.
+  // One of them that throws as well has nowhere left to go.
+  #tell(error) {
+    if (this.listenerCount('error') === 0) return;
+    this.emit('error', error).catch(() => {});
   }
 
   // A newer connection identified as this peer id: this incarnation is

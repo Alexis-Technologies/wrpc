@@ -390,16 +390,53 @@ describe('router', () => {
           return 'done';
         },
       });
-      const first = proc.invoke({}, {});
-      const second = proc.invoke({}, {});
-      await assert.rejects(first, (error) => error.code === 408);
-      // the second call must NOT start before the first handler settles
-      await assert.rejects(second, (error) => error.code === 408);
-      await delay(200);
+      const started = Date.now();
+      // The second call must NOT start before the first handler settles: it
+      // waits in the queue, and its own deadline ends that wait — a 408 at
+      // ~30 ms, not after the 80 ms the first handler holds the slot.
+      const outcomes = await Promise.allSettled([proc.invoke({}, {}), proc.invoke({}, {})]);
+      assert.deepStrictEqual(
+        outcomes.map((outcome) => outcome.reason?.code),
+        [408, 408],
+      );
+      assert.ok(Date.now() - started < 75, 'the queued call waited for the slot past its deadline');
+      await delay(120);
       assert.strictEqual(maxActive, 1);
       assert.strictEqual(active, 0);
-      // slots released after settlement: a fresh call on the same procedure works
-      assert.strictEqual(await procedure({ queue: { concurrency: 1 }, handler: async () => 3 }).invoke({}, {}), 3);
+      // The slot came back: the SAME procedure takes a call again. A slot
+      // taken as the deadline passed used to be kept for good.
+      const quick = procedure({ timeout: 30, queue: { concurrency: 1, size: 2 }, handler: async () => 3 });
+      assert.strictEqual(await quick.invoke({}, {}), 3);
+      assert.strictEqual(await proc.invoke({}, {}).catch((error) => error.code), 408);
+      assert.strictEqual(active, 1, 'the third call took the freed slot and is running');
+    });
+
+    // The deadline check after the wait threw outside the try that frees the
+    // slot: once per queued call that got its slot as the deadline passed,
+    // the procedure lost one for good, and at `concurrency` of them it
+    // answered only 503s.
+    it('should leave the queue at the deadline instead of taking a slot it can no longer use', async () => {
+      const gate = deferred();
+      const proc = procedure({
+        timeout: 40,
+        queue: { concurrency: 1, size: 4 },
+        handler: (context, args) => (args.hold ? gate.promise : 'ok'),
+      });
+      const settled = Promise.allSettled([proc.invoke({}, { hold: true }), proc.invoke({}, {})]);
+      // The slot frees only after the queued call's deadline has passed: the
+      // holder answered 408 at 40 ms, its handler keeps the slot until 60.
+      await delay(60);
+      gate.resolve('held');
+      const outcomes = await settled;
+      assert.deepStrictEqual(
+        outcomes.map((outcome) => outcome.reason?.code),
+        [408, 408],
+      );
+      await delay(0);
+      // It left the queue at its deadline and never took the slot: the slot
+      // is free afterwards, for every later call.
+      assert.strictEqual(await proc.invoke({}, {}), 'ok');
+      assert.strictEqual(await proc.invoke({}, {}), 'ok');
     });
 
     it('should release the slot on a validation failure with a queue', async () => {

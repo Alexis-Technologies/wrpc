@@ -325,6 +325,10 @@ const handleRpc = async (client, packet, router) => {
         code = error.code === 'ETIMEOUT' ? 408 : 500;
         if (typeof error.code === 'number') code = error.code;
         status = code === 408 ? 'timeout' : 'error';
+        // A deadline that passed answers the caller, but the handler is still
+        // running: its ctx.signal is what tells it to stop. Released below,
+        // the call is out of client.calls, so no later disconnect could.
+        if (code === 408) controller.abort(error);
         client.otel.recordError(handle, error, code);
         if (code === 408 && hooks.onTimeout.length > 0) {
           await runHooksSafe(hooks.onTimeout, context, error, client.log, 'onTimeout');

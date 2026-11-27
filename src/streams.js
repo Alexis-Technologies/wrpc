@@ -44,6 +44,18 @@ const shown = (name) => {
   return (text.length > 64 ? `${text.slice(0, 64)}…` : text).replace(/\p{Cc}|\u2028|\u2029/gu, ' ');
 };
 
+const noop = () => {};
+
+// What a stream announces to whoever watches it ('end', 'close', 'drain'): a
+// listener that throws is told to the stream's 'error' listeners when there
+// are any — a stream has no logger — and never fails the stream it watched,
+// nor becomes an unhandled rejection of it.
+const announce = (stream, name) => {
+  stream.emit(name).catch((error) => {
+    if (stream.listenerCount('error') > 0) stream.emit('error', error).catch(noop);
+  });
+};
+
 class WrpcReadable extends Emitter {
   #consuming = false;
   // What waits for the reader, read from `#head`: the chunks before it were
@@ -164,7 +176,7 @@ class WrpcReadable extends Emitter {
       const needDrain = !writable.write(chunk);
       if (needDrain && !writable.closed) await writable.waitEvent('drain');
     }
-    this.emit('end');
+    announce(this, 'end');
     writable.end();
     await writable.waitEvent('close');
     await this.close();
@@ -182,7 +194,8 @@ class WrpcReadable extends Emitter {
         writable.destroy?.(error);
         if (this.listenerCount('error') === 0) return;
       }
-      return this.emit('error', error);
+      // An 'error' listener that throws has nowhere left to go.
+      return this.emit('error', error).catch(noop);
     });
     return writable;
   }
@@ -262,7 +275,7 @@ class WrpcReadable extends Emitter {
     this.emit(PUSH_EVENT, null);
     this.emit(PULL_EVENT);
     // For whoever counts streams: it is over, `status` and `error` say how.
-    this.emit('close');
+    announce(this, 'close');
   }
 
   async read() {
@@ -441,14 +454,14 @@ class WrpcWritable extends Emitter {
     if (!this.#ended) this.otel?.recordStream('send', 'lost');
     this.#registry?.delete(this.id);
     this.#releaseDrain();
-    this.emit('close');
+    announce(this, 'close');
   }
 
   #releaseDrain() {
     if (!this.#waitingDrain) return;
     this.#waitingDrain = false;
     this.#detach();
-    this.emit('drain');
+    announce(this, 'drain');
   }
 
   // The transport outlives its streams — a client's for every reconnect —

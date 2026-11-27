@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('node:events');
 const { createLoggerWriter } = require('../logging.js');
-const { negotiateProtocol } = require('../websocket/upgrade.js');
+const { gateVerdict, negotiateProtocol } = require('../websocket/upgrade.js');
 
 const { MAX_BODY_SIZE, statusLine, eachHeader } = require('./common.js');
 const { ConfigError } = require('../errors.js');
@@ -106,7 +106,9 @@ class UwsSocket extends EventEmitter {
       // listener, and this is a connection dying from a limit the operator
       // configured — exactly the thing they need to see to raise it.
       this.log?.error({ err: error, event: 'uws.dropped', bytes: this.bufferedAmount });
-      this.emit('error', error);
+      // A node EventEmitter throws an 'error' nobody listens for, and the
+      // terminate() below would never run.
+      if (this.listenerCount('error') > 0) this.emit('error', error);
       this.terminate();
       return false;
     }
@@ -184,6 +186,14 @@ const createUwsEngine = (engineOptions = {}) => {
   let stoppedListening = false;
   let closed = false;
   let attached = false;
+  let saidAsyncGate = false;
+
+  // What the node engine says once for the same gate (`ws.gate.async`).
+  const sayAsyncGate = () => {
+    if (saidAsyncGate) return;
+    saidAsyncGate = true;
+    log.warn({ event: 'ws.gate.async' }, 'verifyClient returned a promise: it must answer true synchronously');
+  };
 
   const behavior = (attachOptions) => {
     const { verifyClient, protocols, handleProtocols } = attachOptions;
@@ -232,8 +242,10 @@ const createUwsEngine = (engineOptions = {}) => {
           });
         };
         if (closed) return void reject(503);
-        if (verifyClient && !verifyClient({ req: request, socket: null, head: null })) {
-          return void reject(403);
+        if (verifyClient) {
+          const verdict = gateVerdict(verifyClient, { req: request, socket: null, head: null });
+          if (verdict === 'async') sayAsyncGate();
+          if (verdict !== 'admit') return void reject(403);
         }
         const protocol = negotiateProtocol(offeredProtocols, { protocols, handleProtocols }, request);
         if (protocol === false) return void reject(400);

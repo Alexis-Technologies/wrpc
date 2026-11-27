@@ -27,7 +27,14 @@ const { resolveGenerateId } = require('../utils.js');
 const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
 const { toText, toHeaders, reasonText } = require('./ids.js');
 const { crashDelay } = require('./retry.js');
-const { ATTEMPT_HEADER, DEAD_REASON_HEADER, DEFAULT_PREFETCH, checkConsume, producerHeaders } = require('./adapter.js');
+const {
+  ATTEMPT_HEADER,
+  DEAD_REASON_HEADER,
+  DEFAULT_PREFETCH,
+  checkConsume,
+  producerHeaders,
+  stopOnAbort,
+} = require('./adapter.js');
 // The ready messages of a queue: appended by a produce or a retry, taken from
 // the head by `#pump`, and put back AT the head by a release or by a consumer
 // that stopped — which is why the head index that is enough for a topic's
@@ -279,6 +286,7 @@ class MemoryBroker {
     const stop = () => {
       if (!consumer.active) return Promise.resolve();
       consumer.active = false;
+      unlisten?.[Symbol.dispose]();
       const index = state.consumers.indexOf(consumer);
       if (index >= 0) state.consumers.splice(index, 1);
       // Unsettled work goes back to the FRONT, in its original order, and
@@ -295,7 +303,7 @@ class MemoryBroker {
       this.#pump(state);
       return Promise.resolve();
     };
-    signal?.addEventListener('abort', () => void stop(), { once: true });
+    const unlisten = stopOnAbort(signal, stop);
     queueMicrotask(() => this.#pump(state));
     const broker = this;
     return Promise.resolve({

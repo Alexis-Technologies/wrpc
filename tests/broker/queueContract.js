@@ -21,6 +21,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
+const { getEventListeners } = require('node:events');
 
 const { isBrokerQueue } = require('../../src/broker/port.js');
 const { unique, waitFor } = require('./support.js');
@@ -86,6 +87,22 @@ const runQueueContract = (title, harness, options = {}) =>
         't1',
         'the rest of the headers travel',
       );
+    });
+
+    // A signal that outlives its consumers — one per process — used to keep
+    // the abort listener of every consumer stopped some other way.
+    it('should take its abort listener off the signal once stopped, and stop when it aborts', options, async (t) => {
+      const { queue } = await open(t);
+      const name = await queueFor('q-signal');
+      const controller = new AbortController();
+      const stopped = await queue.consume(name, (delivery) => delivery.ack(), { signal: controller.signal });
+      assert.strictEqual(getEventListeners(controller.signal, 'abort').length, 1);
+      await stopped.stop();
+      assert.strictEqual(getEventListeners(controller.signal, 'abort').length, 0, 'the stopped consumer left it');
+      const aborted = await queue.consume(name, (delivery) => delivery.ack(), { signal: controller.signal });
+      t.after(() => aborted.stop());
+      controller.abort();
+      assert.strictEqual(getEventListeners(controller.signal, 'abort').length, 0);
     });
 
     it('should retain a message produced before any consumer and deliver it once', options, async (t) => {

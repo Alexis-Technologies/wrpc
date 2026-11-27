@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 
 const ws = require('#ws');
 const { Connection, Frame, FrameParser } = ws;
-const { OPCODES, CLOSE_TIMEOUT, CLOSE_CODES } = ws;
+const { OPCODES, CLOSE_CODES } = ws;
 const { MockSocket } = require('./mockSocket.js');
 
 // --- Write coalescing -----------------------------------------------------
@@ -89,18 +89,37 @@ describe('Connection', () => {
     });
   });
 
-  it('should end the socket after CLOSE_TIMEOUT once sendClose is called', () => {
+  it('should end the socket after closeTimeout, and destroy it 200 ms later when it is still open', async () => {
     const sock = new MockSocket();
+    // A peer that never hangs up: end() leaves the socket half-open.
+    sock.end = () => void (sock.ended = true);
     const conn = new Connection(sock, Buffer.alloc(0), { closeTimeout: 100 });
 
     conn.sendClose(1000, 'bye');
 
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        assert.strictEqual(sock.destroyed, true);
-        resolve();
-      }, CLOSE_TIMEOUT + 100);
-    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.strictEqual(sock.ended, true);
+    assert.strictEqual(sock.destroyed, false);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.strictEqual(sock.destroyed, true);
+  });
+
+  // The 200 ms grace after end() was an anonymous timer: a socket that closed
+  // or was terminated in between still had it pending, holding the process.
+  it('should drop the destroy grace once the socket closed or was terminated', async () => {
+    const closed = new MockSocket();
+    new Connection(closed, Buffer.alloc(0), { closeTimeout: 50 }).sendClose(1000, 'bye');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.strictEqual(closed.ended, true);
+    assert.strictEqual(closed.destroyed, false, 'a socket that closed on its own is not destroyed again');
+
+    const halfOpen = new MockSocket();
+    halfOpen.end = () => void (halfOpen.ended = true);
+    const conn = new Connection(halfOpen, Buffer.alloc(0), { closeTimeout: 50 });
+    conn.sendClose(1000, 'bye');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    conn.terminate();
+    assert.strictEqual(halfOpen.destroyed, true);
   });
 
   it('should hang up immediately when answering a peer close (RFC 6455 5.5.1)', () => {

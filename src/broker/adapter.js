@@ -16,6 +16,8 @@
 // Node-only, like everything under src/broker/. Not in src/wire.js: that one
 // is bundled for the browser, on a byte budget.
 
+const { addAbortListener } = require('node:events');
+
 const { generateUUID } = require('../runtime/node.js');
 const { resolveGenerateId } = require('../utils.js');
 const { crashDelay, positiveInteger } = require('./retry.js');
@@ -87,6 +89,12 @@ const sleep = (ms) =>
     const timer = setTimeout(resolve, ms);
     if (typeof timer.unref === 'function') timer.unref();
   });
+
+// A consumer the caller's signal stops: the listener is the consumer's to
+// take off, which its `stop()` does with the returned disposer — a signal
+// that outlives the consumer (one per process) used to keep a closure over
+// every consumer stopped some other way. `null` without a signal.
+const stopOnAbort = (signal, stop) => (signal ? addAbortListener(signal, () => void stop()) : null);
 
 // An adapter's error line: the event it is, the error, what locates it.
 const reporter =
@@ -214,6 +222,7 @@ module.exports = {
   SETTLE_ATTEMPTS,
   SETTLE_BACKOFF,
   sleep,
+  stopOnAbort,
   reporter,
   TEXT_HEADER,
   DEFAULT_PREFETCH,

@@ -32,6 +32,23 @@ const timeoutOf = (name, value) => {
 // How many cancelled calls a client remembers the ids of (see #cancel).
 const MAX_CANCELLED = 1024;
 
+// The wait between two attempts of a retried call: over at `ms`, or the
+// moment the caller's signal aborts — it used to sleep the whole backoff
+// first. Not unref'd: a call is awaited across it, and on a request
+// transport nothing else holds the loop, so a script exited mid-retry.
+const pause = (ms, signal) => {
+  let wake = null;
+  const woken = new Promise((resolve) => {
+    wake = resolve;
+  });
+  const timer = setTimeout(wake, ms);
+  signal?.addEventListener('abort', wake, { once: true });
+  return woken.then(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', wake);
+  });
+};
+
 // The Emitter's own methods, for the one place that must not read them off a
 // unit (see #handleEvent).
 const UNIT = Emitter.prototype;
@@ -880,7 +897,13 @@ class WrpcClient extends Emitter {
     // A logger observes; a listener handles. Both run — the log line is not
     // a fallback for a missing listener.
     this.#log.error({ err: error, event });
-    if (this.listenerCount('error') > 0) return void this.emit('error', error);
+    if (this.listenerCount('error') > 0) {
+      // The application's listener is an observer too: one that throws or
+      // rejects is a line, not an unhandled rejection of the client's.
+      return void this.emit('error', error).catch((thrown) =>
+        this.#log.error({ err: thrown, event: 'listener.error' }),
+      );
+    }
     globalThis.console?.error?.(error);
   }
 
@@ -2213,7 +2236,8 @@ class WrpcClient extends Emitter {
         if (!WrpcClient.connections.has(this)) throw error; // closed for good
         const delay = backoffDelay({ ...this.#retry, attempt, random: this.#random });
         attempt++;
-        await new Promise((resolve) => unref(setTimeout(resolve, delay)));
+        await pause(delay, signal);
+        if (signal?.aborted) throw error;
       }
     }
   }

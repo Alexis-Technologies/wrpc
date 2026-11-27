@@ -327,8 +327,10 @@ class ClientSseTransport extends ClientTransport {
       [CHANNEL_HEADER]: this.#channel,
     };
     const doFetch = this.#fetch;
+    // The event stream's controller: close() aborts the POSTs in flight too.
+    const signal = this.#controller?.signal;
     const post = async () => {
-      const response = await doFetch(this.url, { method: 'POST', headers, body: data });
+      const response = await doFetch(this.url, { method: 'POST', headers, body: data, signal });
       // 202 is the expected answer: everything a call produces comes back
       // on the event stream, not in this response.
       if (response.status === 202) {
@@ -345,11 +347,15 @@ class ClientSseTransport extends ClientTransport {
       // A refused POST answers nothing on the event stream, so the exact
       // calls this request carried settle now instead of waiting out
       // callTimeout — same contract as the plain HTTP transport.
-      this.emit('error', new Error(`SSE post failed with ${response.status}: ${text}`));
+      const failed = new Error(`SSE post failed with ${response.status}: ${text}`);
+      if (this.listenerCount('error') > 0) this.emit('error', failed);
       this.failPackets(data, response.status);
     };
     post().catch((error) => {
-      this.emit('error', error);
+      // Aborted by close(): the client settled these calls already.
+      if (signal?.aborted) return;
+      // An 'error' nobody listens for throws; this one is told, not fatal.
+      if (this.listenerCount('error') > 0) this.emit('error', error);
       // A sealed POST refused in plaintext: the sealing layer's closed set
       // of statuses (400, 409, 426) reaches the calls, a 409 from it never
       // closes the channel (that branch above is the plain transport's

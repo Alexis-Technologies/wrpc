@@ -176,7 +176,7 @@ const runSubscription = async (
       if (stats) stats.values++;
       if (flushed === false) {
         client.otel.recordBackpressure(client.transportKind);
-        await client.drain();
+        await client.drain(signal);
       }
       if (signal.aborted) break;
     }

@@ -37,6 +37,10 @@ class Server extends Emitter {
   #options;
   #log;
   #address = null;
+  // The EADDRINUSE retry waiting for its turn: `{ timer, reject }` of the
+  // listen() it belongs to, so a close() in between cancels it instead of
+  // letting it bind a server that was shut down.
+  #retry = null;
 
   constructor(options = {}) {
     super({ warn: emitterWarning(options.logger) });
@@ -203,6 +207,7 @@ class Server extends Emitter {
 
     return new Promise((resolve, reject) => {
       const attempt = () => {
+        this.#retry = null;
         this.#bindOnce(host, port).then(
           (address) => {
             this.#address = address;
@@ -214,7 +219,11 @@ class Server extends Emitter {
             count--;
             if (count === 0) return void reject(error);
             this.#log.warn({ event: 'listen.retry', host, port }, `Address in use: ${host}:${port}, retry...`);
-            setTimeout(attempt, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
+            const timer = setTimeout(attempt, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
+            this.#retry = {
+              timer,
+              reject: () => reject(new Error('Server closed before it could listen', { cause: error })),
+            };
           },
         );
       };
@@ -231,6 +240,11 @@ class Server extends Emitter {
    */
   async close(options = {}) {
     const { drain = 0 } = options;
+    if (this.#retry !== null) {
+      clearTimeout(this.#retry.timer);
+      this.#retry.reject();
+      this.#retry = null;
+    }
     if (!this.httpServer) {
       // Intake first, same ordering as the node boot below: a standalone
       // engine that can close its listen socket separately refuses new

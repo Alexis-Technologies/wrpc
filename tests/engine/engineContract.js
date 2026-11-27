@@ -19,6 +19,7 @@ const http = require('node:http');
 
 const { ProtocolClient } = require('../websocket/protocolClient.js');
 const { waitFor } = require('../helpers/wait.js');
+const { recorder } = require('../helpers/recorder.js');
 
 // Hosted engines attach to a node http server the suite owns.
 const hostedHarness = (createEngine) => ({
@@ -215,6 +216,36 @@ const runEngineContract = (harness) => {
       timeoutMs: 600,
     });
     assert.strictEqual(parseInt(res.statusLine.split(' ')[1], 10), 403);
+  });
+
+  // A promise is truthy: an `async` gate used to admit every peer, whatever
+  // it resolved to. Only `true` admits, and the engine says why once.
+  it('should refuse the upgrade when verifyClient answers with a promise or a non-true value', async (t) => {
+    const log = recorder();
+    const answers = [async () => true, () => 'yes', () => 1];
+    for (let i = 0; i < answers.length; i++) {
+      const { port } = await boot(t, { verifyClient: answers[i], logger: log.writer });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const res = await ProtocolClient.attemptHandshake({
+          host: '127.0.0.1',
+          port,
+          path: '/',
+          headers: {
+            Upgrade: 'websocket',
+            Connection: 'Upgrade',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Key': Buffer.from('0123456789abcdef').toString('base64'),
+          },
+          timeoutMs: 600,
+        });
+        assert.strictEqual(parseInt(res.statusLine.split(' ')[1], 10), 403, `answer ${i}, attempt ${attempt}`);
+      }
+    }
+    assert.strictEqual(
+      log.all('ws.gate.async').length,
+      1,
+      'one ws.gate.async line for the async gate, none for the others',
+    );
   });
 
   it('should echo the selected protocol on subprotocol negotiation', async (t) => {

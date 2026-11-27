@@ -39,6 +39,7 @@ const {
   attemptOf,
   producerHeaders,
   reporter,
+  stopOnAbort,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -387,7 +388,7 @@ const createRedisBroker = (options = {}) => {
     const stream = queueKey(name);
     await ensureGroup(name, group);
     const connection = spawn();
-    const state = { running: true, paused: false, inflight: 0, healthy: true, timer: null };
+    const state = { running: true, paused: false, inflight: 0, healthy: true, timer: null, sweeping: false };
     // What this consumer is holding right now: XAUTOCLAIM would otherwise
     // claim its own in-flight entries back and deliver them twice.
     const held = new Set();
@@ -518,7 +519,10 @@ const createRedisBroker = (options = {}) => {
 
     // Delayed retries and whatever a dead consumer still holds.
     const sweep = async () => {
-      if (!state.running || state.paused || closed) return;
+      // One at a time: the interval can be 50 ms and a sweep is many round
+      // trips — overlapping ones promoted and claimed the same entries.
+      if (!state.running || state.paused || closed || state.sweeping) return;
+      state.sweeping = true;
       try {
         // What an earlier sweep took off the set but could not put on the
         // stream, and could not put back either: tried again before
@@ -537,6 +541,8 @@ const createRedisBroker = (options = {}) => {
         }
       } catch (error) {
         if (!closed) report('broker.redis.sweep', error, { queue: name });
+      } finally {
+        state.sweeping = false;
       }
     };
 
@@ -596,6 +602,7 @@ const createRedisBroker = (options = {}) => {
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
+      unlisten?.[Symbol.dispose]();
       stops.delete(stop);
       clearInterval(state.timer);
       if (owned.delete(connection)) await quit(connection, { force: true });
@@ -603,7 +610,7 @@ const createRedisBroker = (options = {}) => {
       // another consumer claims it through XAUTOCLAIM.
     };
     stops.add(stop);
-    if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
+    const unlisten = stopOnAbort(signal, stop);
     return {
       stop,
       pause: async () => {
@@ -738,13 +745,19 @@ const createRedisBroker = (options = {}) => {
       if (isFunction(client.zremrangebyscore)) await client.zremrangebyscore(members, '-inf', `${at - inboxTtl}`);
     };
     await lease();
+    // A renewal still in flight is not overlapped by the next tick.
+    let renewing = false;
     const beat = setInterval(
       () => {
+        if (renewing) return;
+        renewing = true;
         lease().then(
           () => {
+            renewing = false;
             leased = true;
           },
           (error) => {
+            renewing = false;
             leased = false;
             report('broker.redis.presence', error, { address });
           },

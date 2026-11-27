@@ -25,7 +25,7 @@ const hasToken = (value, token) => !!value && value.toLowerCase().includes(token
 // echoes it back, which is what stamps the wire with a version both sides
 // can rely on. A peer that offers nothing gets no subprotocol and speaks
 // 1.0 — additive, nothing breaks. Re-exported below, as it always was.
-const { getPathname, negotiateProtocol } = require('./upgrade.js');
+const { getPathname, gateVerdict, negotiateProtocol } = require('./upgrade.js');
 const { ConfigError } = require('../errors.js');
 
 const writeResponse = (socket, headerLines) => {
@@ -60,6 +60,7 @@ class WebsocketServer extends EventEmitter {
   #heartbeats = new Map(); // { awaiting: boolean }
   #pingTimer;
   #closed = false;
+  #saidAsyncGate = false;
 
   // `server` is optional: without it nothing is bound and upgrades are
   // driven manually through handleUpgrade(req, socket, head) — that is how
@@ -133,6 +134,14 @@ class WebsocketServer extends EventEmitter {
     if (status === 403) this.#log.warn(entry);
     else this.#log.debug(entry);
     abort(socket, status, reason, options);
+  }
+
+  // Once per server: every upgrade is refused while the gate stays async, and
+  // a line per refusal is already `ws.refused`.
+  #sayAsyncGate() {
+    if (this.#saidAsyncGate) return;
+    this.#saidAsyncGate = true;
+    this.#log.warn({ event: 'ws.gate.async' }, 'verifyClient returned a promise: it must answer true synchronously');
   }
 
   #startHeartbeat() {
@@ -214,8 +223,9 @@ class WebsocketServer extends EventEmitter {
       return void this.#refuse(req, socket, 404, 'Not Found');
     }
     if (verifyClient) {
-      const accepted = verifyClient({ req, socket, head });
-      if (!accepted) return void this.#refuse(req, socket, 403, 'Forbidden');
+      const verdict = gateVerdict(verifyClient, { req, socket, head });
+      if (verdict === 'async') this.#sayAsyncGate();
+      if (verdict !== 'admit') return void this.#refuse(req, socket, 403, 'Forbidden');
     }
     // Enforce HTTP/1.1 per RFC 6455
     if (req.httpVersion !== '1.1') {

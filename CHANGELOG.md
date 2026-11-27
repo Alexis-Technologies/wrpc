@@ -57,6 +57,12 @@ narrower promise — see
   `send()` that threw — are a `TransportError` in place of an `Error`,
   with `ALX_ERR_CHANNEL_SEND` and `ALX_ERR_CHANNEL_DESYNC` where they said
   `send` and `desync`.
+- **A `verifyClient` gate admits with `true` and nothing else**, on the node
+  engine and on uWebSockets.js. A promise is truthy, so an `async` gate
+  admitted every peer whatever it resolved to; it is refused (`403`) and
+  said once as `ws.gate.async`. A gate that answered a truthy non-boolean
+  — a token string, `1` — is refused as well, as its `=> boolean` type
+  always said.
 
 ### Upgrading from 2.2
 
@@ -77,6 +83,10 @@ narrower promise — see
   `code`, which is unchanged.
 - `EncryptionRefusedError` reads `statusCode`; `status` still holds the
   same number until 3.0.
+- A `verifyClient` that awaits something (a session store, a lookup) moves
+  that work into `onConnect` or the HTTP layer in front, and answers
+  `true` synchronously; one that answered a truthy value answers
+  `Boolean(value)`.
 
 ### Added
 
@@ -134,6 +144,14 @@ narrower promise — see
   "Unknown error" for a code named `toString`, and `brokerFeed` refuses
   `decode: 'toString'` with a `ConfigError` instead of decoding with
   `Object.prototype.toString`.
+- **`RpcServer.close()` resolves once its `close` listeners have settled**,
+  so a shutdown ends with the broker bindings' consumers stopped, not merely
+  asked to. A listener that throws is a `listener.close` line, never a
+  `close()` that fails.
+- **An `Emitter` emit with several listeners settles once all of them
+  have**, a failure included: it rejected at the first one while the rest
+  still ran. `listeners()` answers a copy.
+
 ### Fixed
 
 - **`logger: false` silences the Emitter's listener warning**, which
@@ -147,6 +165,41 @@ narrower promise — see
   `ConfigError` naming `undefined`), and assertion `keys` (accepted, then
   every verify failed on the first key load). A list of holes only is still
   refused.
+- **A `cors.origins` function that answers with a promise allows no
+  origin.** `Boolean(promise)` allowed every one, on the HTTP path and on
+  the upgrade gate.
+- **A procedure's timeout aborts its handler's `ctx.signal`.** The 408
+  answered the caller while the handler ran on, and once the call left the
+  connection's books no disconnect could stop it either.
+- **A queued call leaves the queue at its deadline** with a 408, instead of
+  waiting for a slot it could no longer use — and a call that got its slot
+  as its deadline passed gives the slot back: it kept it for good, and at
+  `concurrency` of them the procedure answered only 503s.
+- **An `'error'` is thrown again once its last listener is removed.** The
+  emptied event stayed registered, and every later `'error'` resolved
+  unseen.
+- **The ws client transport emits an `Error`** when it fails to open, with
+  the socket's event as its `cause`, where it emitted the bare `Event`.
+- **A broker consumer takes its abort listener off the caller's signal**
+  when stopped another way (`queue.consume(…, { signal })` on every
+  adapter): a signal that outlived its consumers kept every one of them.
+- **Observers no longer fail what they watch**: a throwing listener of a
+  client's `'error'`, of the server's `close`/`draining`, of a stream's
+  `end`/`close`/`drain`, of a signaler's `reset`, and a failing broker
+  pause/stop on draining, are a line (`listener.error`, `listener.draining`,
+  `broker.stop`, `broker.rpc.stop`) or the stream's `'error'`, never an
+  unhandled rejection.
+- **`close()` during an `EADDRINUSE` retry cancels it**: the next attempt
+  bound the server that had been shut down. `listen()` rejects instead.
+- **The Redis queue's sweeps and the direct listener's lease renewals run
+  one at a time**, where a 50 ms interval let a slow sweep overlap the
+  next.
+- **A closing ws connection's 200 ms destroy grace has an owner**:
+  `terminate()` and the socket's `close` clear it.
+- **A closed HTTP or SSE client aborts its packet POSTs in flight**; a
+  retried call's backoff ends when its signal aborts, and its timer holds
+  the process while the call is awaited; a subscription parked on
+  backpressure is woken by its unsubscribe.
 
 ### Documentation
 

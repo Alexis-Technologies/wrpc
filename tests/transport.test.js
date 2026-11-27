@@ -431,4 +431,17 @@ describe('buildHeaders: the cors and HSTS options', () => {
       'https://app.example.com',
     );
   });
+
+  // A promise is truthy: Boolean(promise) used to allow every origin to an
+  // `async` check, on the HTTP path and on the upgrade gate alike.
+  it('should refuse an origin a cors.origins function answers with a promise', async () => {
+    const { isOriginAllowed } = require('../src/transport.js');
+    assert.strictEqual(isOriginAllowed({ origins: async () => true }, 'https://app.example.com'), false);
+    const rejected = { origins: () => Promise.reject(new Error('lookup failed')) };
+    assert.strictEqual(isOriginAllowed(rejected, 'https://app.example.com'), false);
+    assert.strictEqual(buildHeaders(rejected, 'https://app.example.com')['Access-Control-Allow-Origin'], undefined);
+    assert.strictEqual(isOriginAllowed({ origins: () => true }, 'https://app.example.com'), true);
+    // The rejection is kept from going unhandled: a turn passes without one.
+    await new Promise((resolve) => setImmediate(resolve));
+  });
 });

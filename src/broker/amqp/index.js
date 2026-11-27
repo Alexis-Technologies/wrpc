@@ -42,6 +42,7 @@ const {
   SETTLE_BACKOFF,
   sleep,
   reporter,
+  stopOnAbort,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -870,11 +871,12 @@ const createAmqpBroker = (options = {}) => {
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
+      unlisten?.[Symbol.dispose]();
       await cancel();
       // Closing the channel returns whatever was unacked to the queue.
       if (state.channel !== null) await closeChannel(state.channel);
     };
-    if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
+    const unlisten = stopOnAbort(signal, stop);
     return {
       stop,
       // basic.cancel keeps the channel, so the messages this consumer holds

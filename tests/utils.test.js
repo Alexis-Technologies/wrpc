@@ -222,6 +222,20 @@ describe('Emitter', () => {
     await assert.rejects(emitter.emit('boom'), /async boom/);
   });
 
+  it('should settle emit only once every listener has, even after one failed', async () => {
+    const emitter = new Emitter();
+    let finished = false;
+    emitter.on('close', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      finished = true;
+    });
+    emitter.on('close', () => {
+      throw new Error('first to fail');
+    });
+    await assert.rejects(emitter.emit('close'), /first to fail/);
+    assert.strictEqual(finished, true, 'the emit rejected while a listener still worked');
+  });
+
   it('should resolve emit to undefined whatever a listener returns', async () => {
     const emitter = new Emitter();
     emitter.on('value', () => 42);
@@ -273,6 +287,45 @@ describe('Emitter', () => {
     await assert.rejects(emitter.emit('boom'), /once boom/);
     await emitter.emit('boom');
     assert.strictEqual(calls, 1);
+  });
+
+  // off() spliced the last listener out but left the record, and emit read
+  // the empty one as "somebody listens": every later 'error' resolved.
+  it('should throw for an error event again once its last listener is removed', () => {
+    const emitter = new Emitter();
+    const listener = () => {};
+    emitter.on('error', listener);
+    emitter.off('error', listener);
+    assert.deepStrictEqual(emitter.eventNames(), []);
+    assert.throws(
+      () => emitter.emit('error', new Error('lost')),
+      (error) => error.cause?.message === 'lost',
+    );
+  });
+
+  it('should answer listeners with a copy the caller cannot change the registrations through', async () => {
+    const emitter = new Emitter();
+    let calls = 0;
+    emitter.on('data', () => calls++);
+    emitter.listeners('data').length = 0;
+    await emitter.emit('data');
+    assert.strictEqual(calls, 1);
+  });
+
+  it('should keep a listener added while an emit swept the event it emptied', async () => {
+    const emitter = new Emitter();
+    const seen = [];
+    const late = () => seen.push('late');
+    const first = () => {
+      emitter.off('tick', second);
+      emitter.on('tick', late);
+    };
+    const second = () => seen.push('second');
+    emitter.once('tick', first);
+    emitter.on('tick', second);
+    await emitter.emit('tick');
+    await emitter.emit('tick');
+    assert.deepStrictEqual(seen, ['second', 'late']);
   });
 
   it('should not throw for an error event with a listener', async () => {
@@ -331,6 +384,42 @@ describe('Semaphore', () => {
     semaphore.leave();
     // the timed-out waiter must not have been left in the queue
     await semaphore.enter();
+    semaphore.leave();
+  });
+
+  it('should resolve true with a slot, and false when the waiter outlives its deadline', async () => {
+    const semaphore = new Semaphore({ concurrency: 1, size: 1 });
+    assert.strictEqual(await semaphore.enter(null, 20), true);
+    assert.strictEqual(await semaphore.enter(null, 20), false);
+    semaphore.leave();
+    // The waiter that left took no slot: the one freed is still there.
+    assert.strictEqual(await semaphore.enter(null, 20), true);
+    semaphore.leave();
+  });
+
+  it('should take whichever of its own timeout and the deadline comes first', async () => {
+    const semaphore = new Semaphore({ concurrency: 1, size: 1, timeout: 10 });
+    await semaphore.enter();
+    await assert.rejects(semaphore.enter(null, 200), /Semaphore timeout/);
+    assert.strictEqual(await new Semaphore({ concurrency: 0, size: 1, timeout: 200 }).enter(null, 10), false);
+    semaphore.leave();
+  });
+
+  // evict() cleared the timer but kept the abort listener on the caller's
+  // signal: only leave() took it off.
+  it('should take its abort listener off the signal when a waiter leaves by its deadline', async () => {
+    const semaphore = new Semaphore({ concurrency: 1, size: 1 });
+    await semaphore.enter();
+    const controller = new AbortController();
+    let added = 0;
+    let removed = 0;
+    const { signal } = controller;
+    const add = signal.addEventListener.bind(signal);
+    const remove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = (...args) => void (added++, add(...args));
+    signal.removeEventListener = (...args) => void (removed++, remove(...args));
+    assert.strictEqual(await semaphore.enter(signal, 10), false);
+    assert.deepStrictEqual([added, removed], [1, 1]);
     semaphore.leave();
   });
 

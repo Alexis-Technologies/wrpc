@@ -231,7 +231,10 @@ class PeerHost extends Emitter {
         this.#log.warn({ event: 'onConnect.stalled', peer, ms: ONCONNECT_STALL_MS });
       }, ONCONNECT_STALL_MS);
       if (typeof stall.unref === 'function') stall.unref();
-      void client.ready.then(() => clearTimeout(stall));
+      // Both ways: a session restore that failed rejects `ready` too — no
+      // stall to report then, and no unhandled rejection of this branch.
+      const unstall = () => clearTimeout(stall);
+      void client.ready.then(unstall, unstall);
     }
     transport.on('packet', (text) => dispatchMessage(client, text, this.#router, this.#limits));
     transport.on('chunk', (bytes) => dispatchBinary(client, bytes, this.#router, this.#limits));

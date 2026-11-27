@@ -354,7 +354,9 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   }
 
   const onDraining = () => {
-    for (let i = 0; i < handles.length; i++) void handles[i].pause();
+    for (let i = 0; i < handles.length; i++) {
+      handles[i].pause().catch((error) => log.error({ err: error, event: 'broker.stop', phase: 'draining' }));
+    }
   };
   let stopped = false;
   const stop = async () => {
@@ -364,7 +366,9 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     rpc.off('close', onClose);
     await eachHandle(handles, 'stop');
   };
-  const onClose = () => void stop();
+  // Returned, not voided: RpcServer.close() awaits its 'close' listeners, so
+  // a shutdown ends once the consumers have stopped.
+  const onClose = () => stop().catch((error) => log.error({ err: error, event: 'broker.stop', phase: 'close' }));
   rpc.on('draining', onDraining);
   rpc.on('close', onClose);
   return {

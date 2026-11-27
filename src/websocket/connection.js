@@ -955,9 +955,9 @@ class Connection extends EventEmitter {
     }
     this.#closeTimer = setTimeout(() => {
       this.#socket.end();
-      setTimeout(() => {
-        this.#socket.destroy();
-      }, 200);
+      // The same field owns the grace after end(): terminate() and the
+      // socket's 'close' clear it, where an anonymous timer outlived both.
+      this.#closeTimer = setTimeout(() => this.#socket.destroy(), 200);
     }, this.#closeTimeout);
   }
 
@@ -1028,9 +1028,9 @@ class Connection extends EventEmitter {
         this.#flushClose();
       }
       this.#socket.end();
-      setTimeout(() => {
-        this.#socket.destroy();
-      }, 200);
+      // The same field owns the grace after end(): terminate() and the
+      // socket's 'close' clear it, where an anonymous timer outlived both.
+      this.#closeTimer = setTimeout(() => this.#socket.destroy(), 200);
     }, this.#closeTimeout);
   }
 

@@ -4,8 +4,9 @@ const { generateUUID } = require('./runtime/node.js');
 const { ConfigError } = require('./errors.js');
 
 // Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
-// to become a rejection: `void emitter.emit('close')` is the house style, and a
-// throw escaping it would land in a socket handler. The async-arrow wrapper on
+// to become a rejection: a throw escaping emit() would land in a socket
+// handler. `void emitter.emit('close')` is for events whose listeners are
+// wRPC's own; one the application listens to gets a `.catch` (src/CLAUDE.md). The async-arrow wrapper on
 // the slow path buys exactly that, at one closure and one promise per listener
 // per emit. The overwhelmingly common shape is a single sync listener — a
 // transport's 'message', a stream's chunk push — so it is spelled out by hand:
@@ -15,6 +16,20 @@ const RESOLVED = Promise.resolve();
 const consoleWarn = (message) => void globalThis.console.warn(message);
 
 const invoke = async (listener, value) => listener(value);
+
+const toUndefined = () => undefined;
+
+// An emit with several listeners settles once EVERY listener has. Promise.all
+// rejected at the first failure and left the rest running, so an
+// `await emit('close')` returned while listeners still worked; the rest are
+// waited for on that path only — when none fails, Promise.all already waits
+// for all (bench/emitter.js: the success rows unchanged).
+const settled = (promises) =>
+  Promise.all(promises).then(toUndefined, (error) =>
+    Promise.allSettled(promises).then(() => {
+      throw error;
+    }),
+  );
 
 class Emitter {
   #events = new Map();
@@ -39,8 +54,8 @@ class Emitter {
       throw new Error('Unhandled error', { cause: value });
     }
     const on = event.on;
-    // Gated on once.size because the sweep below may delete the whole record,
-    // and off() splices without deleting, so an emptied `on` is reachable too.
+    // Gated on once.size because the sweep below may delete the whole record;
+    // an empty `on` is still answered, for a record emptied mid-emit.
     if (event.once.size === 0 && on.length < 2) {
       if (on.length === 0) return RESOLVED;
       let result = undefined;
@@ -57,7 +72,9 @@ class Emitter {
     // Each slot of the snapshot then takes its listener's promise.
     const promises = on.slice();
     for (let i = 0; i < promises.length; i++) promises[i] = invoke(promises[i], value);
-    if (event.once.size > 0) {
+    // Only the record this emit read: a listener that removed the last of
+    // them and added a new one meanwhile made a record the sweep must keep.
+    if (event.once.size > 0 && this.#events.get(eventName) === event) {
       const len = event.on.length;
       // Preallocate + index cursor + truncate in place of a filter, measured
       // by bench/emitter.js (the lone once listener row).
@@ -75,7 +92,7 @@ class Emitter {
         this.#events.set(eventName, { on: remaining, once: new Set() });
       }
     }
-    return Promise.all(promises).then(() => undefined);
+    return settled(promises);
   }
 
   #addListener(eventName, listener, once) {
@@ -117,6 +134,10 @@ class Emitter {
     const index = event.on.indexOf(listener);
     if (index > -1) event.on.splice(index, 1);
     event.once.delete(listener);
+    // An emptied record goes: emit() reads a missing one as nobody
+    // listening, which for 'error' is a throw. An emptied one that stayed
+    // made the last listener's removal swallow every later 'error'.
+    if (event.on.length === 0) this.#events.delete(eventName);
   }
 
   clear(eventName) {
@@ -127,7 +148,9 @@ class Emitter {
   listeners(eventName) {
     if (!eventName) throw new Error('Expected eventName');
     const event = this.#events.get(eventName);
-    return event ? event.on : [];
+    // A copy: the live array is what emit() walks, and a caller's splice
+    // would remove a listener behind off()'s back.
+    return event ? event.on.slice() : [];
   }
 
   listenerCount(eventName) {
@@ -310,32 +333,48 @@ class Semaphore {
   }
 
   // `signal` (optional) makes a queued waiter abortable: a caller that gave
-  // up — cancelled, disconnected, timed out — leaves the queue immediately
-  // instead of taking a slot later and doing work nobody will read.
-  enter(signal = null) {
+  // up — cancelled, disconnected — leaves the queue immediately instead of
+  // taking a slot later and doing work nobody will read. `waitMs` (optional)
+  // is the caller's own deadline: past it the waiter leaves the queue and the
+  // promise resolves `false` — an outcome, not a failure, so the caller
+  // answers it in its own words (the router's 408). Resolves `true` with a
+  // slot taken.
+  enter(signal = null, waitMs = 0) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
         return void reject(new Error('Semaphore entry aborted'));
       }
       if (this.#counter > 0) {
         this.#counter--;
-        return void resolve();
+        return void resolve(true);
       }
       if (this.#queue.length >= this.#size) {
         return void reject(new Error('Semaphore queue is full'));
       }
       const waiter = { resolve, reject, timer: null, release: null };
-      const evict = (error) => {
+      const evict = () => {
         const index = this.#queue.indexOf(waiter);
         if (index > -1) this.#queue.splice(index, 1);
         if (waiter.timer) clearTimeout(waiter.timer);
-        reject(error);
+        waiter.release?.();
       };
-      if (this.#timeout > 0) {
-        waiter.timer = setTimeout(() => evict(new Error('Semaphore timeout')), this.#timeout);
+      const isOwnFirst = this.#timeout > 0 && (waitMs <= 0 || this.#timeout < waitMs);
+      if (isOwnFirst) {
+        waiter.timer = setTimeout(() => {
+          evict();
+          reject(new Error('Semaphore timeout'));
+        }, this.#timeout);
+      } else if (waitMs > 0) {
+        waiter.timer = setTimeout(() => {
+          evict();
+          resolve(false);
+        }, waitMs);
       }
       if (signal) {
-        const onAbort = () => evict(new Error('Semaphore entry aborted'));
+        const onAbort = () => {
+          evict();
+          reject(new Error('Semaphore entry aborted'));
+        };
         signal.addEventListener('abort', onAbort, { once: true });
         waiter.release = () => signal.removeEventListener('abort', onAbort);
       }
@@ -351,7 +390,7 @@ class Semaphore {
     }
     if (waiter.timer) clearTimeout(waiter.timer);
     waiter.release?.();
-    waiter.resolve();
+    waiter.resolve(true);
   }
 }
 

@@ -84,13 +84,17 @@ class ClientWsTransport extends ClientTransport {
       // classified synchronously on the way in, in order with the packets.
       socket.binaryType = 'arraybuffer';
       this.#socket = socket;
-      const onClose = (error) => {
+      const onClose = (event) => {
         // Scoped to the socket it was registered for. Both 'close' and
         // 'error' route here, and terminate() abandons a socket while it is
         // still alive — its later close must not clear the #socket of the
         // replacement a reconnect has already installed.
         if (this.#socket !== socket) return;
         this.#socket = null;
+        // What arrives is the socket's Event or CloseEvent, never an Error:
+        // an 'error' listener and a rejected ready() get an Error that
+        // carries it as its cause.
+        const error = new Error('WebSocket connection closed', { cause: event });
         // A handshake still running is over with the socket: its ready()
         // rejects now, not at the handshake timeout.
         this.#secure?.cancel(error);
@@ -99,11 +103,11 @@ class ClientWsTransport extends ClientTransport {
         if (this.#opening) {
           this.#opening = null;
           this.emit('error', error);
-          return void reject(new Error('Connection closed'));
+          return void reject(new Error('Connection closed', { cause: event }));
         }
         if (!this.active) return;
         this.active = false;
-        this.emit('close', error);
+        this.emit('close', event);
       };
       const established = () => {
         // First on the wire, before the core's own open handler sends
@@ -269,6 +273,9 @@ class ClientHttpTransport extends ClientTransport {
   // (keep-alive, proxy, an undici-cache-interceptor store) without wrpc
   // ever depending on undici.
   fetch = globalThis.fetch;
+  // What close() aborts: the packet POSTs still in flight, which used to
+  // outlive it — a closed client's request still running to its timeout.
+  #closing = null;
 
   async open(options = {}) {
     this.headers = options.headers ?? null;
@@ -299,12 +306,15 @@ class ClientHttpTransport extends ClientTransport {
     this.meta = this.metaBag ? metaHeaders(this.metaBag, this.prefixed) : null;
     if (this.active) return;
     this.active = true;
+    this.#closing = new AbortController();
     this.emit('open');
   }
 
   close() {
     if (!this.active) return;
     this.active = false;
+    this.#closing?.abort();
+    this.#closing = null;
     this.emit('close');
   }
 
@@ -374,7 +384,8 @@ class ClientHttpTransport extends ClientTransport {
     // A client that reads frames says so; one that opted out, or speaks a
     // packet codec, is answered in text as before.
     if (this.attachments !== false && !this.codec) headers.Accept = ACCEPT_FRAMES;
-    const options = { method: 'POST', headers, body: data };
+    const closing = this.#closing;
+    const options = { method: 'POST', headers, body: data, signal: closing?.signal };
     const doFetch = this.fetch;
     const send = async () => {
       try {
@@ -409,7 +420,10 @@ class ClientHttpTransport extends ClientTransport {
         // SSE transport's outbound half fails the same way (see failPackets).
         this.failPackets(data, res.status);
       } catch (error) {
-        this.emit('error', error);
+        // Aborted by close(): the client settled these calls already.
+        if (closing?.signal.aborted) return;
+        // An 'error' nobody listens for throws; this one is told, not fatal.
+        if (this.listenerCount('error') > 0) this.emit('error', error);
         // A sealed request the server refused in plaintext names its status
         // only for the closed set the sealing layer vouches for (400, 409,
         // 426 — a retired key, a clock, a required mode); the outer status
