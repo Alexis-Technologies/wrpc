@@ -989,6 +989,41 @@ describe('the CHANGELOG', () => {
 });
 
 describe('the source', () => {
+  // js-conventions: a module exports its names in the order it declares them.
+  // 94 of 152 export lists were not, read against a file laid out
+  // requires -> constants -> functions -> classes; this keeps them so.
+  it('should list module.exports in the order the module declares the names', () => {
+    const { readdirSync } = require('node:fs');
+    const out = [];
+    for (const name of readdirSync(path.join(ROOT, 'src'), { recursive: true })) {
+      if (!name.endsWith('.js')) continue;
+      const file = `src/${name.split(path.sep).join('/')}`;
+      const text = read(file);
+      const block = /^module\.exports = \{([^}]*)\};$/m.exec(text);
+      if (!block || block[1].includes('...')) continue;
+      const names = [...block[1].matchAll(/(?:^|,)\s*(?:[\w$]+:\s*)?([\w$]+)\s*(?=,|$)/g)].map((match) => match[1]);
+      const lines = text.split('\n');
+      const lineOf = (exported) => {
+        const declares = new RegExp(
+          `^(?:const|let|class|function\\*?) ${exported}\\b|^const \\{[^}]*\\b${exported}\\b[^}]*\\} = require`,
+        );
+        let at = lines.findIndex((line) => declares.test(line));
+        // A destructured require that spans lines: the line that closes it.
+        const closesRequire = (line, i) => line.trim() === `${exported},` && /^\} = require/.test(lines[i + 1] ?? '');
+        if (at === -1) at = lines.findIndex(closesRequire);
+        return at;
+      };
+      let last = -1;
+      for (const exported of names) {
+        const at = lineOf(exported);
+        if (at === -1) continue;
+        if (at < last) out.push(`${file}: ${exported}`);
+        last = Math.max(last, at);
+      }
+    }
+    assert.deepStrictEqual(out, []);
+  });
+
   // src/ has unicorn's prefer-node-protocol; the rest of the lint targets have
   // no unicorn plugin (its other rules would fail the suites), so this holds
   // them: three test helpers required 'events', 'net' and 'crypto' bare.
