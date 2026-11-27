@@ -50,6 +50,15 @@ const DEFAULT_MAX_FETCH = 1_000;
 // counter window only remembers what this process heard.
 const DEFAULT_MAX_SKEW = 30_000;
 
+// What an envelope's `t` may be. The metric that counts envelopes is labelled
+// with it, and the value is whatever was published to the channel: anything
+// outside this set is one `<unknown>` series, not a series of its own.
+const ENVELOPE_TYPES = new Set(['hello', 'state', 'digest', 'sync', 'delta', 'bye', 'e', 'q', 'a', 'cmd']);
+// Refusal keys remembered for rate-limiting their lines at once (#loud).
+const MAX_REFUSED_KEYS = 1024;
+// Refusals in a row for a sender's clock before it is called 'degraded'.
+const STALE_RUN = 3;
+
 // The rooms an app opts into replicating: an array, a predicate or a
 // RegExp. Null replicates everything — fine for topic rooms, expensive for
 // the per-user `user:<id>` pattern, where presence pays O(nodes x rooms)
@@ -111,15 +120,6 @@ const instanceOfClientId = (id) => {
   const dot = id.indexOf('.');
   return dot > 0 ? id.slice(0, dot) : null;
 };
-
-// What an envelope's `t` may be. The metric that counts envelopes is labelled
-// with it, and the value is whatever was published to the channel: anything
-// outside this set is one `<unknown>` series, not a series of its own.
-const ENVELOPE_TYPES = new Set(['hello', 'state', 'digest', 'sync', 'delta', 'bye', 'e', 'q', 'a', 'cmd']);
-// Refusal keys remembered for rate-limiting their lines at once (#loud).
-const MAX_REFUSED_KEYS = 1024;
-// Refusals in a row for a sender's clock before it is called 'degraded'.
-const STALE_RUN = 3;
 
 class Cluster extends Emitter {
   #backplane;
@@ -1168,4 +1168,4 @@ class Cluster extends Emitter {
   }
 }
 
-module.exports = { Cluster, instanceOfClientId, CLUSTER_CHANNEL, INSTANCE_CHANNEL_PREFIX };
+module.exports = { CLUSTER_CHANNEL, INSTANCE_CHANNEL_PREFIX, instanceOfClientId, Cluster };

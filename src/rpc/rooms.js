@@ -27,9 +27,28 @@ const ENVELOPE_VERSION = 1;
 const DEFAULT_ASK_TIMEOUT = 7_000;
 const EMPTY_ASK = { answers: [], errors: [], expected: 0, incomplete: false };
 
-const roomChannel = (room) => ROOM_CHANNEL_PREFIX + room;
-
 const EMPTY = new Set();
+
+// Binds a room registry to an injected backplane.
+//
+// Channel scheme (the socket.io Redis-adapter shape): a broadcast, or an emit
+// targeting more than one room, goes to the single `broadcast` channel every
+// instance subscribes to; a single-room emit goes to that room's own channel,
+// which only instances holding members of it subscribe to. Either way an
+// envelope reaches a given instance through exactly ONE channel, so no
+// receiver-side deduplication is needed.
+// How long an emptied room's channel stays subscribed (ms): the grace
+// window that absorbs reconnect churn. 0 disables (`rooms: { linger: 0 }`).
+const DEFAULT_LINGER = 5_000;
+// Channels whose publish counters are kept per generation (see #seq).
+const DEFAULT_MAX_TRACKED = 16384;
+// The publishers a channel remembers the sequence of: one per instance that
+// ever published to it, so a long-lived room met a new one with every
+// deploy and forgot none. Past this many the oldest is let go — a publisher
+// it meets again starts over, its first gap unseen.
+const MAX_PEERS = 1024;
+
+const roomChannel = (room) => ROOM_CHANNEL_PREFIX + room;
 
 const checkRoom = (room) => {
   if (typeof room !== 'string' || room.length === 0) {
@@ -429,25 +448,6 @@ class Broadcast {
   }
 }
 
-// Binds a room registry to an injected backplane.
-//
-// Channel scheme (the socket.io Redis-adapter shape): a broadcast, or an emit
-// targeting more than one room, goes to the single `broadcast` channel every
-// instance subscribes to; a single-room emit goes to that room's own channel,
-// which only instances holding members of it subscribe to. Either way an
-// envelope reaches a given instance through exactly ONE channel, so no
-// receiver-side deduplication is needed.
-// How long an emptied room's channel stays subscribed (ms): the grace
-// window that absorbs reconnect churn. 0 disables (`rooms: { linger: 0 }`).
-const DEFAULT_LINGER = 5_000;
-// Channels whose publish counters are kept per generation (see #seq).
-const DEFAULT_MAX_TRACKED = 16384;
-// The publishers a channel remembers the sequence of: one per instance that
-// ever published to it, so a long-lived room met a new one with every
-// deploy and forgot none. Past this many the oldest is let go — a publisher
-// it meets again starts over, its first gap unseen.
-const MAX_PEERS = 1024;
-
 class RoomsBackplane {
   #backplane;
   #instance;
@@ -821,11 +821,4 @@ class RoomsBackplane {
   }
 }
 
-module.exports = {
-  RoomRegistry,
-  Broadcast,
-  RoomsBackplane,
-  roomChannel,
-  BROADCAST_CHANNEL,
-  ENVELOPE_VERSION,
-};
+module.exports = { BROADCAST_CHANNEL, ENVELOPE_VERSION, roomChannel, RoomRegistry, Broadcast, RoomsBackplane };

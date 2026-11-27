@@ -6,13 +6,13 @@ const { chunkDecode } = require('../chunks.js');
 const { negotiate } = require('../compression/index.js');
 const { hasBytes, isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 const { FRAME_MARK } = require('../wire.js');
-
-const EMPTY_OPTIONS = Object.freeze({});
 const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
 const { publicErrorMessage, publicErrorDetails, wireError, clip, lineLevels } = require('./errors.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 const { WrpcError, ClosedError } = require('../errors.js');
+
+const EMPTY_OPTIONS = Object.freeze({});
 
 const DEFAULT_VERSION = '*';
 
@@ -35,6 +35,31 @@ const MAX_TIMEOUT = 2 ** 31;
 // is a label, deliberately outside the `validation` option (see
 // docs/guide/metadata.md).
 const PROTO_KEY = '__proto__';
+
+// The level of a line about something a PEER did, and can do in a loop: a
+// method that does not exist, a call without the session it needs, a frame
+// that is no packet, a deadline of its own choosing that passed. The first
+// of a kind on a server is a warning — a stale client, a typo and a scanner
+// all start like that, and somebody reading the log should see it — and
+// for ten seconds after it the same kind is said at debug (lineLevels): each used to
+// be a warn (or an error with a stack) for every packet, so a peer wrote
+// the log at the speed it could send. Per host and per kind, not per
+// connection: on HTTP every request is a connection of its own. The kinds
+// are this file's own names — a closed set — so the table cannot grow.
+const spoken = new WeakMap();
+
+// What unresolved method/event names become in metric series and span
+// names. The raw string is peer-controlled: a scanner spraying random
+// method names used to mint a new time series per guess.
+const UNKNOWN_TARGET = '<unknown>';
+
+// A packet id is the caller's correlation token, echoed back as it came: a
+// string of at most 255 characters — what every generateId of this package
+// answers, and all a chunk header has room for — or a number, which a 1.0
+// client whose own generateId counted sent and was answered on. Anything
+// else used to be echoed too: an array nested 10 000 deep threw out of the
+// answer's JSON.stringify, synchronously, where nothing caught it.
+const MAX_PACKET_ID = 255;
 
 // A conservative UPPER bound on the serialized size of a flat bag: every
 // string character worst-cased at 6 encoded bytes (\uXXXX), numbers at
@@ -86,29 +111,12 @@ const sanitizeMeta = (value, limit) => {
   if (Object.hasOwn(value, PROTO_KEY)) delete value[PROTO_KEY];
   return Object.freeze(value);
 };
-
-// The level of a line about something a PEER did, and can do in a loop: a
-// method that does not exist, a call without the session it needs, a frame
-// that is no packet, a deadline of its own choosing that passed. The first
-// of a kind on a server is a warning — a stale client, a typo and a scanner
-// all start like that, and somebody reading the log should see it — and
-// for ten seconds after it the same kind is said at debug (lineLevels): each used to
-// be a warn (or an error with a stack) for every packet, so a peer wrote
-// the log at the speed it could send. Per host and per kind, not per
-// connection: on HTTP every request is a connection of its own. The kinds
-// are this file's own names — a closed set — so the table cannot grow.
-const spoken = new WeakMap();
 const levelFor = (client, kind) => {
   const host = client.server ?? client;
   let levels = spoken.get(host);
   if (levels === undefined) spoken.set(host, (levels = lineLevels()));
   return levels(kind);
 };
-
-// What unresolved method/event names become in metric series and span
-// names. The raw string is peer-controlled: a scanner spraying random
-// method names used to mint a new time series per guess.
-const UNKNOWN_TARGET = '<unknown>';
 
 const isError = (value) => value?.constructor?.name?.includes('Error') || false;
 
@@ -775,14 +783,6 @@ const negotiatePing = (client, enc, options) => {
   client.compression = active;
   client.send(active === null ? { type: 'pong' } : { type: 'pong', enc: active.id });
 };
-
-// A packet id is the caller's correlation token, echoed back as it came: a
-// string of at most 255 characters — what every generateId of this package
-// answers, and all a chunk header has room for — or a number, which a 1.0
-// client whose own generateId counted sent and was answered on. Anything
-// else used to be echoed too: an array nested 10 000 deep threw out of the
-// answer's JSON.stringify, synchronously, where nothing caught it.
-const MAX_PACKET_ID = 255;
 const isPacketId = (id) =>
   typeof id === 'string' ? id.length !== 0 && id.length <= MAX_PACKET_ID : typeof id === 'number' && id !== 0;
 
@@ -931,25 +931,25 @@ const dispatchBinary = (client, bytes, router, options) =>
   void handleBinary(client, bytes, router, options).catch(contain(client, 'CHUNK'));
 
 module.exports = {
-  levelFor,
-  sanitizeMeta,
+  CANCELLED,
+  DEFAULT_MAX_BATCH,
   UNKNOWN_TARGET,
+  sanitizeMeta,
+  levelFor,
+  isError,
+  split,
+  parseParams,
+  parseTarget,
   handleRpc,
-  handleStream,
-  handleBinary,
-  dispatchMessage,
-  dispatchBinary,
-  handleEvent,
+  handleCancel,
   handleSubscribe,
   handleUnsubscribe,
-  handleCancel,
+  handleStream,
+  handleBinary,
+  handleEvent,
   handlePacket,
   handleMessage,
   handleParsed,
-  isError,
-  split,
-  parseTarget,
-  parseParams,
-  DEFAULT_MAX_BATCH,
-  CANCELLED,
+  dispatchMessage,
+  dispatchBinary,
 };

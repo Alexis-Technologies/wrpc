@@ -772,14 +772,14 @@ class Client extends Emitter {
 }
 
 module.exports = {
-  Context,
-  Client,
-  DEFAULT_MAX_SUBSCRIPTIONS,
-  DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
   DEFAULT_MAX_STREAM_BUFFER,
   DEFAULT_STREAM_IDLE_TIMEOUT,
+  DEFAULT_MAX_SUBSCRIPTIONS,
+  DEFAULT_MAX_CALLS,
   FROZEN_EMPTY,
   EMPTY_META,
   buildMeta,
+  Context,
+  Client,
 };

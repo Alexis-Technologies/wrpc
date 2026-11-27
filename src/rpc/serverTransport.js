@@ -12,6 +12,27 @@ const { Emitter } = require('../utils.js');
 const { wireError } = require('./errors.js');
 const { hasBytes, encodeAttachments } = require('../attachments.js');
 
+// The shape of a transport a host can attach by itself — persistent
+// (`connection` set) and announcing inbound traffic as 'packet' (text) and
+// 'chunk' (bytes) events. What PeerHost.attach and RpcServer.attach both
+// check; structural, so a transport need not extend ServerTransport.
+// What a Client calls on its transport — write/send/error and close — and
+// what the core listens on: on/once/off. Checked whole, so a transport
+// missing send() or error() is refused at attach, not at the first packet
+// that needed it.
+const hasTransportShape = (transport) =>
+  typeof transport === 'object' &&
+  transport !== null &&
+  typeof transport.write === 'function' &&
+  typeof transport.send === 'function' &&
+  typeof transport.error === 'function' &&
+  typeof transport.close === 'function' &&
+  typeof transport.on === 'function' &&
+  typeof transport.once === 'function' &&
+  typeof transport.off === 'function';
+
+const isInboundTransport = (transport) => hasTransportShape(transport) && Boolean(transport.connection);
+
 class ServerTransport extends Emitter {
   // Which wire this is, for log entries and metric attributes. Subclasses
   // override it; the base value covers a transport nobody labelled.
@@ -76,25 +97,4 @@ class ServerTransport extends Emitter {
   }
 }
 
-// The shape of a transport a host can attach by itself — persistent
-// (`connection` set) and announcing inbound traffic as 'packet' (text) and
-// 'chunk' (bytes) events. What PeerHost.attach and RpcServer.attach both
-// check; structural, so a transport need not extend ServerTransport.
-// What a Client calls on its transport — write/send/error and close — and
-// what the core listens on: on/once/off. Checked whole, so a transport
-// missing send() or error() is refused at attach, not at the first packet
-// that needed it.
-const hasTransportShape = (transport) =>
-  typeof transport === 'object' &&
-  transport !== null &&
-  typeof transport.write === 'function' &&
-  typeof transport.send === 'function' &&
-  typeof transport.error === 'function' &&
-  typeof transport.close === 'function' &&
-  typeof transport.on === 'function' &&
-  typeof transport.once === 'function' &&
-  typeof transport.off === 'function';
-
-const isInboundTransport = (transport) => hasTransportShape(transport) && Boolean(transport.connection);
-
-module.exports = { ServerTransport, hasTransportShape, isInboundTransport };
+module.exports = { hasTransportShape, isInboundTransport, ServerTransport };

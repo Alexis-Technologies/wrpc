@@ -171,4 +171,4 @@ const buildDictionary = (router, { limit = MAX_DICTIONARY } = {}) => {
   return bytes.length > limit ? bytes.subarray(bytes.length - limit) : bytes;
 };
 
-module.exports = { buildDictionary, MAX_DICTIONARY };
+module.exports = { MAX_DICTIONARY, buildDictionary };

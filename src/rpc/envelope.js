@@ -49,6 +49,18 @@ const BINARY_PREFIX = 'wrpc-bin:';
 const FLAG_COMPRESSED = 1;
 const FLAG_BINARY = 2;
 
+/**
+ * `{ encode(text, channel), decode(message, channel) }`, or null when
+ * neither option is on. `layer` separates the keys of the two users
+ * ('rooms', 'cluster'); `event` prefixes the log events ('backplane',
+ * 'cluster').
+ */
+// A refusal is said at warn once per kind and channel in this long, debug in
+// between: whoever can publish one envelope can publish it in a loop, and a
+// line per message made the log the thing that fell over. Capped, as the
+// channels are many.
+const MAX_REFUSAL_KEYS = 1024;
+
 const isSealedEnvelope = (message) => typeof message === 'string' && message.startsWith(SEALED_PREFIX);
 
 const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -84,18 +96,6 @@ const withBytes = (inner) => ({
     return isEncodedEnvelope(message) ? null : message;
   },
 });
-
-/**
- * `{ encode(text, channel), decode(message, channel) }`, or null when
- * neither option is on. `layer` separates the keys of the two users
- * ('rooms', 'cluster'); `event` prefixes the log events ('backplane',
- * 'cluster').
- */
-// A refusal is said at warn once per kind and channel in this long, debug in
-// between: whoever can publish one envelope can publish it in a loop, and a
-// line per message made the log the thing that fell over. Capped, as the
-// channels are many.
-const MAX_REFUSAL_KEYS = 1024;
 
 const createEnvelope = ({ compression, encryption, maxMessage, name, layer, event, log, failed = null }) => {
   const level = lineLevels(LOUD_INTERVAL, MAX_REFUSAL_KEYS);
@@ -204,4 +204,4 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
   };
 };
 
-module.exports = { createEnvelope, isSealedEnvelope, SEALED_PREFIX, BINARY_PREFIX };
+module.exports = { SEALED_PREFIX, BINARY_PREFIX, isSealedEnvelope, createEnvelope };

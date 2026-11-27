@@ -6,6 +6,44 @@ const { parseCookies } = require('../transport.js');
 const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
 const { ConfigError, ArgumentError } = require('../errors.js');
 
+const DEFAULT_MAX_SESSIONS = 10000;
+const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24h
+
+// Reference implementation of the structural SessionStore contract:
+// { get(token) -> data | null, set(token, data), delete(token) } — all async.
+// Anything matching the shape (a Redis wrapper, a DB table) plugs in via
+// the `sessions.store` option, per the zero-dependency injection rule.
+//
+// Sessions outlive their connection (that is what makes reconnect work),
+// so this store is bounded on both axes: entries expire after `ttl` and
+// the least-recently-used one is evicted past `maxSessions`. Production
+// deployments should inject a real store instead.
+// The options a save passes to store.set(): the row's creation, then
+// updates that must find it there.
+const CREATE = Object.freeze({ create: true });
+const UPDATE = Object.freeze({ create: false });
+
+const DEFAULT_COOKIE = {
+  name: 'token',
+  path: '/',
+  httpOnly: true,
+  secure: true,
+  sameSite: 'Lax',
+  maxAge: null, // session cookie by default
+};
+
+// RFC 6265 grammar, enforced because the token can come from an injected
+// `generateToken` and the attributes from user config: a `;` or a control
+// character in either would let a value smuggle extra cookie attributes (or
+// a second cookie) into the Set-Cookie line.
+const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/; // RFC 2616 token
+// cookie-octet: %x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E
+const COOKIE_VALUE = /^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*$/;
+// path-value: printable ASCII minus ';' (0x3B) — spelled as positive ranges
+// so no control character ever matches.
+const COOKIE_PATH = /^[\x20-\x3A\x3C-\x7E]*$/;
+const SAME_SITE = new Set(['Strict', 'Lax', 'None']);
+
 // TokenTransport — where the session token lives on the wire, injected like
 // a codec or a logger and checked structurally:
 //   read(request) -> string | null            the token this request presents
@@ -70,6 +108,32 @@ const createProxy = (data, save) =>
     },
   });
 
+const buildCookie = (name, value, options) => {
+  if (!COOKIE_NAME.test(name)) {
+    throw new ArgumentError(`buildCookie: invalid cookie name`);
+  }
+  if (typeof value !== 'string' || !COOKIE_VALUE.test(value)) {
+    throw new ArgumentError('buildCookie: the value contains characters RFC 6265 forbids in a cookie');
+  }
+  if (typeof options.path !== 'string' || !COOKIE_PATH.test(options.path)) {
+    throw new ArgumentError('buildCookie: invalid Path attribute');
+  }
+  const parts = [`${name}=${value}`, `Path=${options.path}`];
+  if (options.maxAge !== null && options.maxAge !== undefined) {
+    if (!Number.isSafeInteger(options.maxAge)) throw new ArgumentError('buildCookie: maxAge must be an integer');
+    parts.push(`Max-Age=${options.maxAge}`);
+  }
+  if (options.httpOnly) parts.push('HttpOnly');
+  if (options.secure) parts.push('Secure');
+  if (options.sameSite) {
+    if (!SAME_SITE.has(options.sameSite)) {
+      throw new ArgumentError(`buildCookie: sameSite must be one of ${[...SAME_SITE].join(', ')}`);
+    }
+    parts.push(`SameSite=${options.sameSite}`);
+  }
+  return parts.join('; ');
+};
+
 class Session {
   #lifecycle;
 
@@ -90,23 +154,6 @@ class Session {
     this.#lifecycle.ended = true;
   }
 }
-
-const DEFAULT_MAX_SESSIONS = 10000;
-const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24h
-
-// Reference implementation of the structural SessionStore contract:
-// { get(token) -> data | null, set(token, data), delete(token) } — all async.
-// Anything matching the shape (a Redis wrapper, a DB table) plugs in via
-// the `sessions.store` option, per the zero-dependency injection rule.
-//
-// Sessions outlive their connection (that is what makes reconnect work),
-// so this store is bounded on both axes: entries expire after `ttl` and
-// the least-recently-used one is evicted past `maxSessions`. Production
-// deployments should inject a real store instead.
-// The options a save passes to store.set(): the row's creation, then
-// updates that must find it there.
-const CREATE = Object.freeze({ create: true });
-const UPDATE = Object.freeze({ create: false });
 
 class MemorySessionStore {
   #sessions = new Map(); // token -> { data, expires }
@@ -202,53 +249,6 @@ class MemorySessionStore {
     }
   }
 }
-
-const DEFAULT_COOKIE = {
-  name: 'token',
-  path: '/',
-  httpOnly: true,
-  secure: true,
-  sameSite: 'Lax',
-  maxAge: null, // session cookie by default
-};
-
-// RFC 6265 grammar, enforced because the token can come from an injected
-// `generateToken` and the attributes from user config: a `;` or a control
-// character in either would let a value smuggle extra cookie attributes (or
-// a second cookie) into the Set-Cookie line.
-const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/; // RFC 2616 token
-// cookie-octet: %x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E
-const COOKIE_VALUE = /^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*$/;
-// path-value: printable ASCII minus ';' (0x3B) — spelled as positive ranges
-// so no control character ever matches.
-const COOKIE_PATH = /^[\x20-\x3A\x3C-\x7E]*$/;
-const SAME_SITE = new Set(['Strict', 'Lax', 'None']);
-
-const buildCookie = (name, value, options) => {
-  if (!COOKIE_NAME.test(name)) {
-    throw new ArgumentError(`buildCookie: invalid cookie name`);
-  }
-  if (typeof value !== 'string' || !COOKIE_VALUE.test(value)) {
-    throw new ArgumentError('buildCookie: the value contains characters RFC 6265 forbids in a cookie');
-  }
-  if (typeof options.path !== 'string' || !COOKIE_PATH.test(options.path)) {
-    throw new ArgumentError('buildCookie: invalid Path attribute');
-  }
-  const parts = [`${name}=${value}`, `Path=${options.path}`];
-  if (options.maxAge !== null && options.maxAge !== undefined) {
-    if (!Number.isSafeInteger(options.maxAge)) throw new ArgumentError('buildCookie: maxAge must be an integer');
-    parts.push(`Max-Age=${options.maxAge}`);
-  }
-  if (options.httpOnly) parts.push('HttpOnly');
-  if (options.secure) parts.push('Secure');
-  if (options.sameSite) {
-    if (!SAME_SITE.has(options.sameSite)) {
-      throw new ArgumentError(`buildCookie: sameSite must be one of ${[...SAME_SITE].join(', ')}`);
-    }
-    parts.push(`SameSite=${options.sameSite}`);
-  }
-  return parts.join('; ');
-};
 
 // Per-server session facility (replaces the old module-global Map shared
 // by every Server in the process).
@@ -379,4 +379,4 @@ class SessionManager {
   }
 }
 
-module.exports = { Session, MemorySessionStore, SessionManager, createProxy, buildCookie, isTokenTransport };
+module.exports = { isTokenTransport, createProxy, buildCookie, Session, MemorySessionStore, SessionManager };

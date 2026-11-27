@@ -31,12 +31,71 @@ const { ConfigError } = require('../errors.js');
 
 const TRACKED = Symbol.for('wrpc.tracked');
 
+const DEFAULT_LOG_SIZE = 100;
+
 /** Labels a yielded value with the id a resuming client will send back. */
 const tracked = (eventId, data) => ({ [TRACKED]: true, id: `${eventId}`, data });
 
 const isTracked = (value) => typeof value === 'object' && value !== null && value[TRACKED] === true;
 
-const DEFAULT_LOG_SIZE = 100;
+const createEventLog = (options) => new EventLog(options);
+
+// The pump. Drives one subscription's generator, writes a `data` packet per
+// yield, and answers with `end` exactly once — whether the generator
+// finished, threw, or was cut short by an unsubscribe or a disconnect.
+//
+// Backpressure is real: `client.send` reports the transport's high-water
+// mark, and the pump waits for 'drain' before pulling the next value. A
+// generator that ignores that would turn a slow consumer into unbounded
+// server-side memory.
+const runSubscription = async (
+  client,
+  { id, procedure, context, args, lastEventId, signal, stats = null, hooks, compiled = null },
+) => {
+  const iterator = procedure.subscribe(context, args, { lastEventId, signal }, hooks, compiled);
+  let terminal = { type: 'end', id };
+  try {
+    while (true) {
+      const { value, done } = await iterator.next();
+      if (done || signal.aborted) break;
+      // Whole literals, one per kind: the packet used to be built field by
+      // field, in two shapes, once per yielded value.
+      const packet = isTracked(value)
+        ? { type: 'data', id, eventId: value.id, data: value.data }
+        : { type: 'data', id, data: value };
+      const flushed = client.send(packet);
+      if (stats) stats.values++;
+      if (flushed === false) {
+        client.otel.recordBackpressure(client.transportKind);
+        await client.drain(signal);
+      }
+      if (signal.aborted) break;
+    }
+  } catch (error) {
+    if (!signal.aborted) {
+      const code = typeof error.code === 'number' ? error.code : 500;
+      terminal = { type: 'end', id, error: { message: publicErrorMessage(code, error), code } };
+    } else {
+      // Aborted: the terminal packet stays clean because the peer asked to
+      // stop, so this error reaches nobody unless it is logged here.
+      client.log.debug({ err: error, event: 'subscription.aborted', id });
+    }
+  }
+  // Close the generator so its `finally` runs — that is where a handler
+  // releases the listener or connection it opened. NOT awaited: a handler
+  // that ignores its abort signal would otherwise hold the terminal packet
+  // hostage, and the peer has already been told to stop.
+  void Promise.resolve()
+    .then(() => iterator.return?.())
+    .catch((error) =>
+      client.warn(`SUBSCRIPTION\t${clip(id)}\t${error?.stack ?? error}`, {
+        event: 'subscription.return',
+        id: clip(id),
+        err: error,
+      }),
+    );
+  return terminal;
+};
 
 // A bounded replay buffer. Ids are `<epoch>.<n>` — a monotonic counter
 // stamped with WHICH log minted it. The epoch is random per instance by
@@ -145,72 +204,13 @@ class EventLog {
   }
 }
 
-const createEventLog = (options) => new EventLog(options);
-
-// The pump. Drives one subscription's generator, writes a `data` packet per
-// yield, and answers with `end` exactly once — whether the generator
-// finished, threw, or was cut short by an unsubscribe or a disconnect.
-//
-// Backpressure is real: `client.send` reports the transport's high-water
-// mark, and the pump waits for 'drain' before pulling the next value. A
-// generator that ignores that would turn a slow consumer into unbounded
-// server-side memory.
-const runSubscription = async (
-  client,
-  { id, procedure, context, args, lastEventId, signal, stats = null, hooks, compiled = null },
-) => {
-  const iterator = procedure.subscribe(context, args, { lastEventId, signal }, hooks, compiled);
-  let terminal = { type: 'end', id };
-  try {
-    while (true) {
-      const { value, done } = await iterator.next();
-      if (done || signal.aborted) break;
-      // Whole literals, one per kind: the packet used to be built field by
-      // field, in two shapes, once per yielded value.
-      const packet = isTracked(value)
-        ? { type: 'data', id, eventId: value.id, data: value.data }
-        : { type: 'data', id, data: value };
-      const flushed = client.send(packet);
-      if (stats) stats.values++;
-      if (flushed === false) {
-        client.otel.recordBackpressure(client.transportKind);
-        await client.drain(signal);
-      }
-      if (signal.aborted) break;
-    }
-  } catch (error) {
-    if (!signal.aborted) {
-      const code = typeof error.code === 'number' ? error.code : 500;
-      terminal = { type: 'end', id, error: { message: publicErrorMessage(code, error), code } };
-    } else {
-      // Aborted: the terminal packet stays clean because the peer asked to
-      // stop, so this error reaches nobody unless it is logged here.
-      client.log.debug({ err: error, event: 'subscription.aborted', id });
-    }
-  }
-  // Close the generator so its `finally` runs — that is where a handler
-  // releases the listener or connection it opened. NOT awaited: a handler
-  // that ignores its abort signal would otherwise hold the terminal packet
-  // hostage, and the peer has already been told to stop.
-  void Promise.resolve()
-    .then(() => iterator.return?.())
-    .catch((error) =>
-      client.warn(`SUBSCRIPTION\t${clip(id)}\t${error?.stack ?? error}`, {
-        event: 'subscription.return',
-        id: clip(id),
-        err: error,
-      }),
-    );
-  return terminal;
-};
-
 module.exports = {
+  EventStream,
+  createEventStream,
   TRACKED,
   tracked,
   isTracked,
-  EventLog,
   createEventLog,
-  EventStream,
-  createEventStream,
   runSubscription,
+  EventLog,
 };

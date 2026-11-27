@@ -10,13 +10,6 @@ const { ConfigError } = require('../errors.js');
 
 const DEFAULT_VERSION = '*';
 
-// User-defined names ('__proto__' params included) must land as own
-// properties — the same guard router.js applies (see assignKey there); a
-// local copy keeps this module dependency-free of the router.
-const assignKey = (target, key, value) => {
-  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
-};
-
 const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
 // Response headers the transport owns — a route may not redeclare them.
 const RESERVED_HEADERS = new Set(['content-length', 'set-cookie', 'wrpc-version', 'transfer-encoding', 'connection']);
@@ -32,6 +25,15 @@ const RESERVED_HEADERS = new Set(['content-length', 'set-cookie', 'wrpc-version'
 // request left hanging by a response that was never written.
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
+const PARAM_SEGMENT = /^:[A-Za-z_$][\w$]*$/;
+const STATIC_SEGMENT = /^[^/:*]+$/;
+
+// User-defined names ('__proto__' params included) must land as own
+// properties — the same guard router.js applies (see assignKey there); a
+// local copy keeps this module dependency-free of the router.
+const assignKey = (target, key, value) => {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+};
 
 // A header set at definition is a ConfigError, one set by a handler while
 // it runs (`setHeader`) an ArgumentError: the caller names the class.
@@ -98,8 +100,6 @@ const cacheHeadersFor = (cache, { access, session, cookies }) => {
   if (cache.staleWhileRevalidate !== null) control += `, stale-while-revalidate=${cache.staleWhileRevalidate}`;
   return { control, etag: cache.etag };
 };
-const PARAM_SEGMENT = /^:[A-Za-z_$][\w$]*$/;
-const STATIC_SEGMENT = /^[^/:*]+$/;
 
 const normalizeHttp = (http) => {
   if (http === null || http === undefined) return null;
@@ -325,14 +325,14 @@ const collectRestRoutes = (units, restOptions) => {
 };
 
 module.exports = {
-  unitVersions,
-  normalizeHttp,
-  publicHttp,
-  cacheHeadersFor,
   RESERVED_HEADERS,
   checkHeader,
+  cacheHeadersFor,
+  normalizeHttp,
   normalizeRestOptions,
+  publicHttp,
   effectiveHttp,
+  unitVersions,
   buildRestTrees,
   matchRestTrees,
   collectRestRoutes,

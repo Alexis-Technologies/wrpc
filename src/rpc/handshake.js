@@ -15,8 +15,6 @@ const { HEADERS_PARAM, HEADERS_PROTOCOL, META_PROTOCOL, CARRIER_PROTOCOL } = req
 const { split } = require('./dispatcher.js');
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
 
-const PROTOCOL_HEADER = 'sec-websocket-protocol';
-
 // PEER-CONTROLLED, whichever carrier brought it, so every step below is a
 // refusal rather than a throw — an oversize or malformed label leaves the
 // connection with no label, never without a connection. Observed upgrade
@@ -31,7 +29,11 @@ const PROTOCOL_HEADER = 'sec-websocket-protocol';
 const { RESERVED_DECLARED } = require('./reserved.js');
 const { ConfigError } = require('../errors.js');
 
+const PROTOCOL_HEADER = 'sec-websocket-protocol';
+
 const NO_LOG = { warn() {} };
+
+const NO_NAMES = Object.freeze([]);
 
 // One sanitizer for both declared-header sources: a flat string map under
 // kebab names — node lowercases observed header names, and schema.headers
@@ -111,8 +113,6 @@ const queryHeaders = (query, limit, log, allow) => {
   const raw = new URLSearchParams(query).get(HEADERS_PARAM);
   return raw ? sanitizeDeclared(jsonParse(raw), allow) : null;
 };
-
-const NO_NAMES = Object.freeze([]);
 
 // `{ headers, meta }` — the header bag a procedure will see (declared names
 // UNDER the observed ones) and the sanitized connection-metadata bag. A

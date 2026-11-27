@@ -71,31 +71,6 @@ const ServerHttpTransport = ServerTransport.transport.http;
 const ServerWsTransport = ServerTransport.transport.ws;
 const ServerEventTransport = ServerTransport.transport.event;
 
-// The transport a socket attached with `meta.kind` gets: a registered
-// ServerWsTransport subclass under that name ('wt' from @alexify/wrpc/wt,
-// whose require registers it), the WebSocket one otherwise. hasOwn, and
-// only a ws-shaped class: the table also holds http and event.
-const socketTransportFor = (kind) => {
-  if (typeof kind === 'string' && kind && Object.hasOwn(ServerTransport.transport, kind)) {
-    const Transport = ServerTransport.transport[kind];
-    if (Transport === ServerWsTransport || Transport.prototype instanceof ServerWsTransport) return Transport;
-  }
-  return ServerWsTransport;
-};
-
-// The REST leg's trace context arrives as REAL HTTP headers (the client's
-// #restCall injects traceparent/tracestate — there is no packet on the wire
-// to carry tp/ts). Mapped onto the synthetic packet's tp/ts fields, the
-// ordinary extract path in the telemetry writer picks them up, so a REST
-// call joins the caller's trace exactly like a packet call does.
-const copyTraceHeaders = (headers, packet) => {
-  const parent = headers?.traceparent;
-  if (typeof parent !== 'string' || parent.length === 0) return;
-  packet[TRACEPARENT] = parent;
-  const state = headers.tracestate;
-  if (typeof state === 'string' && state.length > 0) packet[TRACESTATE] = state;
-};
-
 // A capability refusal ("this transport cannot carry that") is part of the
 // protocol conversation, not a server internal: 400-coded and exposed so
 // the peer reads the actual reason instead of a masked 500.
@@ -112,35 +87,6 @@ const DEFAULT_BASE_PATH = '/api';
 // `cors: { origin: 'https://app.example' }`, the spelling of the `cors`
 // package and of @fastify/cors, left the allowlist empty without a word.
 const CORS_OPTION_KEYS = new Set(['origins', 'credentials', 'headers', 'metaHeaders', 'methods']);
-
-const isStringList = (list) => {
-  // A hole of a sparse list is skipped, as `every` skipped it.
-  for (let i = 0; i < list.length; i++) if (i in list && typeof list[i] !== 'string') return false;
-  return true;
-};
-
-const checkCors = (cors, log) => {
-  if (cors === null || cors === undefined) return null;
-  if (typeof cors !== 'object') throw new ConfigError('RpcServer: options.cors must be an object');
-  if (Object.hasOwn(cors, 'origin')) {
-    throw new ConfigError('RpcServer: options.cors.origin is not an option — the allowlist is `origins`');
-  }
-  const { origins } = cors;
-  const valid =
-    origins === undefined ||
-    origins === null ||
-    typeof origins === 'function' ||
-    typeof origins === 'string' ||
-    (Array.isArray(origins) && isStringList(origins));
-  if (!valid) {
-    throw new ConfigError('RpcServer: options.cors.origins must be an origin, an array of them or a function');
-  }
-  const keys = Object.keys(cors);
-  for (let i = 0; i < keys.length; i++) {
-    if (!CORS_OPTION_KEYS.has(keys[i])) log.warn({ event: 'cors.option', key: keys[i] });
-  }
-  return cors;
-};
 
 const ROOMS_OPTION_KEYS = new Set(['epoch', 'linger', 'maxTracked', 'compression', 'encryption', 'maxMessage']);
 const RPC_OPTION_KEYS = [
@@ -174,6 +120,60 @@ const RPC_OPTION_KEYS = [
   'encryption',
 ];
 
+// The transport a socket attached with `meta.kind` gets: a registered
+// ServerWsTransport subclass under that name ('wt' from @alexify/wrpc/wt,
+// whose require registers it), the WebSocket one otherwise. hasOwn, and
+// only a ws-shaped class: the table also holds http and event.
+const socketTransportFor = (kind) => {
+  if (typeof kind === 'string' && kind && Object.hasOwn(ServerTransport.transport, kind)) {
+    const Transport = ServerTransport.transport[kind];
+    if (Transport === ServerWsTransport || Transport.prototype instanceof ServerWsTransport) return Transport;
+  }
+  return ServerWsTransport;
+};
+
+// The REST leg's trace context arrives as REAL HTTP headers (the client's
+// #restCall injects traceparent/tracestate — there is no packet on the wire
+// to carry tp/ts). Mapped onto the synthetic packet's tp/ts fields, the
+// ordinary extract path in the telemetry writer picks them up, so a REST
+// call joins the caller's trace exactly like a packet call does.
+const copyTraceHeaders = (headers, packet) => {
+  const parent = headers?.traceparent;
+  if (typeof parent !== 'string' || parent.length === 0) return;
+  packet[TRACEPARENT] = parent;
+  const state = headers.tracestate;
+  if (typeof state === 'string' && state.length > 0) packet[TRACESTATE] = state;
+};
+
+const isStringList = (list) => {
+  // A hole of a sparse list is skipped, as `every` skipped it.
+  for (let i = 0; i < list.length; i++) if (i in list && typeof list[i] !== 'string') return false;
+  return true;
+};
+
+const checkCors = (cors, log) => {
+  if (cors === null || cors === undefined) return null;
+  if (typeof cors !== 'object') throw new ConfigError('RpcServer: options.cors must be an object');
+  if (Object.hasOwn(cors, 'origin')) {
+    throw new ConfigError('RpcServer: options.cors.origin is not an option — the allowlist is `origins`');
+  }
+  const { origins } = cors;
+  const valid =
+    origins === undefined ||
+    origins === null ||
+    typeof origins === 'function' ||
+    typeof origins === 'string' ||
+    (Array.isArray(origins) && isStringList(origins));
+  if (!valid) {
+    throw new ConfigError('RpcServer: options.cors.origins must be an origin, an array of them or a function');
+  }
+  const keys = Object.keys(cors);
+  for (let i = 0; i < keys.length; i++) {
+    if (!CORS_OPTION_KEYS.has(keys[i])) log.warn({ event: 'cors.option', key: keys[i] });
+  }
+  return cors;
+};
+
 const rpcOptions = (options = {}) => {
   const picked = {};
   for (let i = 0; i < RPC_OPTION_KEYS.length; i++) {
@@ -189,6 +189,16 @@ const normalizeBasePath = (basePath) => {
   if (path.endsWith('/')) path = path.slice(0, -1);
   return path;
 };
+
+// `context.http` on a REST call: what the handler may read about the
+// request and set on the response before it is written.
+const httpReply = (call, method, transport) => ({
+  method,
+  url: call.url ?? '/',
+  headers: call.headers ?? {},
+  setHeader: (name, value) => transport.setHeader(name, value),
+  status: (code) => transport.setStatus(code),
+});
 
 // Engine-agnostic RPC core: no node:http imports on the request path.
 // Sockets come in through attachSocket (any WrpcSocket-shaped engine
@@ -1809,22 +1819,12 @@ class RpcServer extends Emitter {
   }
 }
 
-// `context.http` on a REST call: what the handler may read about the
-// request and set on the response before it is written.
-const httpReply = (call, method, transport) => ({
-  method,
-  url: call.url ?? '/',
-  headers: call.headers ?? {},
-  setHeader: (name, value) => transport.setHeader(name, value),
-  status: (code) => transport.setStatus(code),
-});
-
 module.exports = {
-  RpcServer,
   Client,
   Context,
-  rpcOptions,
-  copyTraceHeaders,
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
+  copyTraceHeaders,
+  rpcOptions,
+  RpcServer,
 };

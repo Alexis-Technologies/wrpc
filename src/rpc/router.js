@@ -25,6 +25,100 @@ const SUBSCRIPTION = 'subscription';
 
 const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).constructor;
 
+// Hooks: named lifecycle phases, fastify-style. No `next` — a hook runs, and
+// either returns (letting the pipeline continue) or throws a coded error
+// (ending the call with that code). "After" is a later phase, not code after
+// a next() call, which is what keeps every hook a plain awaited function and
+// the empty case a skipped `if`.
+//
+// Registration is three-level — defineRouter(units, { hooks }), a unit's
+// reserved `hooks` key, and procedure({ preHandler }) — and the levels are
+// FLATTENED ONCE per procedure when the router is built: dispatch walks a
+// frozen array, never a chain of closures.
+
+// Phases that run around one invocation (call, subscribe, inbound event).
+const INVOCATION_PHASES = [
+  'onRequest', // packet accepted, before session restore and access
+  'preValidation', // after access, before input validation
+  'preHandler', // after input validation, before the handler
+  'preSerialization', // after the handler, before output validation
+  'onSend', // before the callback packet is written; may mutate it
+  'onResponse', // after the write; observational
+  'onError', // any failure; observational
+  'onTimeout', // a 408 specifically; observational, fires before onError
+  'onSubscribe', // after access, before a subscription starts
+  'onUnsubscribe', // after a subscription ended, whatever ended it
+];
+// Phases that run around a connection's lifetime (router-level only).
+const CONNECTION_PHASES = ['onConnect', 'onDisconnect'];
+const ROUTER_PHASES = INVOCATION_PHASES.concat(CONNECTION_PHASES);
+// The subset a single procedure can carry in its own options.
+const PROCEDURE_PHASES = ['preValidation', 'preHandler', 'preSerialization', 'onError'];
+
+const EMPTY_LIST = Object.freeze([]);
+const EMPTY_HOOKS = {};
+for (let i = 0; i < INVOCATION_PHASES.length; i++) EMPTY_HOOKS[INVOCATION_PHASES[i]] = EMPTY_LIST;
+Object.freeze(EMPTY_HOOKS);
+
+// Declarative REST mapping and the fastify-shaped schema object.
+//
+// `http: { method, path, status? }` maps a procedure onto a real HTTP
+// endpoint under the server's basePath; args then arrive structured as
+// { params, query, body }, over EVERY transport — the mapping only defines
+// how an HTTP request is unpacked, a ws caller passes the same shape itself.
+//
+// `schema` follows fastify.route.schema: `params`, `querystring` (or its
+// alias `query` — interchangeable, normalized here), `body`, `headers`,
+// `response` keyed by status code, plus any passthrough keys (tags,
+// summary, security, ...) that wrpc never interprets but forwards to hosts
+// (fastify/swagger) verbatim.
+
+// The parts wrpc itself understands; everything else on `schema` passes
+// through untouched. `query` and `querystring` are interchangeable spellings
+// of the same part — normalized to `querystring` (fastify's canon).
+const SCHEMA_PARTS = ['params', 'querystring', 'body', 'headers', 'response'];
+
+// `on` is reserved inside a unit definition: it declares the unit's inbound
+// (client -> server) event handlers rather than a method named 'on'.
+// `hooks` is reserved too: the unit's slice of the lifecycle pipeline.
+const EVENTS_KEY = 'on';
+const HOOKS_KEY = 'hooks';
+// Declaration-only: the unit's OUTBOUND (server -> client) events, as
+// `signature`-style descriptors ({ data, returns? }). No runtime behavior —
+// the map travels through introspection so `wrpc types` can generate the
+// contract's `events` key, the same way `signature` types calls.
+const EMITS_KEY = 'emits';
+// The unit's QUEUE CONSUMERS: `consumes: { 'orders.created': procedure(...) }`.
+// Each is a full Procedure (hooks, validators, access, queue, timeout) that
+// a broker binding invokes per delivered message — and that no peer can
+// call: they live apart from `methods`, so a `call` packet cannot reach one.
+const CONSUMES_KEY = 'consumes';
+
+// The schema parts and the args keys they validate.
+const INPUT_PARTS = [
+  ['params', 'params'],
+  ['querystring', 'query'],
+  ['body', 'body'],
+];
+
+// The effective fastify-shaped schema a host (fastify routes, swagger,
+// introspection consumers) receives: the user's declaration with wrpc's own
+// lifecycle error statuses documented underneath. Which statuses apply is
+// derived from the procedure's options; docs/reference/errors.md is the
+// dictionary. 499 (cancel) is deliberately absent — a cancelled HTTP
+// request gets no response to document. A user's schema.response entry for
+// the same code always overrides the default, and `false` removes it.
+
+const WIRE_ERROR_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    message: { type: 'string' },
+    code: { type: 'number' },
+    details: {},
+  },
+  required: ['message', 'code'],
+});
+
 // An async generator handler IS the subscription declaration: writing
 // `procedure.subscription({...})` around one is allowed but never required.
 const isGeneratorHandler = (handler) => handler instanceof AsyncGeneratorFunction;
@@ -86,36 +180,6 @@ const runStandardSchema = async (validator, value) => {
 const isValidator = (value) =>
   typeof value === 'function' || (typeof value === 'object' && value !== null && '~standard' in value);
 
-// Hooks: named lifecycle phases, fastify-style. No `next` — a hook runs, and
-// either returns (letting the pipeline continue) or throws a coded error
-// (ending the call with that code). "After" is a later phase, not code after
-// a next() call, which is what keeps every hook a plain awaited function and
-// the empty case a skipped `if`.
-//
-// Registration is three-level — defineRouter(units, { hooks }), a unit's
-// reserved `hooks` key, and procedure({ preHandler }) — and the levels are
-// FLATTENED ONCE per procedure when the router is built: dispatch walks a
-// frozen array, never a chain of closures.
-
-// Phases that run around one invocation (call, subscribe, inbound event).
-const INVOCATION_PHASES = [
-  'onRequest', // packet accepted, before session restore and access
-  'preValidation', // after access, before input validation
-  'preHandler', // after input validation, before the handler
-  'preSerialization', // after the handler, before output validation
-  'onSend', // before the callback packet is written; may mutate it
-  'onResponse', // after the write; observational
-  'onError', // any failure; observational
-  'onTimeout', // a 408 specifically; observational, fires before onError
-  'onSubscribe', // after access, before a subscription starts
-  'onUnsubscribe', // after a subscription ended, whatever ended it
-];
-// Phases that run around a connection's lifetime (router-level only).
-const CONNECTION_PHASES = ['onConnect', 'onDisconnect'];
-const ROUTER_PHASES = INVOCATION_PHASES.concat(CONNECTION_PHASES);
-// The subset a single procedure can carry in its own options.
-const PROCEDURE_PHASES = ['preValidation', 'preHandler', 'preSerialization', 'onError'];
-
 const toHookList = (value, phase, label) => {
   if (value === undefined || value === null) return [];
   const list = Array.isArray(value) ? value : [value];
@@ -140,11 +204,6 @@ const normalizeHooks = (hooks, allowed, label) => {
   for (let i = 0; i < allowed.length; i++) result[allowed[i]] = toHookList(hooks[allowed[i]], allowed[i], label);
   return result;
 };
-
-const EMPTY_LIST = Object.freeze([]);
-const EMPTY_HOOKS = {};
-for (let i = 0; i < INVOCATION_PHASES.length; i++) EMPTY_HOOKS[INVOCATION_PHASES[i]] = EMPTY_LIST;
-Object.freeze(EMPTY_HOOKS);
 
 /** Runs one phase in order; a throw ends the call with the error's code. */
 const runHooks = async (hooks, context, payload) => {
@@ -173,24 +232,6 @@ const runHooksSafe = async (hooks, context, payload, log, phase) => {
 const assignKey = (target, key, value) => {
   Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 };
-
-// Declarative REST mapping and the fastify-shaped schema object.
-//
-// `http: { method, path, status? }` maps a procedure onto a real HTTP
-// endpoint under the server's basePath; args then arrive structured as
-// { params, query, body }, over EVERY transport — the mapping only defines
-// how an HTTP request is unpacked, a ws caller passes the same shape itself.
-//
-// `schema` follows fastify.route.schema: `params`, `querystring` (or its
-// alias `query` — interchangeable, normalized here), `body`, `headers`,
-// `response` keyed by status code, plus any passthrough keys (tags,
-// summary, security, ...) that wrpc never interprets but forwards to hosts
-// (fastify/swagger) verbatim.
-
-// The parts wrpc itself understands; everything else on `schema` passes
-// through untouched. `query` and `querystring` are interchangeable spellings
-// of the same part — normalized to `querystring` (fastify's canon).
-const SCHEMA_PARTS = ['params', 'querystring', 'body', 'headers', 'response'];
 
 const normalizeSchema = (schema, label) => {
   if (schema === null || schema === undefined) return null;
@@ -225,6 +266,196 @@ const timeoutRace = (promise, ms) => {
   });
   return Promise.race([promise, failure]).finally(() => clearTimeout(timer));
 };
+
+const procedure = (options) => {
+  if (typeof options === 'function') return new Procedure({ handler: options });
+  return new Procedure(options);
+};
+
+// Explicit spelling for a subscription. Redundant when the handler is an
+// async generator (which is detected), required when it is a plain function
+// returning an async iterable.
+procedure.subscription = (options) => {
+  if (typeof options === 'function') return new Procedure({ handler: options, kind: SUBSCRIPTION });
+  return new Procedure({ ...options, kind: SUBSCRIPTION });
+};
+
+// `consume` is a consumer's policy: on a callable method or an event handler
+// it would silently do nothing, so it is refused where it cannot apply.
+const rejectConsume = (proc, label) => {
+  if (proc.consume) throw new ConfigError(`${label}: consume is only valid inside a unit's consumes block`);
+  return proc;
+};
+
+const toProcedure = (value, unitKey, methodName) => {
+  if (value instanceof Procedure) return value;
+  if (typeof value === 'function') return new Procedure({ handler: value });
+  if (typeof value === 'object' && value !== null && typeof value.handler === 'function') {
+    return new Procedure(value);
+  }
+  throw new ConfigError(
+    `Router definition ${unitKey}/${methodName} must be a procedure, a handler function, or an options object`,
+  );
+};
+
+// unit-level hooks may not carry the connection phases: a connection is not
+// scoped to a unit, so an onConnect there could never mean anything.
+const concatHooks = (base, extra, phases) => {
+  const result = {};
+  for (let i = 0; i < phases.length; i++) {
+    const phase = phases[i];
+    result[phase] = [...(base?.[phase] ?? []), ...(extra?.[phase] ?? [])];
+  }
+  return result;
+};
+
+// Injected JSON Schema compilers. Structural, per the zero-dependency rule:
+// `ajv` is anything with compile(schema) -> validateFn (ajv-shaped: the fn
+// answers a boolean and exposes `.errors`), `serializer` anything with
+// compile(schema) -> (value) -> string (fast-json-stringify-shaped). wrpc
+// never imports either — the application passes its own.
+
+const normalizeValidation = (validation) => {
+  if (validation === null || validation === undefined) return null;
+  if (typeof validation !== 'object') {
+    throw new ConfigError('defineRouter: options.validation must be an object');
+  }
+  const { ajv = null, serializer = null } = validation;
+  if (ajv !== null && typeof ajv.compile !== 'function') {
+    throw new ConfigError('defineRouter: validation.ajv must provide compile(schema)');
+  }
+  if (serializer !== null && typeof serializer.compile !== 'function') {
+    throw new ConfigError('defineRouter: validation.serializer must provide compile(schema)');
+  }
+  if (!ajv && !serializer) return null;
+  return { ajv, serializer };
+};
+
+// An injected ajv's errors, as issues under one part's path.
+const addIssues = (issues, errors, part) => {
+  const list = errors ?? EMPTY_LIST;
+  for (let i = 0; i < list.length; i++) {
+    issues.push({ message: list[i].message, path: `/${part}${list[i].instancePath ?? ''}` });
+  }
+  return issues;
+};
+
+// Compiles the input parts into ONE function validator, fastify-style: each
+// part validates its slice of `{ params, query, body }`, issues carry
+// part-prefixed paths, and ajv's own coercions land in place. The wrapper is
+// an ordinary function validator, so `runValidator` stays the single
+// execution seam.
+const compileInput = (ajv, schema, label) => {
+  const parts = [];
+  for (let i = 0; i < INPUT_PARTS.length; i++) {
+    const part = INPUT_PARTS[i][0];
+    const argsKey = INPUT_PARTS[i][1];
+    if (schema[part] === undefined) continue;
+    let validate = null;
+    try {
+      validate = ajv.compile(schema[part]);
+    } catch (error) {
+      throw new ConfigError(`${label}: schema.${part} failed to compile: ${error.message}`, { cause: error });
+    }
+    parts.push({ part, argsKey, validate });
+  }
+  // The asymmetric part: headers are not an args slice — they live on
+  // context.meta.headers — so they get their own check instead of a row in
+  // INPUT_PARTS, and the closure takes the context runValidator forwards.
+  let headersValidate = null;
+  if (schema.headers !== undefined) {
+    try {
+      headersValidate = ajv.compile(schema.headers);
+    } catch (error) {
+      throw new ConfigError(`${label}: schema.headers failed to compile: ${error.message}`, { cause: error });
+    }
+  }
+  if (parts.length === 0 && !headersValidate) return null;
+  return (args, context) => {
+    const value = args && typeof args === 'object' ? args : {};
+    let issues = null;
+    for (let i = 0; i < parts.length; i++) {
+      const { part, argsKey, validate } = parts[i];
+      if (validate(value[argsKey] ?? {})) continue;
+      issues = addIssues(issues ?? [], validate.errors, part);
+    }
+    if (headersValidate) {
+      // A COPY on purpose: client.meta.headers is frozen, and an injected
+      // ajv compiled with coerceTypes would otherwise throw writing the
+      // coerced value back (compiled validators are strict-mode code). The
+      // copy also keeps the snapshot honest — validation observes headers,
+      // it never rewrites them.
+      if (!headersValidate({ ...context?.meta?.headers })) {
+        issues = addIssues(issues ?? [], headersValidate.errors, 'headers');
+      }
+    }
+    if (issues) {
+      const messages = [];
+      for (let i = 0; i < issues.length; i++) messages.push(`${issues[i].path} ${issues[i].message}`);
+      throw issuesError(messages, issues);
+    }
+    return value;
+  };
+};
+
+// The success-response schema: the mapped status first, then any 2xx entry.
+const successResponse = (proc) => {
+  const response = proc.schema?.response;
+  if (!response || typeof response !== 'object') return null;
+  const preferred = proc.http?.status ?? 200;
+  if (response[preferred] && response[preferred] !== false) return response[preferred];
+  const keys = Object.keys(response);
+  for (let i = 0; i < keys.length; i++) {
+    const code = Number(keys[i]);
+    if (code >= 200 && code < 300 && response[keys[i]] !== false) return response[keys[i]];
+  }
+  return null;
+};
+
+const compileOutput = (ajv, schema, label) => {
+  let validate = null;
+  try {
+    validate = ajv.compile(schema);
+  } catch (error) {
+    throw new ConfigError(`${label}: schema.response failed to compile: ${error.message}`, { cause: error });
+  }
+  return (result) => {
+    if (validate(result)) return result;
+    const issues = [];
+    const messages = [];
+    const errors = validate.errors ?? EMPTY_LIST;
+    for (let i = 0; i < errors.length; i++) {
+      issues.push({ message: errors[i].message, path: errors[i].instancePath });
+      messages.push(`${errors[i].instancePath} ${errors[i].message}`);
+    }
+    throw issuesError(messages, issues);
+  };
+};
+
+const defaultErrorResponses = (proc) => {
+  const codes = [429, 500, 503];
+  if (proc.schema || proc.input) codes.push(400);
+  if (proc.access !== 'public') codes.push(403);
+  if (proc.timeout > 0) codes.push(408);
+  const responses = {};
+  for (let i = 0; i < codes.length; i++) responses[codes[i]] = WIRE_ERROR_SCHEMA;
+  return responses;
+};
+
+const effectiveSchema = (proc) => {
+  const response = defaultErrorResponses(proc);
+  const declared = proc.schema?.response ?? {};
+  const keys = Object.keys(declared);
+  for (let i = 0; i < keys.length; i++) {
+    if (declared[keys[i]] === false) delete response[keys[i]];
+    else assignKey(response, keys[i], declared[keys[i]]);
+  }
+  const schema = { ...proc.schema };
+  schema.response = response;
+  return schema;
+};
+
+const defineRouter = (definition, options) => new Router(definition, options);
 
 class Procedure {
   constructor(options = {}) {
@@ -529,194 +760,6 @@ class Procedure {
     }
   }
 }
-
-const procedure = (options) => {
-  if (typeof options === 'function') return new Procedure({ handler: options });
-  return new Procedure(options);
-};
-
-// Explicit spelling for a subscription. Redundant when the handler is an
-// async generator (which is detected), required when it is a plain function
-// returning an async iterable.
-procedure.subscription = (options) => {
-  if (typeof options === 'function') return new Procedure({ handler: options, kind: SUBSCRIPTION });
-  return new Procedure({ ...options, kind: SUBSCRIPTION });
-};
-
-// `consume` is a consumer's policy: on a callable method or an event handler
-// it would silently do nothing, so it is refused where it cannot apply.
-const rejectConsume = (proc, label) => {
-  if (proc.consume) throw new ConfigError(`${label}: consume is only valid inside a unit's consumes block`);
-  return proc;
-};
-
-const toProcedure = (value, unitKey, methodName) => {
-  if (value instanceof Procedure) return value;
-  if (typeof value === 'function') return new Procedure({ handler: value });
-  if (typeof value === 'object' && value !== null && typeof value.handler === 'function') {
-    return new Procedure(value);
-  }
-  throw new ConfigError(
-    `Router definition ${unitKey}/${methodName} must be a procedure, a handler function, or an options object`,
-  );
-};
-
-// `on` is reserved inside a unit definition: it declares the unit's inbound
-// (client -> server) event handlers rather than a method named 'on'.
-// `hooks` is reserved too: the unit's slice of the lifecycle pipeline.
-const EVENTS_KEY = 'on';
-const HOOKS_KEY = 'hooks';
-// Declaration-only: the unit's OUTBOUND (server -> client) events, as
-// `signature`-style descriptors ({ data, returns? }). No runtime behavior —
-// the map travels through introspection so `wrpc types` can generate the
-// contract's `events` key, the same way `signature` types calls.
-const EMITS_KEY = 'emits';
-// The unit's QUEUE CONSUMERS: `consumes: { 'orders.created': procedure(...) }`.
-// Each is a full Procedure (hooks, validators, access, queue, timeout) that
-// a broker binding invokes per delivered message — and that no peer can
-// call: they live apart from `methods`, so a `call` packet cannot reach one.
-const CONSUMES_KEY = 'consumes';
-
-// unit-level hooks may not carry the connection phases: a connection is not
-// scoped to a unit, so an onConnect there could never mean anything.
-const concatHooks = (base, extra, phases) => {
-  const result = {};
-  for (let i = 0; i < phases.length; i++) {
-    const phase = phases[i];
-    result[phase] = [...(base?.[phase] ?? []), ...(extra?.[phase] ?? [])];
-  }
-  return result;
-};
-
-// Injected JSON Schema compilers. Structural, per the zero-dependency rule:
-// `ajv` is anything with compile(schema) -> validateFn (ajv-shaped: the fn
-// answers a boolean and exposes `.errors`), `serializer` anything with
-// compile(schema) -> (value) -> string (fast-json-stringify-shaped). wrpc
-// never imports either — the application passes its own.
-
-const normalizeValidation = (validation) => {
-  if (validation === null || validation === undefined) return null;
-  if (typeof validation !== 'object') {
-    throw new ConfigError('defineRouter: options.validation must be an object');
-  }
-  const { ajv = null, serializer = null } = validation;
-  if (ajv !== null && typeof ajv.compile !== 'function') {
-    throw new ConfigError('defineRouter: validation.ajv must provide compile(schema)');
-  }
-  if (serializer !== null && typeof serializer.compile !== 'function') {
-    throw new ConfigError('defineRouter: validation.serializer must provide compile(schema)');
-  }
-  if (!ajv && !serializer) return null;
-  return { ajv, serializer };
-};
-
-// The schema parts and the args keys they validate.
-const INPUT_PARTS = [
-  ['params', 'params'],
-  ['querystring', 'query'],
-  ['body', 'body'],
-];
-
-// An injected ajv's errors, as issues under one part's path.
-const addIssues = (issues, errors, part) => {
-  const list = errors ?? EMPTY_LIST;
-  for (let i = 0; i < list.length; i++) {
-    issues.push({ message: list[i].message, path: `/${part}${list[i].instancePath ?? ''}` });
-  }
-  return issues;
-};
-
-// Compiles the input parts into ONE function validator, fastify-style: each
-// part validates its slice of `{ params, query, body }`, issues carry
-// part-prefixed paths, and ajv's own coercions land in place. The wrapper is
-// an ordinary function validator, so `runValidator` stays the single
-// execution seam.
-const compileInput = (ajv, schema, label) => {
-  const parts = [];
-  for (let i = 0; i < INPUT_PARTS.length; i++) {
-    const part = INPUT_PARTS[i][0];
-    const argsKey = INPUT_PARTS[i][1];
-    if (schema[part] === undefined) continue;
-    let validate = null;
-    try {
-      validate = ajv.compile(schema[part]);
-    } catch (error) {
-      throw new ConfigError(`${label}: schema.${part} failed to compile: ${error.message}`, { cause: error });
-    }
-    parts.push({ part, argsKey, validate });
-  }
-  // The asymmetric part: headers are not an args slice — they live on
-  // context.meta.headers — so they get their own check instead of a row in
-  // INPUT_PARTS, and the closure takes the context runValidator forwards.
-  let headersValidate = null;
-  if (schema.headers !== undefined) {
-    try {
-      headersValidate = ajv.compile(schema.headers);
-    } catch (error) {
-      throw new ConfigError(`${label}: schema.headers failed to compile: ${error.message}`, { cause: error });
-    }
-  }
-  if (parts.length === 0 && !headersValidate) return null;
-  return (args, context) => {
-    const value = args && typeof args === 'object' ? args : {};
-    let issues = null;
-    for (let i = 0; i < parts.length; i++) {
-      const { part, argsKey, validate } = parts[i];
-      if (validate(value[argsKey] ?? {})) continue;
-      issues = addIssues(issues ?? [], validate.errors, part);
-    }
-    if (headersValidate) {
-      // A COPY on purpose: client.meta.headers is frozen, and an injected
-      // ajv compiled with coerceTypes would otherwise throw writing the
-      // coerced value back (compiled validators are strict-mode code). The
-      // copy also keeps the snapshot honest — validation observes headers,
-      // it never rewrites them.
-      if (!headersValidate({ ...context?.meta?.headers })) {
-        issues = addIssues(issues ?? [], headersValidate.errors, 'headers');
-      }
-    }
-    if (issues) {
-      const messages = [];
-      for (let i = 0; i < issues.length; i++) messages.push(`${issues[i].path} ${issues[i].message}`);
-      throw issuesError(messages, issues);
-    }
-    return value;
-  };
-};
-
-// The success-response schema: the mapped status first, then any 2xx entry.
-const successResponse = (proc) => {
-  const response = proc.schema?.response;
-  if (!response || typeof response !== 'object') return null;
-  const preferred = proc.http?.status ?? 200;
-  if (response[preferred] && response[preferred] !== false) return response[preferred];
-  const keys = Object.keys(response);
-  for (let i = 0; i < keys.length; i++) {
-    const code = Number(keys[i]);
-    if (code >= 200 && code < 300 && response[keys[i]] !== false) return response[keys[i]];
-  }
-  return null;
-};
-
-const compileOutput = (ajv, schema, label) => {
-  let validate = null;
-  try {
-    validate = ajv.compile(schema);
-  } catch (error) {
-    throw new ConfigError(`${label}: schema.response failed to compile: ${error.message}`, { cause: error });
-  }
-  return (result) => {
-    if (validate(result)) return result;
-    const issues = [];
-    const messages = [];
-    const errors = validate.errors ?? EMPTY_LIST;
-    for (let i = 0; i < errors.length; i++) {
-      issues.push({ message: errors[i].message, path: errors[i].instancePath });
-      messages.push(`${errors[i].instancePath} ${errors[i].message}`);
-    }
-    throw issuesError(messages, issues);
-  };
-};
 
 class Router {
   // unit -> Map(version -> { methods: Map(name -> Procedure),
@@ -1115,59 +1158,16 @@ class Router {
   }
 }
 
-// The effective fastify-shaped schema a host (fastify routes, swagger,
-// introspection consumers) receives: the user's declaration with wrpc's own
-// lifecycle error statuses documented underneath. Which statuses apply is
-// derived from the procedure's options; docs/reference/errors.md is the
-// dictionary. 499 (cancel) is deliberately absent — a cancelled HTTP
-// request gets no response to document. A user's schema.response entry for
-// the same code always overrides the default, and `false` removes it.
-
-const WIRE_ERROR_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    message: { type: 'string' },
-    code: { type: 'number' },
-    details: {},
-  },
-  required: ['message', 'code'],
-});
-
-const defaultErrorResponses = (proc) => {
-  const codes = [429, 500, 503];
-  if (proc.schema || proc.input) codes.push(400);
-  if (proc.access !== 'public') codes.push(403);
-  if (proc.timeout > 0) codes.push(408);
-  const responses = {};
-  for (let i = 0; i < codes.length; i++) responses[codes[i]] = WIRE_ERROR_SCHEMA;
-  return responses;
-};
-
-const effectiveSchema = (proc) => {
-  const response = defaultErrorResponses(proc);
-  const declared = proc.schema?.response ?? {};
-  const keys = Object.keys(declared);
-  for (let i = 0; i < keys.length; i++) {
-    if (declared[keys[i]] === false) delete response[keys[i]];
-    else assignKey(response, keys[i], declared[keys[i]]);
-  }
-  const schema = { ...proc.schema };
-  schema.response = response;
-  return schema;
-};
-
-const defineRouter = (definition, options) => new Router(definition, options);
-
 module.exports = {
-  runValidator,
-  Procedure,
-  Router,
-  procedure,
-  defineRouter,
-  effectiveSchema,
-  runHooks,
-  runHooksSafe,
-  EMPTY_HOOKS,
   INVOCATION_PHASES,
   CONNECTION_PHASES,
+  EMPTY_HOOKS,
+  runValidator,
+  runHooks,
+  runHooksSafe,
+  procedure,
+  effectiveSchema,
+  defineRouter,
+  Procedure,
+  Router,
 };
