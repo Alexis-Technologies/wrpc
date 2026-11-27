@@ -10,14 +10,12 @@ awaited function, the order explicit, and the empty case a skipped `if`
 rather than a chain of closures.
 
 ```js
+const { defineRouter, WrpcError } = require('@alexify/wrpc');
+
 const router = defineRouter(units, {
   hooks: {
     onRequest: async (context, packet) => {
-      if (blocked.has(context.client.source)) {
-        const error = new Error('Blocked');
-        error.code = 403;
-        throw error;
-      }
+      if (blocked.has(context.client.source)) throw new WrpcError('Blocked', { code: 403 });
     },
     preHandler: async (context) => {
       context.state.user = await loadUser(context.session);
@@ -142,12 +140,7 @@ const rateLimit = (limit = 50, windowMs = 1000) => async (context) => {
     bucket = { start: now, used: 0 };
     buckets.set(key, bucket);
   }
-  if (++bucket.used > limit) {
-    const error = new Error('Rate limit exceeded');
-    error.code = 429;
-    error.expose = true;
-    throw error;
-  }
+  if (++bucket.used > limit) throw new WrpcError('Rate limit exceeded', { code: 429, expose: true });
 };
 
 const router = defineRouter(units, { hooks: { onRequest: rateLimit(50) } });
@@ -174,12 +167,7 @@ const held = new WeakMap();
 const hooks = {
   onSubscribe: async (context) => {
     const used = held.get(context.client) ?? 0;
-    if (used >= 10) {
-      const error = new Error('Subscription quota exceeded');
-      error.code = 429;
-      error.expose = true;
-      throw error;
-    }
+    if (used >= 10) throw new WrpcError('Subscription quota exceeded', { code: 429, expose: true });
     held.set(context.client, used + 1);
   },
   onUnsubscribe: async (context) => {

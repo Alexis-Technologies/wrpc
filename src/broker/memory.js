@@ -25,7 +25,7 @@ const { resolveGenerateId } = require('../utils.js');
 // The cost is that a generator answering characters a broker refuses in a
 // consumer name, subject or queue name fails at the driver, not here.
 const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
-const { codedError, toText, toHeaders, reasonText } = require('./ids.js');
+const { toText, toHeaders, reasonText } = require('./ids.js');
 const { crashDelay } = require('./retry.js');
 const { ATTEMPT_HEADER, DEAD_REASON_HEADER, DEFAULT_PREFETCH, checkConsume, producerHeaders } = require('./adapter.js');
 // The ready messages of a queue: appended by a produce or a retry, taken from
@@ -33,7 +33,7 @@ const { ATTEMPT_HEADER, DEAD_REASON_HEADER, DEFAULT_PREFETCH, checkConsume, prod
 // that stopped — which is why the head index that is enough for a topic's
 // entries (`#compact`) is not enough here.
 const { Deque } = require('../deque.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 const DEFAULT_LOG_ENTRIES = 10_000;
 const MAX_ID_LENGTH = 128;
@@ -132,7 +132,7 @@ class MemoryBroker {
 
   #append(topic, value, { headers = null } = {}) {
     requireName(topic, 'topic', 'MemoryBroker.log.append');
-    if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
+    if (this.#closed) return Promise.reject(new WrpcError('Broker is closed', { code: 503, expose: true }));
     const state = this.#topic(topic);
     const n = state.next++;
     const id = `${this.#epoch}.${n}`;
@@ -191,14 +191,17 @@ class MemoryBroker {
     let failure = null;
     if (after !== null && after !== undefined) {
       const id = this.#parseId(after);
-      if (id === null) failure = codedError('Malformed event id', 400);
+      if (id === null) failure = new WrpcError('Malformed event id', { code: 400, expose: true });
       else {
         const dot = id.lastIndexOf('.');
         const n = Number(id.slice(dot + 1));
-        if (id.slice(0, dot) !== this.#epoch) failure = codedError('Event id belongs to another log', 410);
-        else if (n >= state.next) failure = codedError('Event id is beyond the end of the log', 400);
-        else if (n + 1 < state.first) failure = codedError('Event history was trimmed past this id', 410);
-        else position = n + 1;
+        if (id.slice(0, dot) !== this.#epoch) {
+          failure = new WrpcError('Event id belongs to another log', { code: 410, expose: true });
+        } else if (n >= state.next) {
+          failure = new WrpcError('Event id is beyond the end of the log', { code: 400, expose: true });
+        } else if (n + 1 < state.first) {
+          failure = new WrpcError('Event history was trimmed past this id', { code: 410, expose: true });
+        } else position = n + 1;
       }
     } else {
       position = from === 'earliest' ? state.first : state.next;
@@ -208,7 +211,9 @@ class MemoryBroker {
       if (failure) throw failure;
       for (;;) {
         if (signal?.aborted || broker.#closed) return;
-        if (position < state.first) throw codedError('Event history was trimmed past this reader', 410);
+        if (position < state.first) {
+          throw new WrpcError('Event history was trimmed past this reader', { code: 410, expose: true });
+        }
         if (position < state.next) {
           const entry = state.entries[state.head + (position - state.first)];
           position++;
@@ -259,7 +264,7 @@ class MemoryBroker {
 
   #produce(queue, body, { headers = null } = {}) {
     requireName(queue, 'queue', 'MemoryBroker.queue.produce');
-    if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
+    if (this.#closed) return Promise.reject(new WrpcError('Broker is closed', { code: 503, expose: true }));
     this.#enqueue(queue, body, producerHeaders(headers));
     return Promise.resolve();
   }
@@ -267,7 +272,7 @@ class MemoryBroker {
   #consume(queue, onDelivery, { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = {}) {
     requireName(queue, 'queue', 'MemoryBroker.queue.consume');
     checkConsume('MemoryBroker.queue.consume', onDelivery, prefetch, deadLetter);
-    if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
+    if (this.#closed) return Promise.reject(new WrpcError('Broker is closed', { code: 503, expose: true }));
     const state = this.#queueState(queue);
     const consumer = { onDelivery, prefetch, deadLetter, inflight: new Set(), active: true, paused: false };
     state.consumers.push(consumer);
@@ -408,7 +413,7 @@ class MemoryBroker {
     if (typeof onMessage !== 'function') {
       throw new ArgumentError('MemoryBroker.direct.listen: onMessage must be a function');
     }
-    if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
+    if (this.#closed) return Promise.reject(new WrpcError('Broker is closed', { code: 503, expose: true }));
     let entry = this.#addresses.get(address);
     if (!entry) {
       entry = { plain: new Set(), groups: new Map() };
@@ -442,9 +447,9 @@ class MemoryBroker {
 
   #send(address, body, { headers = null, correlationId = null, replyTo = null } = {}) {
     requireName(address, 'address', 'MemoryBroker.direct.send');
-    if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
+    if (this.#closed) return Promise.reject(new WrpcError('Broker is closed', { code: 503, expose: true }));
     const entry = this.#addresses.get(address);
-    if (!entry) return Promise.reject(codedError(`No listener at ${address}`, 503));
+    if (!entry) return Promise.reject(new WrpcError(`No listener at ${address}`, { code: 503, expose: true }));
     const targets = Array.from(entry.plain);
     for (const members of entry.groups.values()) {
       targets.push(members.list[members.cursor % members.list.length]);

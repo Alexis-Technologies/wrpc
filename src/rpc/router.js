@@ -12,7 +12,7 @@ const {
   collectRestRoutes,
   publicHttp,
 } = require('./rest.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, WrpcError } = require('../errors.js');
 
 const DEFAULT_VERSION = '*';
 // The version token of a unit key: 'auth.v1' -> 'v1'. Closed on purpose —
@@ -29,18 +29,11 @@ const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).cons
 // `procedure.subscription({...})` around one is allowed but never required.
 const isGeneratorHandler = (handler) => handler instanceof AsyncGeneratorFunction;
 
-// Dispatcher maps `error.code` (number) onto the wire error code:
+// The router's own refusals are WrpcErrors the dispatcher maps by `code`:
 // 400 invalid input, 408 timeout, 500 invalid output, 503 queue overflow.
 // `expose` marks the message as protocol surface: these strings are written
 // for the caller, so the transport sends them verbatim even on a 5xx, where
 // an ordinary error's message is replaced by the status line.
-const codedError = (message, code, details) => {
-  const error = new Error(message);
-  error.code = code;
-  error.expose = true;
-  if (details !== undefined) error.details = details;
-  return error;
-};
 
 // A validator is either a plain function `(value) => value | throws`
 // (returning undefined keeps the original value) or a Standard Schema
@@ -226,7 +219,7 @@ const timeoutRace = (promise, ms) => {
   let timer = null;
   const failure = new Promise((resolve, reject) => {
     timer = setTimeout(() => {
-      reject(codedError('Procedure timeout', 408));
+      reject(new WrpcError('Procedure timeout', { code: 408, expose: true }));
     }, ms);
   });
   return Promise.race([promise, failure]).finally(() => clearTimeout(timer));
@@ -336,7 +329,7 @@ class Procedure {
    */
   async *subscribe(context, args, options = {}, hooks = EMPTY_HOOKS, compiled = null) {
     if (this.kind !== SUBSCRIPTION) {
-      throw codedError('Not a subscription', 400);
+      throw new WrpcError('Not a subscription', { code: 400, expose: true });
     }
     const inputValidator = compiled?.input ?? this.input;
     const outputValidator = compiled?.output ?? this.output;
@@ -347,13 +340,18 @@ class Procedure {
         const checked = runValidator(inputValidator, args, context);
         input = checked && typeof checked.then === 'function' ? await checked : checked;
       } catch (error) {
-        throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
+        throw new WrpcError(`Invalid arguments: ${error.message}`, {
+          code: 400,
+          details: error.details,
+          expose: true,
+          cause: error,
+        });
       }
     }
     if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, input);
     const source = this.handler(context, input, options);
     if (!source || typeof source[Symbol.asyncIterator] !== 'function') {
-      throw codedError('Subscription handler must return an async iterable', 500);
+      throw new WrpcError('Subscription handler must return an async iterable', { code: 500, expose: true });
     }
     for await (const value of source) {
       if (!outputValidator) {
@@ -368,7 +366,12 @@ class Procedure {
         checked = runValidator(outputValidator, payload);
         if (checked && typeof checked.then === 'function') checked = await checked;
       } catch (error) {
-        throw codedError(`Invalid subscription value: ${error.message}`, 500, error.details);
+        throw new WrpcError(`Invalid subscription value: ${error.message}`, {
+          code: 500,
+          details: error.details,
+          expose: true,
+          cause: error,
+        });
       }
       yield isTracked(value) ? tracked(value.id, checked) : checked;
     }
@@ -395,21 +398,21 @@ class Procedure {
       await this.semaphore.enter(context.signal ?? null);
     } catch (error) {
       if (started > 0) otel.recordQueue(-1);
-      throw codedError(error.message, 503);
+      throw new WrpcError(error.message, { code: 503, expose: true, cause: error });
     }
     if (started > 0) otel.recordQueue(-1, Date.now() - started);
   }
 
   async invokeBare(context, args) {
     if (this.kind === SUBSCRIPTION) {
-      throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
+      throw new WrpcError('This procedure is a subscription: use {type:"subscribe"}', { code: 400, expose: true });
     }
     const deadline = this.timeout > 0 ? Date.now() + this.timeout : 0;
     if (this.semaphore) await this.#acquire(context);
     let handlerStarted = false;
     try {
       if (deadline > 0 && Date.now() >= deadline) {
-        throw codedError('Procedure timeout', 408);
+        throw new WrpcError('Procedure timeout', { code: 408, expose: true });
       }
       handlerStarted = true;
       // Called directly rather than through Promise.resolve().then(): the
@@ -433,7 +436,7 @@ class Procedure {
 
   async invoke(context, args, hooks = EMPTY_HOOKS, compiled = null, budget = 0) {
     if (this.kind === SUBSCRIPTION) {
-      throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
+      throw new WrpcError('This procedure is a subscription: use {type:"subscribe"}', { code: 400, expose: true });
     }
     // The procedure's deadline starts NOW, queue wait included: a caller
     // that waited 900 ms of a 1000 ms timeout in the queue has 100 ms of
@@ -449,7 +452,7 @@ class Procedure {
     const deadline = limit > 0 ? Date.now() + limit : 0;
     if (this.semaphore) await this.#acquire(context);
     if (deadline > 0 && Date.now() >= deadline) {
-      throw codedError('Procedure timeout', 408);
+      throw new WrpcError('Procedure timeout', { code: 408, expose: true });
     }
     let handlerStarted = false;
     try {
@@ -461,7 +464,12 @@ class Procedure {
           const checked = runValidator(inputValidator, args, context);
           args = checked && typeof checked.then === 'function' ? await checked : checked;
         } catch (error) {
-          throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
+          throw new WrpcError(`Invalid arguments: ${error.message}`, {
+            code: 400,
+            details: error.details,
+            expose: true,
+            cause: error,
+          });
         }
       }
       if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, args);
@@ -497,7 +505,12 @@ class Procedure {
           const checked = runValidator(outputValidator, result);
           result = checked && typeof checked.then === 'function' ? await checked : checked;
         } catch (error) {
-          throw codedError(`Invalid procedure result: ${error.message}`, 500, error.details);
+          throw new WrpcError(`Invalid procedure result: ${error.message}`, {
+            code: 500,
+            details: error.details,
+            expose: true,
+            cause: error,
+          });
         }
       }
       return result;

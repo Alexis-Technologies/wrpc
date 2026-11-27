@@ -107,3 +107,8 @@ expectType<{ frame: Frame; bytesUsed: number } | null>(parseResult.value);
 expectAssignable<WebsocketServerOptions>({ turnBudget: false });
 expectAssignable<WebsocketServerOptions>({ turnBudget: { messages: 256, bytes: 64 * 1024 } });
 expectError<WebsocketServerOptions>({ turnBudget: 512 });
+
+// The parser's codes are ALX_ERR_ ones; a ParseError takes (message, options)
+expectType<'ALX_ERR_PARSE_PROTOCOL'>(ws.PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON);
+expectAssignable<ParseError>(new ws.ParseError('x', { code: ws.PARSE_ERR_CODES.INVALID_PAYLOAD }));
+expectError(new ws.ParseError(ws.PARSE_ERR_CODES.INVALID_PAYLOAD, 'x'));

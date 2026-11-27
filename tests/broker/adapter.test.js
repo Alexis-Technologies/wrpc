@@ -23,7 +23,7 @@ const {
   producerHeaders,
   refusalLevels,
 } = require('../../src/broker/adapter.js');
-const { codedError } = require('../../src/broker/ids.js');
+const { WrpcError } = require('../../src/errors.js');
 const { waitFor } = require('./support.js');
 
 // An inner read over a fixed list, counting how it was left.
@@ -79,7 +79,7 @@ describe('failedRead', () => {
     const onUnhandled = (error) => unhandled.push(error);
     process.on('unhandledRejection', onUnhandled);
     try {
-      const error = codedError('Malformed event id', 400);
+      const error = new WrpcError('Malformed event id', { code: 400, expose: true });
       const read = failedRead(error);
       // Nobody awaits `ready`: a turn of the loop must pass without a report.
       await new Promise((resolve) => setImmediate(resolve));
@@ -101,7 +101,7 @@ describe('guardedRead', () => {
     const onUnhandled = (error) => unhandled.push(error);
     process.on('unhandledRejection', onUnhandled);
     try {
-      const refusal = codedError('Event history was trimmed past this id', 410);
+      const refusal = new WrpcError('Event history was trimmed past this id', { code: 410, expose: true });
       const guard = Promise.reject(refusal);
       guard.catch(() => {});
       const { read: inner, state } = innerOf([{ id: 1, value: 'a' }]);

@@ -193,7 +193,10 @@ describe('http encryption', () => {
     await assert.rejects(client.call('data/echo', { n: 1 }), (error) => error.code === 409);
     assert.strictEqual(errors.length, 1);
     assert.ok(errors[0] instanceof EncryptionRefusedError);
-    assert.deepStrictEqual([errors[0].code, errors[0].status], ['ENCRYPTION_REFUSED', 409]);
+    assert.deepStrictEqual(
+      [errors[0].code, errors[0].statusCode, errors[0].status],
+      ['ALX_ERR_ENCRYPTION_REFUSED', 409, 409],
+    );
     assert.match(errors[0].message, /clock/);
   });
 
@@ -251,7 +254,7 @@ describe('http encryption', () => {
     })(fetch, staleEndpoint);
     await assert.rejects(
       late(staleEndpoint, { method: 'POST', body: '{}' }),
-      (error) => error.code === 'ENCRYPTION_REFUSED' && error.status === 409,
+      (error) => error.code === 'ALX_ERR_ENCRYPTION_REFUSED' && error.statusCode === 409,
     );
 
     // Altered in flight, truncated, sealed to a kid nobody holds, not the format at all
@@ -301,7 +304,7 @@ describe('http encryption', () => {
     const errors = [];
     client.on('error', (error) => errors.push(error));
     await assert.rejects(client.call('data/echo', { n: 2 }), (error) => error.code === 400);
-    assert.deepStrictEqual([errors[0].code, errors[0].status], ['ENCRYPTION_REFUSED', 400]);
+    assert.deepStrictEqual([errors[0].code, errors[0].statusCode], ['ALX_ERR_ENCRYPTION_REFUSED', 400]);
     const refusal = log.all('encryption.refused').at(-1);
     assert.deepStrictEqual([refusal.reason, refusal.kind], ['kid', 'http']);
     const repinned = await connect(await booted.server.rpc.encryptionKey());

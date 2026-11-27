@@ -37,11 +37,13 @@
 // The one failure `open` has: a wrong key, a wrong nonce, a flipped bit and
 // a truncated message are indistinguishable on purpose — whoever sent the
 // bytes learns nothing from which it was. Callers answer it uniformly too.
+// `options.reason` is for the log alone (an envelope's `replay`, `kid`, …).
 class OpenError extends Error {
-  constructor() {
-    super('encryption: the message does not open');
+  constructor(message = 'encryption: the message does not open', options = {}) {
+    super(message, options);
     this.name = 'OpenError';
-    this.code = 'open';
+    this.code = 'ALX_ERR_OPEN';
+    if (options.reason !== undefined) this.reason = options.reason;
   }
 }
 

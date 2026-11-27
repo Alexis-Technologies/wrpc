@@ -46,14 +46,12 @@ const { isSignalMessage, SIGNAL_MESSAGE_TYPES } = require('./signaler.js');
 const { normalizeFingerprint } = require('./assertions.js');
 const { createAssertionIssuer } = require('./assertionIssuer.js');
 const { MAX_ID_LENGTH, isPeerId } = require('./ids.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 const DEFAULT_NAME = 'signaling';
 const DEFAULT_PREFIX = 'rtc:';
 const MAX_ROOM_LENGTH = 256;
 const DUPLICATE = ['replace', 'refuse'];
-
-const refusal = (message, code) => Object.assign(new Error(message), { code });
 
 // Rooms are peer-named. Bounded, non-empty, and never a string that could
 // address a prototype when used as an object key downstream.
@@ -288,13 +286,15 @@ const createSignalingUnit = (options = {}) => {
   const allow = async (context, info) => {
     if (authorize === null) return;
     const verdict = await authorize(context, info);
-    if (verdict === false) throw refusal(`${name}: ${info.action} refused`, 403);
+    if (verdict === false) throw new WrpcError(`${name}: ${info.action} refused`, { code: 403 });
   };
 
   // Re-checked after every await: a call from a connection that lost its
   // id while the call was in flight must not act under it.
   const owns = (client, rtc) => {
-    if (rtc.revoked === true || registry.get(rtc.id) !== client) throw refusal(`${name}: replaced`, 409);
+    if (rtc.revoked === true || registry.get(rtc.id) !== client) {
+      throw new WrpcError(`${name}: replaced`, { code: 409 });
+    }
   };
 
   const member = (rtc, address, room) => ({ id: rtc.id, instance: rtc.instance, address, data: dataFor(rtc, room) });
@@ -330,22 +330,24 @@ const createSignalingUnit = (options = {}) => {
     const { client, server } = context;
     const current = rtcOf(client);
     if (current) {
-      if (current.revoked === true) throw refusal(`${name}: replaced`, 409);
-      if (proposed !== null && proposed !== current.id) throw refusal(`${name}: already identified`, 409);
+      if (current.revoked === true) throw new WrpcError(`${name}: replaced`, { code: 409 });
+      if (proposed !== null && proposed !== current.id) {
+        throw new WrpcError(`${name}: already identified`, { code: 409 });
+      }
       return current;
     }
     const id = identity === null ? client.id : await identity(context, { proposed });
-    if (!isId(id)) throw refusal(`${name}: identity must return a non-empty string`, 500);
+    if (!isId(id)) throw new WrpcError(`${name}: identity must return a non-empty string`, { code: 500 });
     // Two whoami calls in flight on one connection: the second to land
     // adopts the first's answer.
     const raced = rtcOf(client);
     if (raced) {
-      if (raced.id !== id) throw refusal(`${name}: already identified`, 409);
+      if (raced.id !== id) throw new WrpcError(`${name}: already identified`, { code: 409 });
       return raced;
     }
     const holder = registry.get(id);
     if (holder && holder !== client) {
-      if (duplicate === 'refuse') throw refusal(`${name}: '${id}' is already connected`, 409);
+      if (duplicate === 'refuse') throw new WrpcError(`${name}: '${id}' is already connected`, { code: 409 });
       replace(holder, server, instance);
     }
     const rtc = { __proto__: null, id, instance, since: Date.now(), rooms: Object.create(null) };
@@ -407,7 +409,7 @@ const createSignalingUnit = (options = {}) => {
     if (shared) return shared;
     const mine = resolving.get(client) ?? 0;
     if ((limits.maxResolves !== false && mine >= limits.maxResolves) || lookups.size >= MAX_LOOKUPS) {
-      throw refusal(`${name}: too many lookups in flight`, 503);
+      throw new WrpcError(`${name}: too many lookups in flight`, { code: 503 });
     }
     resolving.set(client, mine + 1);
     const pending = server.cluster.fetchClients({ room: key }).finally(() => {
@@ -456,7 +458,7 @@ const createSignalingUnit = (options = {}) => {
       handler: async (context, { room, data }) => {
         const { client, server } = context;
         if (limits.maxDataBytes !== false && data !== null && JSON.stringify(data).length > limits.maxDataBytes) {
-          throw refusal(`${name}: join data too large`, 413);
+          throw new WrpcError(`${name}: join data too large`, { code: 413 });
         }
         const rtc = await identify(context);
         // A room already joined — or being joined — is not another room. The
@@ -468,7 +470,7 @@ const createSignalingUnit = (options = {}) => {
         if (limits.maxRooms !== false && rtc.rooms[room] === undefined && !joining.has(room)) {
           let count = joining.size;
           for (const key in rtc.rooms) if (key) count++;
-          if (count >= limits.maxRooms) throw refusal(`${name}: too many rooms`, 429);
+          if (count >= limits.maxRooms) throw new WrpcError(`${name}: too many rooms`, { code: 429 });
         }
         joining.add(room);
         try {
@@ -522,7 +524,7 @@ const createSignalingUnit = (options = {}) => {
         // A roster is for the room's members — the bound every relayed
         // signal already has, and what keeps a room from being enumerated
         // (one cluster-wide fetch a call) by anyone who knows its name.
-        if (!client.in(roomOf(room))) throw refusal(`members: not a member of '${room}'`, 403);
+        if (!client.in(roomOf(room))) throw new WrpcError(`members: not a member of '${room}'`, { code: 403 });
         const rtc = rtcOf(client);
         return roster(context.server, room, { id: client.id, peer: rtc ? rtc.id : client.id });
       },
@@ -535,11 +537,11 @@ const createSignalingUnit = (options = {}) => {
         signature: { args: { to: 'string', address: 'string', room: 'string', message: 'object' } },
         handler: async (context, { to, address, room, message }) => {
           const { client, server } = context;
-          if (tooLarge(message, limits.maxSignalBytes)) throw refusal(`${name}: signal too large`, 413);
+          if (tooLarge(message, limits.maxSignalBytes)) throw new WrpcError(`${name}: signal too large`, { code: 413 });
           const rtc = await identify(context);
           if (relay === 'room') {
-            if (room === null) throw refusal('signal: room is required', 400);
-            if (!client.in(roomOf(room))) throw refusal(`signal: not a member of '${room}'`, 403);
+            if (room === null) throw new WrpcError('signal: room is required', { code: 400 });
+            if (!client.in(roomOf(room))) throw new WrpcError(`signal: not a member of '${room}'`, { code: 403 });
           }
           await allow(context, { action: 'signal', room, to, message });
           owns(client, rtc);
@@ -585,7 +587,7 @@ const createSignalingUnit = (options = {}) => {
               const custom = extraClaims === null ? null : await extraClaims(context);
               owns(client, rtc);
               if (custom !== null && (typeof custom !== 'object' || Array.isArray(custom))) {
-                throw refusal(`${name}: assertions.claims must return an object`, 500);
+                throw new WrpcError(`${name}: assertions.claims must return an object`, { code: 500 });
               }
               return issuer.sign({ ...custom, sub: rtc.id, fp: fingerprint });
             },

@@ -29,7 +29,7 @@
 const { createLoggerWriter } = require('../../logging.js');
 const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toBytes, toHeaders, reasonText, encodeToken, tokenEncoder } = require('../ids.js');
+const { toBytes, toHeaders, reasonText, encodeToken, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const {
@@ -51,7 +51,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
-const { ConfigError, ArgumentError } = require('../../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_INBOX_TTL = 60_000;
@@ -532,7 +532,7 @@ const createAmqpBroker = (options = {}) => {
           // message when the requested offset is gone: a first entry past
           // the one asked for is history the retention took, not a page.
           if (entries.length === 0 && start >= 0 && entry.offset > start + 1) {
-            failure = codedError('Event history was trimmed past this id', 410);
+            failure = new WrpcError('Event history was trimmed past this id', { code: 410, expose: true });
             return void finish();
           }
           entries.push(entry);
@@ -566,7 +566,7 @@ const createAmqpBroker = (options = {}) => {
     if (after === null || after === undefined) {
       return stringifyIds(tails.read(topic, from === 'earliest' ? { after: -1, signal } : { from, signal }));
     }
-    if (parseId(after) === null) return failedRead(codedError('Malformed event id', 400));
+    if (parseId(after) === null) return failedRead(new WrpcError('Malformed event id', { code: 400, expose: true }));
     const position = Number(after);
     const inner = tails.read(topic, { after: position, signal });
     // RabbitMQ silently starts a stream reader at the OLDEST retained
@@ -585,7 +585,7 @@ const createAmqpBroker = (options = {}) => {
               first = false;
               if (result.value.id > position + 1) {
                 await iterator.return?.();
-                throw codedError('Event history was trimmed past this id', 410);
+                throw new WrpcError('Event history was trimmed past this id', { code: 410, expose: true });
               }
             }
             return result;
@@ -631,7 +631,9 @@ const createAmqpBroker = (options = {}) => {
   };
 
   const append = async (topic, value, { headers = null } = {}) => {
-    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
+    if (closed || lost) {
+      throw new WrpcError(closed ? 'Broker is closed' : 'Broker connection lost', { code: 503, expose: true });
+    }
     const queue = await ensureLog(topic);
     await confirmPublish('', queue, value, { persistent: true, headers: toHeaders(headers) });
     const offset = await tipOffset(topic);
@@ -678,13 +680,17 @@ const createAmqpBroker = (options = {}) => {
   };
 
   const produce = async (queue, body, { headers = null } = {}) => {
-    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
+    if (closed || lost) {
+      throw new WrpcError(closed ? 'Broker is closed' : 'Broker connection lost', { code: 503, expose: true });
+    }
     const main = await ensureQueue(queue);
     await confirmPublish('', main, body, { persistent: true, headers: toHeaders(producerHeaders(headers)) });
   };
 
   const consume = async (queue, onDelivery, consumeOptions = {}) => {
-    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
+    if (closed || lost) {
+      throw new WrpcError(closed ? 'Broker is closed' : 'Broker connection lost', { code: 503, expose: true });
+    }
     const { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('amqp queue.consume', onDelivery, prefetch, deadLetter);
     const main = await ensureQueue(queue, deadLetter);
@@ -939,7 +945,9 @@ const createAmqpBroker = (options = {}) => {
   const ensureDirect = () => ensureExchange(directExchange, 'direct');
 
   const listen = async (address, onMessage, { group = null } = {}) => {
-    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
+    if (closed || lost) {
+      throw new WrpcError(closed ? 'Broker is closed' : 'Broker connection lost', { code: 503, expose: true });
+    }
     checkListen('amqp direct.listen', address, onMessage);
     const grouped = group !== null && group !== undefined;
     const exchangeName = await ensureDirect();
@@ -1048,7 +1056,9 @@ const createAmqpBroker = (options = {}) => {
   };
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null, timeout } = {}) => {
-    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
+    if (closed || lost) {
+      throw new WrpcError(closed ? 'Broker is closed' : 'Broker connection lost', { code: 503, expose: true });
+    }
     const ready = await Promise.all([directing(), ensureDirect()]);
     const channel = ready[0];
     const exchangeName = ready[1];
@@ -1071,8 +1081,14 @@ const createAmqpBroker = (options = {}) => {
         // being deleted under a listener that just stopped, an overflow, a
         // node on its way out. Whichever, the message reached nobody, which
         // is the 503 the RPC binding retries or fails on.
-        if (error) return void reject(codedError(`Broker refused the message for ${address}: ${error.message}`, 503));
-        if (returned.delete(messageId)) return void reject(codedError(`No listener at ${address}`, 503));
+        if (error) {
+          return void reject(
+            new WrpcError(`Broker refused the message for ${address}: ${error.message}`, { code: 503, expose: true }),
+          );
+        }
+        if (returned.delete(messageId)) {
+          return void reject(new WrpcError(`No listener at ${address}`, { code: 503, expose: true }));
+        }
         resolve();
       });
     });

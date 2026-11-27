@@ -18,9 +18,9 @@
 
 const { tracked } = require('../rpc/subscriptions.js');
 const { capabilityOf, brokerName } = require('./port.js');
-const { codedError, signId, openId, toText } = require('./ids.js');
+const { signId, openId, toText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, WrpcError } = require('../errors.js');
 
 const DEFAULT_MAX_ID_LENGTH = 512;
 // A sealed entry the feed cannot open is logged at warn once per reason per
@@ -168,7 +168,7 @@ const brokerFeed = (broker, topic, options = {}) => {
   return async function* feed(context, args, { lastEventId = null, signal: outer = null } = {}) {
     const name = typeof topic === 'function' ? await topic(context, args) : topic;
     if (typeof name !== 'string' || name.length === 0) {
-      throw codedError('brokerFeed: the topic resolver must answer a non-empty string', 500);
+      throw new WrpcError('brokerFeed: the topic resolver must answer a non-empty string', { code: 500, expose: true });
     }
     const start = position(lastEventId, name);
     let after = start.after;
@@ -246,7 +246,10 @@ const brokerFeed = (broker, topic, options = {}) => {
         let read = null;
         if (code !== null) {
           if (!onGap) {
-            throw codedError(code === 400 ? 'Invalid event id' : 'Event history is no longer available', code);
+            throw new WrpcError(code === 400 ? 'Invalid event id' : 'Event history is no longer available', {
+              code,
+              expose: true,
+            });
           }
           // A subscriber that fell behind retention, or one resuming from a
           // position this log no longer has: real event loss, answered with a

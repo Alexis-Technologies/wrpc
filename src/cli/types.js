@@ -73,7 +73,7 @@ Examples:
 // What the command refuses: a bad argument, an answer it cannot use. The
 // shim in bin/wrpc.js prints the message and exits 1.
 class CliError extends Error {
-  constructor(message, options) {
+  constructor(message, options = {}) {
     super(message, options);
     this.name = 'CliError';
     this.code = 'ALX_ERR_CLI';

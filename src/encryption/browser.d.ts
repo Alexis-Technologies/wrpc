@@ -15,20 +15,29 @@ export type Bytes = Uint8Array;
  * a truncated message are indistinguishable on purpose.
  */
 export declare class OpenError extends Error {
-  readonly code: 'open';
+  readonly name: 'OpenError';
+  readonly code: 'ALX_ERR_OPEN';
+  /** Why, for the log alone — an envelope's `replay`, `kid`, `format`; absent on most. */
+  readonly reason?: string;
+  constructor(message?: string, options?: ErrorOptions & { reason?: string });
 }
 
 /**
  * A sealed request (http, sse) the server answered in plaintext — a client
- * that encrypts reads none. `status` is the outer, unauthenticated status;
+ * that encrypts reads none. `statusCode` is the outer, unauthenticated status;
  * the calls the request carried fail with it only for the closed set the
  * sealing layer vouches for (400: the pinned key may be retired; 409: stale
  * or replayed — check the device's clock; 426: encryption required), and
  * with 503 otherwise. Emitted as `'error'` on the client.
  */
 export declare class EncryptionRefusedError extends Error {
-  readonly code: 'ENCRYPTION_REFUSED';
+  readonly name: 'EncryptionRefusedError';
+  readonly code: 'ALX_ERR_ENCRYPTION_REFUSED';
+  /** The outer, unauthenticated status the server answered with. */
+  readonly statusCode: number;
+  /** @deprecated `statusCode` under its 2.x name; removed in 3.0. */
   readonly status: number;
+  constructor(message: string, options: ErrorOptions & { statusCode: number });
 }
 
 /** One key of a `Cipher`, ready to use. Either method may answer a promise. */

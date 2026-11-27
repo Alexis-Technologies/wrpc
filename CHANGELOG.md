@@ -17,6 +17,46 @@ narrower promise — see
   `TypeError: …`; it reads `ConfigError: …` or `ArgumentError: …` now. The
   class still extends `TypeError`, so `instanceof TypeError` holds, but code
   that matched `error.name === 'TypeError'` no longer matches.
+- **Every error class takes `(message, options)`, as `Error` does**, the
+  form alexiskills 1.2 asks of every Alexis library: `options` holds
+  `cause` — set only when given — and the class's own fields. The
+  constructors that took something else take it from `options` now:
+  `new WrpcError({ message, code, details })` is
+  `new WrpcError(message, { code, details })`;
+  `new FramingError(message, code)`, `new DeflateError(message, code)` and
+  `new AssertionError(message, code)` are `(message, { code })`, and so is
+  `new ParseError(code, message)` with its arguments the other way round;
+  `new OpenError()` is `(message?, { reason })`;
+  `new EncryptionRefusedError(status)` is `(message, { statusCode })`.
+  `ConfigError`, `ArgumentError` and `CliError` already took that form.
+- **Every string code is an `ALX_ERR_` one.** The codes 2.x gave the
+  errors of a peer's bytes are renamed: `FramingError`'s `empty`,
+  `reserved`, `kind`, `too-large`, `fragments`, `utf8`, `message-size`
+  and `inflate` are `ALX_ERR_FRAMING_EMPTY` … `ALX_ERR_FRAMING_INFLATE`;
+  `DeflateError`'s `truncated`, `huffman`, `stored`, `distance`, `block`
+  and `too-large` are `ALX_ERR_DEFLATE_*` the same way; `AssertionError`'s
+  ten are `ALX_ERR_ASSERTION_*` (`signature` is
+  `ALX_ERR_ASSERTION_SIGNATURE`); `PARSE_ERR_CODES` keeps its keys and
+  answers `ALX_ERR_PARSE_MESSAGE_TOO_BIG`, `ALX_ERR_PARSE_PROTOCOL`
+  (`PROTOCOL_ERROR-COMMON`), `ALX_ERR_PARSE_RSV`,
+  `ALX_ERR_PARSE_CONTROL_TOO_LONG` and `ALX_ERR_PARSE_INVALID_PAYLOAD`;
+  `OpenError`'s `open` is `ALX_ERR_OPEN`, `EncryptionRefusedError`'s
+  `ENCRYPTION_REFUSED` is `ALX_ERR_ENCRYPTION_REFUSED`, and a WebTransport
+  session or a WebRTC channel past `maxBackpressure` ends with
+  `ALX_ERR_BACKPRESSURE` where it said `backpressure`. No code crosses the
+  wire, and the `wrpc.rtc.outcome` labels of `wrpc.rtc.assertions` are the
+  ones they were.
+- **A `WrpcError` is named `WrpcError`**, and it is what wRPC throws for a
+  wire status on the server too — the router's refusals (400, 408, 500,
+  503), a broker's (`Broker is closed`, a trimmed history), an ask that
+  timed out or failed, a stream that failed or was terminated, the fastify
+  adapter's 403, the mirror's 400s, the signaling unit's refusals. Each read
+  `Error: …` with `name === 'Error'`; they read `WrpcError: …` now, and
+  are `instanceof WrpcError`. A carrier's own faults — a WebTransport
+  session or a WebRTC channel past `maxBackpressure`, a data channel's
+  `send()` that threw — are a `TransportError` in place of an `Error`,
+  with `ALX_ERR_CHANNEL_SEND` and `ALX_ERR_CHANNEL_DESYNC` where they said
+  `send` and `desync`.
 
 ### Upgrading from 2.2
 
@@ -24,6 +64,19 @@ narrower promise — see
   `error instanceof TypeError`, or the code — `error.code === 'ALX_ERR_CONFIG'`
   for an option or a definition, `'ALX_ERR_ARGUMENT'` for an argument of a
   call.
+- Code that constructs a wRPC error passes the message first and the rest
+  in `options`: `new WrpcError('Not found', { code: 404 })`,
+  `new FramingError(message, { code: 'ALX_ERR_FRAMING_UTF8' })`.
+- Code that matched a 2.x string code matches its `ALX_ERR_` name — the
+  table of the errors reference lists every one: `error.code === 'utf8'`
+  is `error.code === 'ALX_ERR_FRAMING_UTF8'`, `'ENCRYPTION_REFUSED'` is
+  `'ALX_ERR_ENCRYPTION_REFUSED'`, `'backpressure'` is
+  `'ALX_ERR_BACKPRESSURE'`.
+- Code that matched `error.name === 'Error'` on a call's rejection or a
+  server-side refusal checks `error instanceof WrpcError`, or the numeric
+  `code`, which is unchanged.
+- `EncryptionRefusedError` reads `statusCode`; `status` still holds the
+  same number until 3.0.
 
 ### Added
 
@@ -40,7 +93,20 @@ narrower promise — see
   table in the errors reference list every code; a test holds the source,
   the types and the table equal.
 - **`FramingErrorCode`, `DeflateErrorCode` and `ParseErrorCode`** unions
-  type the `code` of the errors a peer's bytes raise.
+  type the `code` of the errors a peer's bytes raise, and
+  `AssertionErrorCode` an assertion refusal's (`AssertionRefusal`, its 2.x
+  name, is a deprecated alias until 3.0).
+- **`WrpcError` for a handler to throw**: `throw new WrpcError('No such
+  document', { code: 404 })` answers the peer 404, with `details`, `expose`
+  and `cause` in `options` and 500 when no `code` is given — the class the
+  client rejects with, from `src/errors.js` on both ends. An error with a
+  numeric `code` set by hand is answered as before. `WrpcErrorOptions`
+  types the options.
+- **`TransportError`**, exported from `@alexify/wrpc/wt` and
+  `@alexify/wrpc/webrtc`: a carrier that gave up on its own side
+  (`ALX_ERR_BACKPRESSURE`, `ALX_ERR_CHANNEL_SEND`, `ALX_ERR_CHANNEL_DESYNC`).
+- **`EncryptionRefusedError.statusCode`**, the name alexiskills gives a
+  numeric status.
 - **`new Emitter({ warn })`**: where the `MaxListenersExceededWarning`
   goes — the console when it is not given, nowhere for `null`.
 
@@ -48,7 +114,14 @@ narrower promise — see
 
 - **One `FramingError`** for the WebTransport and the WebRTC framings
   (`src/errors.js`): an error of one is `instanceof` the class the other
-  exports. Its codes are unchanged.
+  exports.
+- **A wrapped error keeps its `cause`**: the router's `Invalid arguments`,
+  `Invalid subscription value` and `Invalid procedure result` refusals
+  carry the validator's error, a broker's `Invalid … payload` its
+  validator's, a queue refusal the semaphore's, and the client's
+  `HTTP request failed` and dead-connection 503s the error underneath. A
+  cause stays in the log: the wire carries the message, the code and the
+  details, as it did.
 - **`CliError`** (the `wrpc` command's) carries `code: 'ALX_ERR_CLI'`.
 - **The router's "failed to compile" errors carry their `cause`**, the
   error the injected compiler threw.
@@ -77,11 +150,11 @@ narrower promise — see
 
 ### Documentation
 
-- **The errors reference** has the table of the codes wRPC throws, and
-  says which string codes keep their 2.x spelling until 3.0: `FramingError`,
-  `DeflateError`, `ParseError`, `AssertionError`, `OpenError`,
-  `EncryptionRefusedError` and `backpressure`. The numeric `code` stays
-  wRPC's wire status.
+- **The errors reference** has one table of every string code wRPC throws,
+  with its class and when, says which three keep a Node.js code (`EADDRINUSE`,
+  `ERR_STREAM_PREMATURE_CLOSE`, `ERR_BUFFER_TOO_LARGE`), and shows a handler
+  throwing a `WrpcError`; the hooks, rate-limiting and security guides throw
+  one too. The numeric `code` stays wRPC's wire status.
 - **The logging guide** catalogues `emitter.listeners`.
 - **CONTRIBUTING** releases with `pnpm publish`, behind `prepublishOnly`,
   and checks the packing list with `pnpm pack --dry-run`; the tarball
@@ -89,7 +162,7 @@ narrower promise — see
 
 ### Tooling
 
-- **The skills are alexiskills 1.1.2** (`@alexify/metaskills`, a
+- **The skills are alexiskills 1.2.0** (`@alexify/metaskills`, a
   devDependency), linked into `.claude/skills` by the `prepare` script, in
   place of the six metarhia 1.0.5 copies the repository kept; what they
   said of wRPC alone is in `CLAUDE.md` ("Conventions", "Release process").
@@ -108,6 +181,10 @@ narrower promise — see
   measured it; `for...of` and `for...in` stay where they were, as 1.1.2
   allows, and a hot path keeps the loop its benchmark picks. The browser entries grow by 134 to 424 B
   min+gzip; the webrtc entry's budget goes from 62 to 63 KB.
+- **The error classes of alexiskills 1.2 cost 84 to 302 B** min+gzip in
+  the browser entries, most of it the longer `ALX_ERR_` strings; the sse
+  entry's budget goes from 32 to 33 KB and the webrtc entry's from 63 to
+  64 KB.
 - **The tests are `describe` and `it('should …')`**, asserted with
   `node:assert/strict`. The contract suites register their cases in the
   caller's `describe`, and an integration suite run without its server

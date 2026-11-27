@@ -146,14 +146,14 @@ then gzipped):
 | `@alexify/wrpc/broker/nats` | 34.4 KB | 13.0 KB | — |
 | `@alexify/wrpc/broker/amqp` | 38.2 KB | 14.1 KB | — |
 | `@alexify/wrpc/broker/kafka` | 32.5 KB | 12.2 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 94.5 KB | **31.9 KB** | 32.0 KB |
+| `@alexify/wrpc/sse` — browser (client transport) | 94.5 KB | **31.9 KB** | 33.0 KB |
 | `@alexify/wrpc/sse` — node | 156.7 KB | 52.9 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 3.0 KB | **1.2 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 4.2 KB | **1.9 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 11.1 KB | **4.5 KB** | 5.0 KB |
 | `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 32.3 KB | **11.9 KB** | 12.0 KB |
 | `@alexify/wrpc/encryption` — node | 45.3 KB | 16.6 KB | — |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 191.4 KB | **63.0 KB** | 63.0 KB |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 191.4 KB | **63.0 KB** | 64.0 KB |
 | `@alexify/wrpc/webrtc` — node | 203.3 KB | 66.4 KB | — |
 | `@alexify/wrpc/wt` (WebTransport server half) | 64.3 KB | 22.8 KB | — |
 

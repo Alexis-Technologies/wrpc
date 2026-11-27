@@ -28,7 +28,7 @@
 const { createRedisAdapter } = require('../../scaling/redis.js');
 const { createLoggerWriter } = require('../../logging.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
+const { toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const { Deque } = require('../../deque.js');
@@ -47,7 +47,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
-const { ConfigError, ArgumentError } = require('../../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const token = tokenEncoder({ maxLength: 200 });
@@ -183,7 +183,7 @@ const createRedisBroker = (options = {}) => {
   // connection, and a connection opened then was never quit: the process
   // stayed up on it for good (a test run that never exited).
   const spawn = () => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const created = connect ? connect() : client.duplicate();
     owned.add(created);
     return created;
@@ -319,7 +319,7 @@ const createRedisBroker = (options = {}) => {
     }
     if (after === null || after === undefined) return tails.read(topic, { from, signal });
     if (parseId(after) === null) {
-      return failedRead(codedError('Malformed event id', 400));
+      return failedRead(new WrpcError('Malformed event id', { code: 400, expose: true }));
     }
     // The position is checked before the tail joins: an id past the tip is
     // a client asking for a future, an id below the first retained one is a
@@ -330,9 +330,11 @@ const createRedisBroker = (options = {}) => {
       const bounds = await Promise.all([tip(topic), firstId(topic)]);
       const last = bounds[0];
       const first = bounds[1];
-      if (last === null || compareIds(after, last) > 0) throw codedError('Event id is beyond the end of the log', 400);
+      if (last === null || compareIds(after, last) > 0) {
+        throw new WrpcError('Event id is beyond the end of the log', { code: 400, expose: true });
+      }
       if (first !== null && compareIds(after, first) < 0) {
-        throw codedError('Event history was trimmed past this id', 410);
+        throw new WrpcError('Event history was trimmed past this id', { code: 410, expose: true });
       }
     })();
     // Surfaced through the read it guards (guardedRead); never unhandled.
@@ -341,7 +343,7 @@ const createRedisBroker = (options = {}) => {
   };
 
   const append = async (topic, value, { headers = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const fields = encodeFields(value, headers);
     if (maxLen > 0) return client.xadd(streamKey(topic), 'MAXLEN', '~', `${maxLen}`, '*', ...fields);
     return client.xadd(streamKey(topic), '*', ...fields);
@@ -373,12 +375,12 @@ const createRedisBroker = (options = {}) => {
   };
 
   const produce = async (name, body, { headers = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     await client.xadd(queueKey(name), '*', ...encodeFields(body, producerHeaders(headers)));
   };
 
   const consume = async (name, onDelivery, consumeOptions = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('redis queue.consume', onDelivery, prefetch, deadLetter);
     const consumerName = `wrpc-${shortName()}`;
@@ -790,13 +792,13 @@ const createRedisBroker = (options = {}) => {
   };
 
   const listen = async (address, onMessage, { group = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     checkListen('redis direct.listen', address, onMessage);
     return group === null || group === undefined ? listenPlain(address, onMessage) : listenGroup(address, onMessage);
   };
 
   const send = async (address, body, sendOptions = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const payload = encodeMessage(body, sendOptions);
     const channel = inboxKey(address);
     const reached = await Promise.all([
@@ -814,7 +816,7 @@ const createRedisBroker = (options = {}) => {
       return;
     }
     // Nobody at all: the fast 503 an RPC caller wants instead of a timeout.
-    if (subscribers === 0) throw codedError(`No listener at ${address}`, 503);
+    if (subscribers === 0) throw new WrpcError(`No listener at ${address}`, { code: 503, expose: true });
   };
 
   // ---------------------------------------------------------------------

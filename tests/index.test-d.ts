@@ -746,7 +746,14 @@ expectType<WrpcWritable>(
 // error.details: optional wire field on WrpcError and ask errors
 declare const wrpcError: wrpc.WrpcError;
 expectAssignable<unknown>(wrpcError.details);
-expectAssignable<wrpc.WrpcError>(new wrpc.WrpcError({ message: 'x', code: 400, details: { issues: [] } }));
+expectAssignable<wrpc.WrpcError>(new wrpc.WrpcError('x', { code: 400, details: { issues: [] } }));
+expectAssignable<wrpc.WrpcError>(new wrpc.WrpcError('x', { code: 503, expose: true, cause: new Error('y') }));
+expectType<'WrpcError'>(wrpcError.name);
+expectError(new wrpc.WrpcError({ message: 'x', code: 400 }));
+
+// Every class takes (message, options), as Error does
+expectType<'ALX_ERR_CONFIG'>(new wrpc.ConfigError('x', { cause: wrpcError }).code);
+expectType<'ALX_ERR_ARGUMENT'>(new wrpc.ArgumentError('x').code);
 
 // Declarative REST: http + fastify-shaped schema on a procedure
 const mapped = wrpc.procedure({

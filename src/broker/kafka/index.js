@@ -22,7 +22,7 @@
 const { createLoggerWriter } = require('../../logging.js');
 const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
+const { toText, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { crashDelay } = require('../retry.js');
 const { Deque } = require('../../deque.js');
 const {
@@ -50,7 +50,7 @@ const {
   joinWatcher,
   healthWatcher,
 } = require('./shape.js');
-const { ConfigError, ArgumentError } = require('../../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PARTITIONS = 3;
@@ -530,7 +530,7 @@ const createKafkaBroker = (options = {}) => {
     else await new Promise((resolve) => waiting.push(resolve));
     try {
       // Woken by close(): nothing is opened on a broker that is gone.
-      if (closed) throw codedError('Broker is closed', 503);
+      if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
       return await read();
     } finally {
       // The slot goes straight to the next in line, whatever this page did
@@ -635,7 +635,7 @@ const createKafkaBroker = (options = {}) => {
       return encodeIds(tails.read(topic, from === 'earliest' ? { after: {}, signal } : { from, signal }), null);
     }
     const cursor = decodeVector(after);
-    if (cursor === null) return failedRead(codedError('Malformed event id', 400));
+    if (cursor === null) return failedRead(new WrpcError('Malformed event id', { code: 400, expose: true }));
     const guard = (async () => {
       const { low, high } = await watermarks(topic);
       const keys = Object.keys(cursor);
@@ -643,9 +643,11 @@ const createKafkaBroker = (options = {}) => {
         const partition = Number(keys[i]);
         const offset = cursor[keys[i]];
         const tip = high[partition];
-        if (tip === undefined || offset + 1 > tip) throw codedError('Event id is beyond the end of the log', 400);
+        if (tip === undefined || offset + 1 > tip) {
+          throw new WrpcError('Event id is beyond the end of the log', { code: 400, expose: true });
+        }
         if (offset + 1 < (low[partition] ?? 0)) {
-          throw codedError('Event history was trimmed past this id', 410);
+          throw new WrpcError('Event history was trimmed past this id', { code: 410, expose: true });
         }
       }
     })();
@@ -655,7 +657,7 @@ const createKafkaBroker = (options = {}) => {
   };
 
   const append = async (topic, value, { headers = null, key = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const name = await ensureTopic(logTopic(topic), logPartitions);
     const result = await send(name, value, { headers, key });
     const offset = Number(result.baseOffset ?? result.offset ?? 0);
@@ -668,13 +670,13 @@ const createKafkaBroker = (options = {}) => {
   const queueTopic = (queue) => topicName(prefix, 'q', queue);
 
   const produce = async (queue, body, { headers = null, key = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const topic = await ensureTopic(queueTopic(queue));
     await send(topic, body, { headers: producerHeaders(headers), key });
   };
 
   const consume = async (queue, onDelivery, consumeOptions = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const { group = queue, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('kafka queue.consume', onDelivery, prefetch, deadLetter);
     const topic = await ensureTopic(queueTopic(queue));

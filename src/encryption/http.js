@@ -165,12 +165,18 @@ const REFUSAL_MESSAGES = {
   503: 'the server cannot vouch a sealed request fresh right now (its replay memory is full or out of reach) — retry later',
 };
 
+const refusalMessage = (status) =>
+  `encryption: ${REFUSAL_MESSAGES[status] ?? `the server answered in plaintext (${status})`}`;
+
+// `options.statusCode` is that outer status; `status` is the same number
+// under its 2.x name, kept until 3.0.
 class EncryptionRefusedError extends Error {
-  constructor(status) {
-    super(`encryption: ${REFUSAL_MESSAGES[status] ?? `the server answered in plaintext (${status})`}`);
+  constructor(message, options = {}) {
+    super(message, options);
     this.name = 'EncryptionRefusedError';
-    this.code = 'ENCRYPTION_REFUSED';
-    this.status = status;
+    this.code = 'ALX_ERR_ENCRYPTION_REFUSED';
+    this.statusCode = options.statusCode;
+    this.status = options.statusCode;
   }
 }
 
@@ -212,7 +218,9 @@ const sealedFetch = ({ hpke, kdf, cipher, serverKey, now = Date.now }) => {
         const stream = openSealedStream(response.body, await streamKey({ kdf, cipher }, context, enc, nonce));
         return new Response(stream, { status: 200, headers: { 'Content-Type': STREAM_TYPE } });
       }
-      if (!isSealedType(type)) throw new EncryptionRefusedError(response.status);
+      if (!isSealedType(type)) {
+        throw new EncryptionRefusedError(refusalMessage(response.status), { statusCode: response.status });
+      }
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.length < RESPONSE_NONCE) throw new OpenError();
       const nonce = bytes.subarray(0, RESPONSE_NONCE);

@@ -119,3 +119,7 @@ expectType<string | null>(wt.parseDatagram(wt.datagramText('{}')));
 // A graceful close waits for the control stream, at most this long.
 expectAssignable<AttachSessionOptions>({ closeTimeout: 500 });
 expectAssignable<WrpcClientOptions>({ wt: { closeTimeout: 500 } });
+
+// A session past maxBackpressure ends with a TransportError
+expectAssignable<wt.TransportError>(new wt.TransportError('x', { code: 'ALX_ERR_BACKPRESSURE' }));
+expectError(new wt.TransportError('x', { code: 'backpressure' }));

@@ -67,7 +67,7 @@ const decodeText = (bytes) => {
   try {
     return TEXT_DECODER.decode(bytes);
   } catch {
-    throw new FramingError('invalid UTF-8 in a packet', 'utf8');
+    throw new FramingError('invalid UTF-8 in a packet', { code: 'ALX_ERR_FRAMING_UTF8' });
   }
 };
 
@@ -210,9 +210,9 @@ class StreamParser {
         const length = ((header[0] << 24) >>> 0) + (header[1] << 16) + (header[2] << 8) + header[3];
         const kind = header[4];
         if (kind > KIND_CAPS && !(this.compressed && kind <= KIND_BINARY_COMPRESSED)) {
-          throw this.#fail('unknown message kind', 'kind');
+          throw this.#fail('unknown message kind', { code: 'ALX_ERR_FRAMING_KIND' });
         }
-        if (length > this.#max) throw this.#fail('message exceeds maxMessage', 'too-large');
+        if (length > this.#max) throw this.#fail('message exceeds maxMessage', { code: 'ALX_ERR_FRAMING_TOO_LARGE' });
         if (length === 0) {
           this.#deliver(kind, EMPTY);
           continue;
@@ -247,7 +247,7 @@ class StreamParser {
     try {
       text = TEXT_DECODER.decode(payload);
     } catch {
-      throw this.#fail('invalid UTF-8 in a packet', 'utf8');
+      throw this.#fail('invalid UTF-8 in a packet', { code: 'ALX_ERR_FRAMING_UTF8' });
     }
     this.#onMessage(kind, text);
   }
@@ -295,9 +295,9 @@ class StreamParser {
     return out;
   }
 
-  #fail(message, code) {
+  #fail(message, options) {
     this.reset();
-    return new FramingError(message, code);
+    return new FramingError(message, options);
   }
 }
 

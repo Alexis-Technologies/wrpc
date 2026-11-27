@@ -276,17 +276,19 @@ export declare class Frame {
 
 export type ParseErrorCode = (typeof PARSE_ERR_CODES)[keyof typeof PARSE_ERR_CODES];
 
+/** A peer's frame that breaks RFC 6455; `code` picks the close frame (1009, 1007 or 1002). */
 export declare class ParseError extends Error {
-  code: ParseErrorCode;
-  constructor(code: ParseErrorCode, message: string);
+  readonly name: 'ParseError';
+  readonly code: ParseErrorCode;
+  constructor(message: string, options: ErrorOptions & { code: ParseErrorCode });
 }
 
 export declare const PARSE_ERR_CODES: {
-  readonly MESSAGE_TOO_BIG: 'MESSAGE_TOO_BIG';
-  readonly PROTOCOL_ERROR_COMMON: 'PROTOCOL_ERROR-COMMON';
-  readonly PROTOCOL_ERROR_RSV: 'PROTOCOL_ERROR-RSV';
-  readonly PROTOCOL_ERROR_CTRL_TOO_LONG: 'PROTOCOL_ERROR-CTRL_TOO_LONG';
-  readonly INVALID_PAYLOAD: 'INVALID_PAYLOAD';
+  readonly MESSAGE_TOO_BIG: 'ALX_ERR_PARSE_MESSAGE_TOO_BIG';
+  readonly PROTOCOL_ERROR_COMMON: 'ALX_ERR_PARSE_PROTOCOL';
+  readonly PROTOCOL_ERROR_RSV: 'ALX_ERR_PARSE_RSV';
+  readonly PROTOCOL_ERROR_CTRL_TOO_LONG: 'ALX_ERR_PARSE_CONTROL_TOO_LONG';
+  readonly INVALID_PAYLOAD: 'ALX_ERR_PARSE_INVALID_PAYLOAD';
 };
 
 export interface FrameHeader {

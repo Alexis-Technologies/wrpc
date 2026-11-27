@@ -16,10 +16,9 @@
 const { runValidator } = require('../rpc/router.js');
 const { SPAN_KIND_PRODUCER, TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
 const { capabilityOf, brokerName, isBrokerLog, isBrokerQueue } = require('./port.js');
-const { codedError } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
 const { rpcOf } = require('./host.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 const isValidatorShape = (value) =>
   typeof value === 'function' || (typeof value === 'object' && value !== null && '~standard' in value);
@@ -96,9 +95,12 @@ const createPublisher = (server, broker, table = {}, options = {}) => {
               const checked = runValidator(validate, data);
               value = checked && typeof checked.then === 'function' ? await checked : checked;
             } catch (error) {
-              const refused = codedError(`Invalid ${name} payload: ${error.message}`, 400);
-              if (error.details !== undefined) refused.details = error.details;
-              throw refused;
+              throw new WrpcError(`Invalid ${name} payload: ${error.message}`, {
+                code: 400,
+                details: error.details,
+                expose: true,
+                cause: error,
+              });
             }
           }
           const carried = headers ? { ...headers } : {};

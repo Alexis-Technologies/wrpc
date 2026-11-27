@@ -56,7 +56,7 @@ const {
 } = require('./framing.js');
 const { StreamMux } = require('./streams.js');
 const { negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, TransportError } = require('../errors.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -460,8 +460,12 @@ class WtChannel {
   exceedsBackpressure() {
     const max = this.#maxBackpressure;
     if (max === 0 || this.#queued <= max) return false;
-    const error = new Error(`Backpressure limit exceeded (${this.#queued} > ${max} bytes), terminating session`);
-    error.code = 'backpressure';
+    const error = new TransportError(
+      `Backpressure limit exceeded (${this.#queued} > ${max} bytes), terminating session`,
+      {
+        code: 'ALX_ERR_BACKPRESSURE',
+      },
+    );
     this.#onOverflow(error);
     return true;
   }

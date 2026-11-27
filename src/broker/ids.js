@@ -17,15 +17,6 @@ const { createHmac, createHash, timingSafeEqual } = require('node:crypto');
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-// Coded like the router's errors: `expose` because the message is written
-// for the caller.
-const codedError = (message, code) => {
-  const error = new Error(message);
-  error.code = code;
-  error.expose = true;
-  return error;
-};
-
 const toText = (body) => {
   if (typeof body === 'string') return body;
   if (body instanceof Uint8Array) return decoder.decode(body);
@@ -162,7 +153,6 @@ const openId = (secret, signed, scope = '') => {
 const fingerprint = (id) => createHash('sha256').update(`${id}`).digest('hex').slice(0, 12);
 
 module.exports = {
-  codedError,
   toText,
   toBytes,
   toHeaders,

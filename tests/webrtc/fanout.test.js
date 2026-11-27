@@ -228,7 +228,7 @@ describe('rtc fan-out', () => {
       waitFor(() => links[1].channel.readyState !== 'open', 'the capped link closed'),
       'close',
     );
-    assert.deepStrictEqual(faults, ['backpressure']);
+    assert.deepStrictEqual(faults, ['ALX_ERR_BACKPRESSURE']);
     assert.strictEqual(links[0].channel.readyState, 'open');
     assert.strictEqual(links[2].channel.readyState, 'open');
     // A transport that is down answers false and touches nothing.

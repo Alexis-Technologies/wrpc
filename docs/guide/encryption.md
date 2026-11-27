@@ -402,7 +402,7 @@ keep the old one on the ring for as long as a client pinned to it is out
 there: a mobile app nobody updated, a bundle in a cache. Dropping it is not
 housekeeping, it is the moment those clients stop connecting (a session
 handshake is closed `1008`, a sealed request answered `400`; the client's
-error is `ENCRYPTION_REFUSED` and says the pinned key may be retired).
+error is `ALX_ERR_ENCRYPTION_REFUSED` and says the pinned key may be retired).
 
 A key that **leaked** is the opposite case: take it off the ring now — with
 a provider that takes effect at once, on the next handshake and the next

@@ -22,7 +22,7 @@
 
 const { procedure } = require('../rpc/router.js');
 const { sanitizeDeclared } = require('../rpc/handshake.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, WrpcError } = require('../errors.js');
 
 const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -167,10 +167,7 @@ const buildUrl = (url, params, query, stringify) => {
     const name = segment.slice(1);
     const value = params?.[name];
     if (value === undefined) {
-      const error = new Error(`Missing path param '${name}' for ${url}`);
-      error.code = 400;
-      error.expose = true;
-      throw error;
+      throw new WrpcError(`Missing path param '${name}' for ${url}`, { code: 400, expose: true });
     }
     const text = `${value}`;
     // A value that is a path of its own. `encodeURIComponent` leaves dots
@@ -180,10 +177,7 @@ const buildUrl = (url, params, query, stringify) => {
     // the same one level down (`/users/`). Percent-encoding the dots would
     // not help: a URL parser normalizes `%2e%2e` as well.
     if (text === '' || text === '.' || text === '..') {
-      const error = new Error(`Invalid path param '${name}' for ${url}`);
-      error.code = 400;
-      error.expose = true;
-      throw error;
+      throw new WrpcError(`Invalid path param '${name}' for ${url}`, { code: 400, expose: true });
     }
     parts.push(encodeURIComponent(text));
   }
@@ -254,11 +248,11 @@ const mirrorHandler = (fastify, route, mirror, stringify, allow) => {
     const json = (response.headers['content-type'] ?? '').includes('json');
     const parsed = json ? response.json() : response.body;
     if (response.statusCode >= 400) {
-      const error = new Error((json && parsed?.message) || `HTTP ${response.statusCode}`);
-      error.code = response.statusCode;
-      error.expose = true;
-      if (json && parsed?.details !== undefined) error.details = parsed.details;
-      throw error;
+      throw new WrpcError((json && parsed?.message) || `HTTP ${response.statusCode}`, {
+        code: response.statusCode,
+        details: json ? parsed?.details : undefined,
+        expose: true,
+      });
     }
     if (response.statusCode === 204) return undefined;
     return parsed;

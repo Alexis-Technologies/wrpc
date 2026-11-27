@@ -19,10 +19,10 @@ const { ArgumentError } = require('../errors.js');
 // typed arrays, no closures on the hot path.
 
 class DeflateError extends Error {
-  constructor(message, code) {
-    super(message);
+  constructor(message, options = {}) {
+    super(message, options);
     this.name = 'DeflateError';
-    this.code = code;
+    this.code = options.code;
   }
 }
 
@@ -92,7 +92,7 @@ const buildTable = (lengths, count) => {
   let left = 1;
   for (let len = 1; len <= MAX_BITS; len++) {
     left = (left << 1) - blCount[len];
-    if (left < 0) throw new DeflateError('over-subscribed Huffman code', 'huffman');
+    if (left < 0) throw new DeflateError('over-subscribed Huffman code', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
   }
   const nextCode = new Uint16Array(MAX_BITS + 2);
   let code = 0;
@@ -226,7 +226,7 @@ class Inflater {
   #bits(n) {
     if (this.#bitCnt < n) {
       this.#fill(n);
-      if (this.#bitCnt < n) throw new DeflateError('unexpected end of data', 'truncated');
+      if (this.#bitCnt < n) throw new DeflateError('unexpected end of data', { code: 'ALX_ERR_DEFLATE_TRUNCATED' });
     }
     const value = this.#bitBuf & ((1 << n) - 1);
     this.#bitBuf >>>= n;
@@ -241,10 +241,10 @@ class Inflater {
   // apart, off the path V8 inlines into the block loop.
   #symbol(tree) {
     const { table, bits } = tree;
-    if (table === null) throw new DeflateError('symbol from an empty code', 'huffman');
+    if (table === null) throw new DeflateError('symbol from an empty code', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
     if (this.#bitCnt < bits) this.#fill(bits);
     const entry = table[this.#bitBuf & ((1 << bits) - 1)];
-    if (entry === 0) throw new DeflateError('invalid Huffman code', 'huffman');
+    if (entry === 0) throw new DeflateError('invalid Huffman code', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
     const len = entry >>> 16;
     if (len > this.#bitCnt) return this.#slow(table, entry, bits);
     this.#bitBuf >>>= len;
@@ -258,12 +258,12 @@ class Inflater {
   // else that did not fit is the input ending inside a code.
   #slow(table, pointer, bits) {
     const width = (pointer >>> 16) - POINTER;
-    if (width < 0) throw new DeflateError('unexpected end of data', 'truncated');
+    if (width < 0) throw new DeflateError('unexpected end of data', { code: 'ALX_ERR_DEFLATE_TRUNCATED' });
     if (this.#bitCnt < bits + width) this.#fill(bits + width);
     const entry = table[(pointer & 0xffff) + ((this.#bitBuf >>> bits) & ((1 << width) - 1))];
-    if (entry === 0) throw new DeflateError('invalid Huffman code', 'huffman');
+    if (entry === 0) throw new DeflateError('invalid Huffman code', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
     const len = bits + (entry >>> 16);
-    if (len > this.#bitCnt) throw new DeflateError('unexpected end of data', 'truncated');
+    if (len > this.#bitCnt) throw new DeflateError('unexpected end of data', { code: 'ALX_ERR_DEFLATE_TRUNCATED' });
     this.#bitBuf >>>= len;
     this.#bitCnt -= len;
     return entry & 0xffff;
@@ -273,7 +273,9 @@ class Inflater {
 
   #room(n) {
     const needed = this.#outLen + n;
-    if (needed > this.#limit) throw new DeflateError('inflated message exceeds the cap', 'too-large');
+    if (needed > this.#limit) {
+      throw new DeflateError('inflated message exceeds the cap', { code: 'ALX_ERR_DEFLATE_TOO_LARGE' });
+    }
     if (needed <= this.#out.length) return;
     let size = this.#out.length * 2;
     while (size < needed) size *= 2;
@@ -292,7 +294,9 @@ class Inflater {
     this.#bitCnt -= drop;
     const len = this.#bits(16);
     const nlen = this.#bits(16);
-    if ((len ^ 0xffff) !== nlen) throw new DeflateError('stored block length mismatch', 'stored');
+    if ((len ^ 0xffff) !== nlen) {
+      throw new DeflateError('stored block length mismatch', { code: 'ALX_ERR_DEFLATE_STORED' });
+    }
     // Whatever whole bytes the bit buffer still holds come first.
     this.#room(len);
     let remaining = len;
@@ -302,7 +306,9 @@ class Inflater {
       this.#bitCnt -= 8;
       remaining--;
     }
-    if (this.#pos + remaining > this.#input.length) throw new DeflateError('unexpected end of data', 'truncated');
+    if (this.#pos + remaining > this.#input.length) {
+      throw new DeflateError('unexpected end of data', { code: 'ALX_ERR_DEFLATE_TRUNCATED' });
+    }
     this.#out.set(this.#input.subarray(this.#pos, this.#pos + remaining), this.#outLen);
     this.#pos += remaining;
     this.#outLen += remaining;
@@ -312,7 +318,7 @@ class Inflater {
     const hlit = this.#bits(5) + 257;
     const hdist = this.#bits(5) + 1;
     const hclen = this.#bits(4) + 4;
-    if (hlit > 286 || hdist > 30) throw new DeflateError('too many codes', 'huffman');
+    if (hlit > 286 || hdist > 30) throw new DeflateError('too many codes', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
     const clLengths = new Uint8Array(19);
     for (let i = 0; i < hclen; i++) clLengths[CODE_LENGTH_ORDER[i]] = this.#bits(3);
     const clTree = buildTable(clLengths, 19);
@@ -327,7 +333,7 @@ class Inflater {
       let repeat = 0;
       let value = 0;
       if (sym === 16) {
-        if (i === 0) throw new DeflateError('repeat with no previous length', 'huffman');
+        if (i === 0) throw new DeflateError('repeat with no previous length', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
         value = lengths[i - 1];
         repeat = 3 + this.#bits(2);
       } else if (sym === 17) {
@@ -335,10 +341,12 @@ class Inflater {
       } else {
         repeat = 11 + this.#bits(7);
       }
-      if (i + repeat > hlit + hdist) throw new DeflateError('too many code lengths', 'huffman');
+      if (i + repeat > hlit + hdist) {
+        throw new DeflateError('too many code lengths', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
+      }
       while (repeat-- > 0) lengths[i++] = value;
     }
-    if (lengths[256] === 0) throw new DeflateError('no end-of-block code', 'huffman');
+    if (lengths[256] === 0) throw new DeflateError('no end-of-block code', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
     const lit = buildTable(lengths.subarray(0, hlit), hlit);
     const dist = buildTable(lengths.subarray(hlit), hdist);
     return { lit, dist };
@@ -354,12 +362,14 @@ class Inflater {
       }
       if (sym === 256) return;
       const li = sym - 257;
-      if (li >= 29) throw new DeflateError('invalid length code', 'huffman');
+      if (li >= 29) throw new DeflateError('invalid length code', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
       const length = LENGTH_BASE[li] + this.#bits(LENGTH_EXTRA[li]);
       const di = this.#symbol(dist);
-      if (di >= 30) throw new DeflateError('invalid distance code', 'huffman');
+      if (di >= 30) throw new DeflateError('invalid distance code', { code: 'ALX_ERR_DEFLATE_HUFFMAN' });
       const distance = DIST_BASE[di] + this.#bits(DIST_EXTRA[di]);
-      if (distance > this.#outLen) throw new DeflateError('distance too far back', 'distance');
+      if (distance > this.#outLen) {
+        throw new DeflateError('distance too far back', { code: 'ALX_ERR_DEFLATE_DISTANCE' });
+      }
       this.#room(length);
       const out = this.#out;
       let from = this.#outLen - distance;
@@ -380,7 +390,7 @@ class Inflater {
       else if (type === 2) {
         const { lit, dist } = this.#dynamicTrees();
         this.#codes(lit, dist);
-      } else throw new DeflateError('reserved block type', 'block');
+      } else throw new DeflateError('reserved block type', { code: 'ALX_ERR_DEFLATE_BLOCK' });
     } while (!final);
     return this.#out.subarray(this.#start, this.#outLen);
   }
@@ -398,7 +408,7 @@ const toBytes = (input, label = 'inflate') => {
 /**
  * Raw DEFLATE → bytes, synchronously. `dictionary` preloads the window (its
  * last 32 KiB); `maxOutput` is the inflated-size cap — past it a
- * DeflateError('too-large') rather than a bigger allocation. Every
+ * DeflateError (`ALX_ERR_DEFLATE_TOO_LARGE`) rather than a bigger allocation. Every
  * malformed input is a DeflateError with a code, never a wrong answer.
  */
 const inflateRaw = (input, { dictionary = null, maxOutput = Infinity } = {}) =>

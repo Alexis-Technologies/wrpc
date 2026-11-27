@@ -10,12 +10,17 @@ const { readFileSync, readdirSync } = require('node:fs');
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ConfigError, ArgumentError } = require('../../index.js');
-const { FramingError } = require('../../src/errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../../index.js');
+const { FramingError, TransportError } = require('../../src/errors.js');
 const { CliError } = require('../../src/cli/types.js');
+const { DeflateError } = require('../../src/deflate/index.js');
+const { ParseError, PARSE_ERR_CODES } = require('../../src/websocket/ws.js');
+const { AssertionError, outcomeOf } = require('../../src/webrtc/assertions.js');
+const { OpenError, EncryptionRefusedError } = require('../../src/encryption/index.js');
 
 const ROOT = path.join(__dirname, '..', '..');
-const CODE = /ALX_ERR_[A-Z_]+/g;
+// A code never ends with `_`: `ALX_ERR_FRAMING_*` in a comment is a family.
+const CODE = /ALX_ERR_[A-Z0-9_]*[A-Z0-9](?![A-Z0-9_])/g;
 
 const read = (file) => readFileSync(path.join(ROOT, file), 'utf8');
 
@@ -43,7 +48,7 @@ const tableCodes = () => {
   const section = text.slice(start, text.indexOf('\n## ', start + 1));
   const codes = new Set();
   for (const line of section.split('\n')) {
-    const row = /^\| `(ALX_ERR_[A-Z_]+)` \|/.exec(line);
+    const row = /^\| `(ALX_ERR_[A-Z0-9_]+)` \|/.exec(line);
     if (row) codes.add(row[1]);
   }
   return codes;
@@ -77,6 +82,61 @@ describe('error codes', () => {
     assert.equal(argument.cause, config);
     assert.ok(argument instanceof TypeError);
     assert.equal(new CliError('z').code, 'ALX_ERR_CLI');
+  });
+
+  it('should take (message, options) in every class, as Error does, with cause only when given', () => {
+    const cause = new Error('under');
+    const made = [
+      [new ConfigError('a', { cause }), 'ConfigError', 'ALX_ERR_CONFIG'],
+      [new ArgumentError('a', { cause }), 'ArgumentError', 'ALX_ERR_ARGUMENT'],
+      [new CliError('a', { cause }), 'CliError', 'ALX_ERR_CLI'],
+      [new FramingError('a', { code: 'ALX_ERR_FRAMING_UTF8', cause }), 'FramingError', 'ALX_ERR_FRAMING_UTF8'],
+      [new TransportError('a', { code: 'ALX_ERR_BACKPRESSURE', cause }), 'TransportError', 'ALX_ERR_BACKPRESSURE'],
+      [new DeflateError('a', { code: 'ALX_ERR_DEFLATE_BLOCK', cause }), 'DeflateError', 'ALX_ERR_DEFLATE_BLOCK'],
+      [
+        new ParseError('a', { code: PARSE_ERR_CODES.INVALID_PAYLOAD, cause }),
+        'ParseError',
+        'ALX_ERR_PARSE_INVALID_PAYLOAD',
+      ],
+      [new AssertionError('a', { code: 'ALX_ERR_ASSERTION_KID', cause }), 'AssertionError', 'ALX_ERR_ASSERTION_KID'],
+      [new OpenError('a', { cause }), 'OpenError', 'ALX_ERR_OPEN'],
+      [
+        new EncryptionRefusedError('a', { statusCode: 426, cause }),
+        'EncryptionRefusedError',
+        'ALX_ERR_ENCRYPTION_REFUSED',
+      ],
+      [new WrpcError('a', { code: 404, cause }), 'WrpcError', 404],
+    ];
+    for (const [error, name, code] of made) {
+      assert.deepEqual([error.message, error.name, error.code, error.cause], ['a', name, code, cause], name);
+      assert.ok(error instanceof Error, name);
+    }
+    assert.equal(Object.hasOwn(new ConfigError('x'), 'cause'), false, 'no own cause when none is given');
+    assert.equal(Object.hasOwn(new WrpcError('x', { code: 400 }), 'cause'), false);
+  });
+
+  it('should give WrpcError a 500 by default, and details and expose only when given', () => {
+    const bare = new WrpcError('x');
+    assert.equal(bare.code, 500);
+    assert.equal(Object.hasOwn(bare, 'details'), false);
+    assert.equal(Object.hasOwn(bare, 'expose'), false);
+    const full = new WrpcError('y', { code: 400, details: { issues: [] }, expose: true });
+    assert.deepEqual([full.code, full.details, full.expose], [400, { issues: [] }, true]);
+    assert.equal(String(full), 'WrpcError: y');
+  });
+
+  it('should carry the class-specific fields from options', () => {
+    assert.equal(new OpenError().message, 'encryption: the message does not open');
+    assert.equal(new OpenError(undefined, { reason: 'replay' }).reason, 'replay');
+    assert.equal(Object.hasOwn(new OpenError(), 'reason'), false);
+    const refused = new EncryptionRefusedError('z', { statusCode: 409 });
+    assert.deepEqual([refused.statusCode, refused.status], [409, 409], 'status is the 2.x name');
+  });
+
+  it('should count an assertion refusal under the metric label its code ends with', () => {
+    assert.equal(outcomeOf(new AssertionError('x', { code: 'ALX_ERR_ASSERTION_SIGNATURE' })), 'signature');
+    assert.equal(outcomeOf(new AssertionError('x', { code: 'ALX_ERR_ASSERTION_MISSING' })), 'missing');
+    assert.equal(outcomeOf(new Error('x')), 'invalid');
   });
 
   it('should share one FramingError between WebTransport and WebRTC', () => {

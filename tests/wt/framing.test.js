@@ -91,17 +91,17 @@ describe('wt framing', () => {
     const unknownKind = frame(7, new Uint8Array(2));
     assert.throws(
       () => parser.push(unknownKind),
-      (error) => error instanceof FramingError && error.code === 'kind',
+      (error) => error instanceof FramingError && error.code === 'ALX_ERR_FRAMING_KIND',
     );
     assert.strictEqual(parser.pending, 0);
     const tooLarge = frame(KIND_BINARY, new Uint8Array(1025));
     assert.throws(
       () => parser.push(tooLarge.subarray(0, HEADER_BYTES)),
-      (error) => error instanceof FramingError && error.code === 'too-large',
+      (error) => error instanceof FramingError && error.code === 'ALX_ERR_FRAMING_TOO_LARGE',
     );
     assert.throws(
       () => parser.push(frame(KIND_TEXT, new Uint8Array([0xff, 0xfe]))),
-      (error) => error instanceof FramingError && error.code === 'utf8',
+      (error) => error instanceof FramingError && error.code === 'ALX_ERR_FRAMING_UTF8',
     );
     // Usable again after a reset: the next message parses.
     parser.push(frameText('ok'));

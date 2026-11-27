@@ -439,7 +439,7 @@ describe('webrtc transport', () => {
       'refused',
     );
     assert.strictEqual(errors[0].name, 'FramingError');
-    assert.strictEqual(errors[0].code, 'empty');
+    assert.strictEqual(errors[0].code, 'ALX_ERR_FRAMING_EMPTY');
     // 'closing' first, under load: waited for, not read at one instant.
     await within(
       waitFor(() => a.readyState === 'closed', 'a raw channel is closed by the half that refused'),
@@ -697,7 +697,7 @@ describe('webrtc transport', () => {
     assert.strictEqual(client.write(new Uint8Array(300)), false, 'refused');
     await timers.setImmediate();
     assert.strictEqual(errors.length, 1);
-    assert.strictEqual(errors[0].code, 'backpressure');
+    assert.strictEqual(errors[0].code, 'ALX_ERR_BACKPRESSURE');
     await within(
       waitFor(() => closes.length === 2, 'both halves down'),
       'both halves down',
@@ -718,7 +718,7 @@ describe('webrtc transport', () => {
     assert.strictEqual(peer.write(new Uint8Array(300)), false);
     assert.strictEqual(peer.write(new Uint8Array(300)), false, 'refused');
     assert.strictEqual(hostErrors.length, 1);
-    assert.strictEqual(hostErrors[0].code, 'backpressure');
+    assert.strictEqual(hostErrors[0].code, 'ALX_ERR_BACKPRESSURE');
     assert.strictEqual(peer.write('after'), false, 'closing: nothing more is sent');
   });
 
@@ -779,7 +779,7 @@ describe('webrtc transport', () => {
     };
     assert.strictEqual(client.write(new Uint8Array(10_000)), false, 'lost, said with a false');
     assert.strictEqual(errors.length, 1);
-    assert.strictEqual(errors[0].code, 'desync');
+    assert.strictEqual(errors[0].code, 'ALX_ERR_CHANNEL_DESYNC');
     assert.match(errors[0].message, /mid-message/);
     assert.strictEqual(fragments, 2, 'the encoder did not go on after the fragment it lost');
     await within(
@@ -810,7 +810,7 @@ describe('webrtc transport', () => {
     };
     assert.strictEqual(again.write('lost'), false);
     assert.strictEqual(faults.length, 1);
-    assert.strictEqual(faults[0].code, 'send');
+    assert.strictEqual(faults[0].code, 'ALX_ERR_CHANNEL_SEND');
     assert.strictEqual(again.active, true, 'the channel stays');
     assert.strictEqual(again.write('kept'), true);
     await within(

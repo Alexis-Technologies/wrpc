@@ -53,12 +53,10 @@ tenancy, ownership — belongs in a [hook](./hooks), where a throw ends the call
 with your code:
 
 ```js
+const { WrpcError } = require('@alexify/wrpc');
+
 const requireRole = (role) => async (context) => {
-  if (!context.session?.state.roles?.includes(role)) {
-    const error = new Error('Forbidden');
-    error.code = 403;
-    throw error;
-  }
+  if (!context.session?.state.roles?.includes(role)) throw new WrpcError('Forbidden', { code: 403 });
 };
 ```
 
@@ -189,12 +187,10 @@ A 4xx is part of the protocol conversation and travels with its message: the
 peer sent something wrong and deserves to know what. A **5xx is a server
 internal**, so its message is replaced with the generic status text on the wire
 and the real one goes to the log — unless the error explicitly opts in with
-`error.expose = true`.
+`expose: true`.
 
 ```js
-const error = new Error('Rate limited: 100/min');
-error.code = 429;   // 4xx — the message travels
-throw error;
+throw new WrpcError('Rate limited: 100/min', { code: 429 }); // 4xx — the message travels
 ```
 
 Stack traces never travel. See the [error reference](../reference/errors) for

@@ -33,8 +33,8 @@ try {
 ```
 
 `WrpcError` is `Error` plus a numeric `code` — and `details`, when the
-server attached any. There is no error *class* per code on purpose: the
-number crosses the wire, subclasses do not.
+server attached any; its `name` is `'WrpcError'`. There is no error *class*
+per code on purpose: the number crosses the wire, subclasses do not.
 
 ```js
 catch (error) {
@@ -42,31 +42,34 @@ catch (error) {
 }
 ```
 
-To attach details from a handler, set `error.details` alongside `code`; the
-same exposure rule as the message applies — a 4xx's details travel, a 5xx's
-stay in the log unless `error.expose = true`.
-
 ## Throwing from a handler
 
-Attach `code` to any error and it becomes the wire code:
+Throw a `WrpcError` with the status as its `code`, and that is what the peer
+is answered — the same class the client rejects with, constructed as every
+wRPC error is, `(message, options)`:
 
 ```js
+const { WrpcError } = require('@alexify/wrpc');
+
 handler: async (context, { id }) => {
   const row = await db.find(id);
-  if (!row) {
-    const error = new Error('No such document');
-    error.code = 404;
-    throw error;
-  }
+  if (!row) throw new WrpcError('No such document', { code: 404 });
   return row;
 };
 ```
+
+`options` takes `code` (500 when left out), `details` — the same exposure
+rule as the message applies, a 4xx's details travel and a 5xx's stay in the
+log — `expose` and `cause`, which stays in the log too. Any other error with
+a numeric `code` is answered the same way, so code that sets `error.code`
+by hand keeps working.
 
 ::: warning 5xx messages do not travel
 A 4xx is part of the protocol conversation and its message reaches the peer. A
 **5xx is a server internal**: the message is replaced with the generic status
 text on the wire and the real one goes to the log. Opt out per error with
-`error.expose = true`. Stack traces never travel.
+`expose: true` (or `error.expose = true` on an error of your own). Stack
+traces and causes never travel.
 :::
 
 A code above `599` is reported as `500`.
@@ -86,7 +89,7 @@ A code above `599` is reported as `500`.
 | `500` | Handler threw without a code; a subscription handler returned a non-iterable; an `output` validator rejected the result | router |
 | `501` | No responder registered for an [ask](../guide/rooms#asking-a-room); a binary stream attempted over [SSE](../guide/sse#what-it-cannot-do) | client, SSE |
 | `503` | Queue full, server [draining](../guide/production#graceful-shutdown), transport closed under an in-flight call — or under a [binary stream](../guide/streams#size) being read, whose reader is thrown it — `maxChannels` reached | router, core, SSE, streams |
-| `400`, `409`, `426` (sealed) | A [sealed request](../guide/encryption#session) refused before it was read: not accepted (the pinned key may be retired), stale or replayed (a clock), or plaintext where encryption is `required`. Bare statuses, no body — the calls the request carried fail with the same code on the client, and the client emits `EncryptionRefusedError` (`code: 'ENCRYPTION_REFUSED'`, `status`); any other plaintext answer to a sealed request is a `503` | encryption |
+| `400`, `409`, `426` (sealed) | A [sealed request](../guide/encryption#session) refused before it was read: not accepted (the pinned key may be retired), stale or replayed (a clock), or plaintext where encryption is `required`. Bare statuses, no body — the calls the request carried fail with the same code on the client, and the client emits `EncryptionRefusedError` (`code: 'ALX_ERR_ENCRYPTION_REFUSED'`, `statusCode`); any other plaintext answer to a sealed request is a `503` | encryption |
 
 ::: tip 499 is not a failure
 It acknowledges a cancel the caller asked for. The client resolves the
@@ -119,20 +122,62 @@ know whether yours is idempotent.
 
 Not every error crosses the wire. A mistake of the program that calls wRPC —
 an option it cannot use, a router it cannot build, an argument a method
-refuses — is thrown where it was made, with a **string** `code`:
+refuses — and a peer's bytes that break a framing are thrown (or emitted as
+`'error'`) where they happened, with a **string** `code`. Every one starts
+with `ALX_ERR_`, the prefix every Alexis library codes its errors with, as
+Fastify's start with `FST_ERR_`; a **numeric** `code` is never one of these —
+it is a wire status, of a `WrpcError` or of an error a handler throws.
 
 | Code | Class | Thrown when |
 | --- | --- | --- |
 | `ALX_ERR_CONFIG` | `ConfigError` | An option, a definition (a router, a procedure, a broker binding or event table) or an injected host is missing or invalid — at construction, `defineRouter`, `procedure()`, `attach…` |
 | `ALX_ERR_ARGUMENT` | `ArgumentError` | An argument of a call made while running is invalid — `createStream(name, size)`, `setHeader`, `sendTo`, `respond`, the arguments a peer gave a signaling procedure |
 | `ALX_ERR_CLI` | `CliError` | The [`wrpc` command](../guide/cli) refuses an argument, or an answer it cannot use; it prints the message and exits 1 |
+| `ALX_ERR_FRAMING_EMPTY` | `FramingError` | A WebRTC frame with no header byte, or a fragment with no payload before the last |
+| `ALX_ERR_FRAMING_RESERVED` | `FramingError` | A WebRTC frame with a reserved header bit set — the deflate bit included, until the decoder is told |
+| `ALX_ERR_FRAMING_KIND` | `FramingError` | A WebTransport message of an unknown kind, or a WebRTC continuation whose kind is not its message's |
+| `ALX_ERR_FRAMING_TOO_LARGE` | `FramingError` | A message past `maxMessage` (WebTransport) or `maxReassembly` (WebRTC) |
+| `ALX_ERR_FRAMING_FRAGMENTS` | `FramingError` | A WebRTC message in more fragments than `maxFragments` |
+| `ALX_ERR_FRAMING_UTF8` | `FramingError` | A text packet that is not valid UTF-8, on either carrier |
+| `ALX_ERR_FRAMING_MESSAGE_SIZE` | `FramingError` | A WebRTC peer whose `max-message-size` is under 1 KiB: the link fails, never connects |
+| `ALX_ERR_FRAMING_INFLATE` | `FramingError` | A compressed WebRTC frame that does not inflate, or inflates past `maxReassembly`; the `cause` is the codec's error |
+| `ALX_ERR_BACKPRESSURE` | `TransportError` | A WebTransport session or a WebRTC channel past `maxBackpressure`: it is closed |
+| `ALX_ERR_CHANNEL_SEND` | `TransportError` | A WebRTC data channel's `send()` threw before the first fragment: only that message is lost |
+| `ALX_ERR_CHANNEL_DESYNC` | `TransportError` | …or threw mid-message: the peer holds a message with no end, and the channel is closed |
+| `ALX_ERR_DEFLATE_TRUNCATED` | `DeflateError` | [`./deflate`](../guide/compression): the input ends before its last block does |
+| `ALX_ERR_DEFLATE_HUFFMAN` | `DeflateError` | …a Huffman code that is over-subscribed, empty or invalid, or a length or distance code out of range |
+| `ALX_ERR_DEFLATE_STORED` | `DeflateError` | …a stored block whose `NLEN` is not `LEN`'s complement |
+| `ALX_ERR_DEFLATE_DISTANCE` | `DeflateError` | …a distance that reaches before the start of the output (a dictionary that is missing, most often) |
+| `ALX_ERR_DEFLATE_BLOCK` | `DeflateError` | …the reserved block type 3 |
+| `ALX_ERR_DEFLATE_TOO_LARGE` | `DeflateError` | …an output past `maxOutput` |
+| `ALX_ERR_PARSE_MESSAGE_TOO_BIG` | `ParseError` | `./ws`, the frame parser: a payload length past `Number.MAX_SAFE_INTEGER` — closed 1009 |
+| `ALX_ERR_PARSE_PROTOCOL` | `ParseError` | …a frame that breaks RFC 6455 otherwise (an opcode, a continuation, a close code) — closed 1002 |
+| `ALX_ERR_PARSE_RSV` | `ParseError` | …an RSV bit no extension negotiated — closed 1002 |
+| `ALX_ERR_PARSE_CONTROL_TOO_LONG` | `ParseError` | …a control frame over 125 bytes — closed 1002 |
+| `ALX_ERR_PARSE_INVALID_PAYLOAD` | `ParseError` | …a text frame or a close reason that is not UTF-8 — closed 1007 |
+| `ALX_ERR_ASSERTION_MALFORMED` | `AssertionError` | A WebRTC [trust assertion](../guide/webrtc-trust) that is not a compact JWS of JSON objects |
+| `ALX_ERR_ASSERTION_TYP` | `AssertionError` | …whose `typ` is not `wrpc-rtc+jwt` |
+| `ALX_ERR_ASSERTION_ALG` | `AssertionError` | …whose `alg` is not `ES256` |
+| `ALX_ERR_ASSERTION_KID` | `AssertionError` | …signed by a key the verifier does not hold, or whose keys could not be loaded |
+| `ALX_ERR_ASSERTION_SIGNATURE` | `AssertionError` | …whose signature does not verify |
+| `ALX_ERR_ASSERTION_SUBJECT` | `AssertionError` | …about another peer |
+| `ALX_ERR_ASSERTION_FINGERPRINT` | `AssertionError` | …bound to another DTLS fingerprint than the description's, or to none |
+| `ALX_ERR_ASSERTION_EXPIRED` | `AssertionError` | …past its `exp`, beyond a minute of skew |
+| `ALX_ERR_ASSERTION_ISSUER` | `AssertionError` | …from another issuer than the one expected |
+| `ALX_ERR_ASSERTION_MISSING` | `AssertionError` | A description that carries no assertion where one is required |
+| `ALX_ERR_OPEN` | `OpenError` | [`./encryption`](../guide/encryption): a sealed message that does not open — a wrong key, nonce, bit or length, on purpose one error |
+| `ALX_ERR_ENCRYPTION_REFUSED` | `EncryptionRefusedError` | A sealed request answered in plaintext; `statusCode` is the outer status |
 
-`ConfigError` and `ArgumentError` extend `TypeError` — what 2.2 and older
-threw for both — so `instanceof TypeError` still holds; they are exported from
-`@alexify/wrpc`. The `ALX_ERR_` prefix is the one every Alexis library codes
-its errors with, as Fastify's start with `FST_ERR_`. A **numeric** `code` is
-never one of these: it is a wire status, of a `WrpcError` or of an error a
-handler throws.
+Every class takes `(message, options)`, as `Error` does: `options` holds
+`cause` — set only when it is given — and the class's own fields, `code`
+among them where one class has several. `ConfigError` and `ArgumentError`
+extend `TypeError` — what 2.2 and older threw for both — so `instanceof
+TypeError` still holds; they are exported from `@alexify/wrpc`, the others
+from the subpath that throws them (`FramingError` and `TransportError` from
+`./wt` and `./webrtc` alike). An assertion refusal counts in
+`wrpc.rtc.assertions` under the last word of its code, lowercased —
+`signature` for `ALX_ERR_ASSERTION_SIGNATURE` — the labels the
+[metric](../guide/telemetry) had before the codes.
 
 ```js
 const { ConfigError } = require('@alexify/wrpc');
@@ -144,18 +189,12 @@ try {
 }
 ```
 
-The errors of a peer's bytes keep the codes 2.x gave them, unprefixed, until a
-major release renames them — a consumer may already match on them:
-
-| Class | `code` | Where |
-| --- | --- | --- |
-| `FramingError` | `empty`, `reserved`, `kind`, `too-large`, `fragments`, `utf8`, `message-size`, `inflate` | WebTransport and WebRTC framing — one class for both |
-| `DeflateError` | `truncated`, `huffman`, `stored`, `distance`, `block`, `too-large` | [`./deflate`](../guide/compression) |
-| `ParseError` | `MESSAGE_TOO_BIG`, `PROTOCOL_ERROR-COMMON`, `PROTOCOL_ERROR-RSV`, `PROTOCOL_ERROR-CTRL_TOO_LONG`, `INVALID_PAYLOAD` | `./ws`, the frame parser |
-| `AssertionError` | `malformed`, `typ`, `alg`, `kid`, `signature`, `subject`, `fingerprint`, `expired`, `issuer`, `missing` | WebRTC [trust assertions](../guide/webrtc-trust) |
-| `OpenError` | `open` | [`./encryption`](../guide/encryption) |
-| `EncryptionRefusedError` | `ENCRYPTION_REFUSED` | a sealed request answered in plaintext |
-| `Error` | `backpressure` | a WebTransport session or a WebRTC channel past `maxBackpressure` |
+Three errors keep the code of the Node.js error they stand in for, so code
+that handles Node's handles them: a uWebSockets.js engine that cannot bind
+(`EADDRINUSE`), a body cut short behind an adapter
+(`ERR_STREAM_PREMATURE_CLOSE`) and a permessage-deflate message that
+inflates past `maxPayload` (`ERR_BUFFER_TOO_LARGE`, what `zlib` itself throws
+for it).
 
 ## WebSocket close codes
 

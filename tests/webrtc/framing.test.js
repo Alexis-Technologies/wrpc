@@ -66,7 +66,7 @@ describe('framing', () => {
     assert.strictEqual(negotiateMessageSize({ maxMessageSize: 1024 }), 1024, 'under the floor is honoured, not raised');
     assert.strictEqual(negotiateMessageSize({ maxMessageSize: 1024.9 }), 1024, 'floored to a whole byte');
     // ... down to 1 KiB: a peer demanding smaller fragments is refused.
-    const refused = (error) => error instanceof FramingError && error.code === 'message-size';
+    const refused = (error) => error instanceof FramingError && error.code === 'ALX_ERR_FRAMING_MESSAGE_SIZE';
     assert.throws(() => negotiateMessageSize({ maxMessageSize: 1023 }), refused);
     assert.throws(() => negotiateMessageSize({ maxMessageSize: 1023.99 }), refused);
     assert.throws(() => negotiateMessageSize({ maxMessageSize: 64 }), refused);
@@ -149,30 +149,30 @@ describe('framing', () => {
       );
       assert.strictEqual(decoder.pending, 0, 'reset after an error');
     };
-    expectError(new Uint8Array(0), 'empty');
+    expectError(new Uint8Array(0), 'ALX_ERR_FRAMING_EMPTY');
     // A fragment that is not the last must carry a byte — as the first
     // fragment and as a continuation. An empty LAST one is fine: the empty
     // message, or a message whose bytes ended on the previous fragment.
-    expectError(new Uint8Array([KIND_BINARY]), 'empty');
+    expectError(new Uint8Array([KIND_BINARY]), 'ALX_ERR_FRAMING_EMPTY');
     assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 1])), null);
-    expectError(new Uint8Array([KIND_BINARY]), 'empty');
+    expectError(new Uint8Array([KIND_BINARY]), 'ALX_ERR_FRAMING_EMPTY');
     assert.deepStrictEqual(Array.from(decoder.push(new Uint8Array([KIND_BINARY | FLAG_FIN])).data), []);
     assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 5])), null);
     assert.deepStrictEqual(Array.from(decoder.push(new Uint8Array([KIND_BINARY | FLAG_FIN])).data), [5]);
-    expectError(new Uint8Array([0b100 | FLAG_FIN, 1]), 'reserved');
-    expectError(new Uint8Array([0b10000000, 1]), 'reserved');
+    expectError(new Uint8Array([0b100 | FLAG_FIN, 1]), 'ALX_ERR_FRAMING_RESERVED');
+    expectError(new Uint8Array([0b10000000, 1]), 'ALX_ERR_FRAMING_RESERVED');
     // A continuation whose KIND differs from the open message.
     assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 1, 2])), null);
     assert.strictEqual(decoder.pending, 2);
-    expectError(new Uint8Array([KIND_TEXT | FLAG_FIN, 3]), 'kind');
+    expectError(new Uint8Array([KIND_TEXT | FLAG_FIN, 3]), 'ALX_ERR_FRAMING_KIND');
     // Reassembly over the cap — on the first fragment and on a later one.
-    expectError(new Uint8Array([KIND_BINARY, 1, 2, 3, 4, 5, 6, 7, 8, 9]), 'too-large');
+    expectError(new Uint8Array([KIND_BINARY, 1, 2, 3, 4, 5, 6, 7, 8, 9]), 'ALX_ERR_FRAMING_TOO_LARGE');
     assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 1, 2, 3, 4, 5])), null);
-    expectError(new Uint8Array([KIND_BINARY, 6, 7, 8, 9]), 'too-large');
+    expectError(new Uint8Array([KIND_BINARY, 6, 7, 8, 9]), 'ALX_ERR_FRAMING_TOO_LARGE');
     // Invalid UTF-8 in a text frame, single and reassembled.
-    expectError(new Uint8Array([KIND_TEXT | FLAG_FIN, 0xff, 0xfe]), 'utf8');
+    expectError(new Uint8Array([KIND_TEXT | FLAG_FIN, 0xff, 0xfe]), 'ALX_ERR_FRAMING_UTF8');
     assert.strictEqual(decoder.push(new Uint8Array([KIND_TEXT, 0xc3])), null);
-    expectError(new Uint8Array([KIND_TEXT | FLAG_FIN, 0x28]), 'utf8');
+    expectError(new Uint8Array([KIND_TEXT | FLAG_FIN, 0x28]), 'ALX_ERR_FRAMING_UTF8');
     // Still usable afterwards.
     assert.deepStrictEqual(decoder.push(new Uint8Array([KIND_TEXT | FLAG_FIN, 0x6f, 0x6b])), {
       kind: KIND_TEXT,
@@ -187,7 +187,7 @@ describe('framing', () => {
 
   it('should cap the fragment count of one message — by default the byte cap in 1 KiB pieces', () => {
     const decoder = new FrameDecoder({ maxReassembly: 64, maxFragments: 3 });
-    const fragments = (error) => error instanceof FramingError && error.code === 'fragments';
+    const fragments = (error) => error instanceof FramingError && error.code === 'ALX_ERR_FRAMING_FRAGMENTS';
     assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 1])), null);
     assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 2])), null);
     assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 3])), null);

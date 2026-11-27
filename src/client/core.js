@@ -1,10 +1,11 @@
 'use strict';
 
-// The client core: WrpcError, the ClientTransport base and WrpcClient
-// itself. The three built-in transports live in ./transports.js (registered
-// the same way src/sse/client.js registers the SSE one) and the Service
-// Worker proxy in ./proxy.js; ../client.js is the barrel that assembles
-// them, so require paths and the browser field are unchanged.
+// The client core: the ClientTransport base and WrpcClient itself
+// (WrpcError, re-exported here, is src/errors.js's). The three built-in
+// transports live in ./transports.js (registered the same way
+// src/sse/client.js registers the SSE one) and the Service Worker proxy in
+// ./proxy.js; ../client.js is the barrel that assembles them, so require
+// paths and the browser field are unchanged.
 
 const {
   Emitter,
@@ -16,6 +17,7 @@ const {
   resolveGenerateId,
   checkLimit,
 } = require('../utils.js');
+const { WrpcError } = require('../errors.js');
 
 // A timeout as a timer takes it: a number of milliseconds, up to 2^31 - 1.
 // `callTimeout: '300'` — a value straight out of an environment variable —
@@ -174,15 +176,10 @@ const toByteView = async (input) => {
   return new Uint8Array(input);
 };
 
-class WrpcError extends Error {
-  constructor({ message, code, details }) {
-    super(message);
-    this.code = code;
-    // Structured issue lists the server attached (validation paths and the
-    // like) — an optional wire field, absent on most errors.
-    if (details !== undefined) this.details = details;
-  }
-}
+// A wire error ({ message, code, details }) as the WrpcError a call rejects
+// with: the server's answer, or one of the client's own refusals above.
+// `details` is the optional wire field, absent on most errors.
+const toWrpcError = (wire) => new WrpcError(wire.message, { code: wire.code, details: wire.details });
 
 // Client-side pre-validation: the introspected input schema parts compiled
 // by an app-injected ajv (`validation: { ajv }`), so a doomed call rejects
@@ -217,7 +214,7 @@ const compilePrevalidate = (ajv, schema) => {
     if (issues) {
       const messages = [];
       for (const issue of issues) messages.push(`${issue.path} ${issue.message}`);
-      throw new WrpcError({ message: messages.join('; '), code: 400, details: { issues } });
+      throw new WrpcError(messages.join('; '), { code: 400, details: { issues } });
     }
     return value;
   };
@@ -904,7 +901,7 @@ class WrpcClient extends Emitter {
     this.#cancelled.clear();
     for (const entry of entries) {
       entry.release?.();
-      entry.reject(new WrpcError(CONNECTION_CLOSED_ERROR));
+      entry.reject(toWrpcError(CONNECTION_CLOSED_ERROR));
     }
   }
 
@@ -916,7 +913,7 @@ class WrpcClient extends Emitter {
     const entry = this.#calls.get(id);
     if (!entry) return;
     this.#forget(entry, id);
-    entry.reject(new WrpcError(CONNECTION_CLOSED_ERROR));
+    entry.reject(toWrpcError(CONNECTION_CLOSED_ERROR));
   }
 
   // Mirror of the server-side Client.destroy(): an inbound stream mid-
@@ -1158,7 +1155,7 @@ class WrpcClient extends Emitter {
     this.#subscriptions.clear();
     for (const record of records) {
       record.onRelease?.();
-      const error = new WrpcError({ message, code: 400 });
+      const error = new WrpcError(message, { code: 400 });
       record.stream?.fail(error);
       if (record.onError) record.onError(error);
       else if (!record.stream) this.#escalate(error, 'subscription.error');
@@ -1328,7 +1325,7 @@ class WrpcClient extends Emitter {
     if (!(ms > 0)) return pending;
     let timer = null;
     const expired = new Promise((resolve, reject) => {
-      timer = unref(setTimeout(() => reject(new WrpcError(CONNECT_TIMEOUT_ERROR)), ms));
+      timer = unref(setTimeout(() => reject(toWrpcError(CONNECT_TIMEOUT_ERROR)), ms));
     });
     return Promise.race([pending, expired]).finally(() => clearTimeout(timer));
   }
@@ -1384,7 +1381,7 @@ class WrpcClient extends Emitter {
             } catch {
               // Already dead — the rejection below carries the story.
             }
-            reject(new WrpcError(CONNECT_TIMEOUT_ERROR));
+            reject(toWrpcError(CONNECT_TIMEOUT_ERROR));
           }, this.#connectTimeout),
         );
       });
@@ -1621,14 +1618,14 @@ class WrpcClient extends Emitter {
           }
           // Closed by the server's word on the stream (its reason), or
           // with the connection.
-          if (consumer.closed) throw consumer.error ?? new WrpcError(CONNECTION_CLOSED_ERROR);
+          if (consumer.closed) throw consumer.error ?? toWrpcError(CONNECTION_CLOSED_ERROR);
         }
         // And once more, for what happened while the source was asked for
         // a chunk it did not have: its last chunk had gone, the stream was
         // refused — or the connection lost — in the wait for its end, and
         // `end()` on a closed stream is a no-op. The upload resolved, with
         // nobody told that the server had it refused.
-        if (consumer.closed) throw consumer.error ?? new WrpcError(CONNECTION_CLOSED_ERROR);
+        if (consumer.closed) throw consumer.error ?? toWrpcError(CONNECTION_CLOSED_ERROR);
       } catch (error) {
         consumer.terminate();
         throw error;
@@ -1721,7 +1718,7 @@ class WrpcClient extends Emitter {
     const call = this.#calls.get(id);
     if (!call) return void this.#unmatched(packet);
     this.#forget(call, id);
-    if (packet.error) return void call.reject(new WrpcError(packet.error));
+    if (packet.error) return void call.reject(toWrpcError(packet.error));
     call.resolve(packet.result);
   }
 
@@ -1740,7 +1737,7 @@ class WrpcClient extends Emitter {
     // stops (WrpcWritable.cancel); one already ended — its last chunk and
     // its end left in one turn, the answer behind them — has nobody left
     // to tell but the error channel: the server's own error, with its code.
-    const refusal = new WrpcError(error);
+    const refusal = toWrpcError(error);
     const stream = this.#writables.get(id);
     if (stream) return void stream.cancel(refusal);
     // A 499 is a reader that let go, not a failure: one that crossed the
@@ -1776,7 +1773,7 @@ class WrpcClient extends Emitter {
     // construction.
     if (packet.error && this.#refresh && !record.refreshed && this.#refreshCodes.includes(packet.error.code)) {
       record.refreshed = true;
-      void this.#runRefresh(new WrpcError(packet.error))
+      void this.#runRefresh(toWrpcError(packet.error))
         .then(() => {
           if (this.active && this.#subscriptions.has(id)) this.#openSubscription(record);
         })
@@ -1799,7 +1796,7 @@ class WrpcClient extends Emitter {
   // shape, shared by the direct path and the failed-refresh fallback above.
   #failSubscription(record, wireError) {
     record.onRelease?.();
-    const error = new WrpcError(wireError);
+    const error = toWrpcError(wireError);
     record.stream?.fail(error);
     if (record.onError) return void record.onError(error);
     // Nobody asked to hear about it, but a subscription that died must not
@@ -2291,7 +2288,7 @@ class WrpcClient extends Emitter {
   // REST semantics, not a callback envelope.
   async #restCallOnce(http, args = {}, options = {}, trace = null) {
     const { signal, meta } = options;
-    if (signal?.aborted) throw new WrpcError(CANCELLED_ERROR);
+    if (signal?.aborted) throw toWrpcError(CANCELLED_ERROR);
     const method = http.method;
     const safeMethod = method === 'GET' || method === 'HEAD';
     // codec.rest frames the REST leg's bodies (values, not packets; binary
@@ -2309,15 +2306,14 @@ class WrpcClient extends Emitter {
       // problem by construction: this leg is one call per request.
       res = await this.#transport.request(method, url, body, signal, { rest, meta, trace });
     } catch (error) {
-      if (signal?.aborted) throw new WrpcError(CANCELLED_ERROR);
-      throw new WrpcError({ message: `HTTP request failed: ${error?.message ?? error}`, code: 503 });
+      if (signal?.aborted) throw toWrpcError(CANCELLED_ERROR);
+      throw new WrpcError(`HTTP request failed: ${error?.message ?? error}`, { code: 503, cause: error });
     }
     if (res.status === 204) return undefined;
     const parsed = rest ? decodeRest(rest, res.body) : jsonParse(res.text);
     if (res.status >= 200 && res.status < 300) return parsed;
     const wire = parsed && typeof parsed === 'object' && typeof parsed.message === 'string' ? parsed : null;
-    throw new WrpcError({
-      message: wire?.message ?? `HTTP request failed (${res.status})`,
+    throw new WrpcError(wire?.message ?? `HTTP request failed (${res.status})`, {
       code: wire?.code ?? res.status,
       details: wire?.details,
     });
@@ -2332,8 +2328,7 @@ class WrpcClient extends Emitter {
       if (segment.startsWith(':')) {
         const value = params[segment.slice(1)];
         if (value === undefined) {
-          throw new WrpcError({
-            message: `Missing path param '${segment.slice(1)}' for ${http.method} ${http.path}`,
+          throw new WrpcError(`Missing path param '${segment.slice(1)}' for ${http.method} ${http.path}`, {
             code: 400,
           });
         }
@@ -2355,7 +2350,7 @@ class WrpcClient extends Emitter {
 
   #dispatchCall(target, packet, id, signal, callTimeout) {
     return new Promise((resolve, reject) => {
-      if (signal?.aborted) return void reject(new WrpcError(CANCELLED_ERROR));
+      if (signal?.aborted) return void reject(toWrpcError(CANCELLED_ERROR));
       const bucket = this.#armCall(id, callTimeout > 0 ? callTimeout : this.#callTimeout);
       let release = null;
       if (signal) {
@@ -2367,7 +2362,7 @@ class WrpcClient extends Emitter {
           // call. And a request/response transport cannot carry a cancel at
           // all — sending one there only earns a 400 nobody can route.
           if (!this.#unqueue(id)) this.#cancel(id);
-          reject(new WrpcError(CANCELLED_ERROR));
+          reject(toWrpcError(CANCELLED_ERROR));
         };
         release = () => signal.removeEventListener('abort', onAbort);
         signal.addEventListener('abort', onAbort, { once: true });
@@ -2381,7 +2376,7 @@ class WrpcClient extends Emitter {
         // CODED like every other dead-connection path — and clean up now,
         // or the armed deadline would hold the entry for the full callTimeout.
         this.#forget(call, id);
-        reject(new WrpcError({ message: error?.message ?? 'Connection closed', code: 503 }));
+        reject(new WrpcError(error?.message ?? 'Connection closed', { code: 503, cause: error }));
       }
     });
   }
@@ -2452,7 +2447,7 @@ class WrpcClient extends Emitter {
     this.#calls.delete(id);
     const queued = this.#unqueue(id);
     call.release?.();
-    call.reject(new WrpcError(REQUEST_TIMEOUT_ERROR));
+    call.reject(toWrpcError(REQUEST_TIMEOUT_ERROR));
     // The caller is gone, and the server is told so — as it is for an abort.
     // It used to go on with the call, and its answer, when it came, was a
     // callback nobody waited for: an 'error' for every call that had timed
@@ -2670,8 +2665,9 @@ class WrpcClient extends Emitter {
 // mode — because the outer status of anything else is unauthenticated.
 // Here and not in encryption/http.js: the transports must not load HPKE.
 const refusedStatus = (error) =>
-  error?.code === 'ENCRYPTION_REFUSED' && (error.status === 400 || error.status === 409 || error.status === 426)
-    ? error.status
+  error?.code === 'ALX_ERR_ENCRYPTION_REFUSED' &&
+  (error.statusCode === 400 || error.statusCode === 409 || error.statusCode === 426)
+    ? error.statusCode
     : 503;
 
 module.exports = {

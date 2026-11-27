@@ -11,6 +11,7 @@ const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const signaler = require('./signaler.js');
 const assertions = require('./assertions.js');
+const { TransportError } = require('../errors.js');
 // A browser peer defines its router with these; the main browser entry
 // leaves them out for its byte budget, and they are already in this bundle
 // (the host dispatches over a Router).
@@ -56,6 +57,7 @@ module.exports = {
   FrameEncoder: framing.FrameEncoder,
   FrameDecoder: framing.FrameDecoder,
   FramingError: framing.FramingError,
+  TransportError,
   negotiateMessageSize: framing.negotiateMessageSize,
   KIND_TEXT: framing.KIND_TEXT,
   KIND_BINARY: framing.KIND_BINARY,

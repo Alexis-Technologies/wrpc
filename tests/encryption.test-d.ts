@@ -73,9 +73,16 @@ expectType<boolean>(encryption.isKeyProvider(provider));
 // The failure and the helpers
 declare const failure: encryption.OpenError;
 declare const refusal: encryption.EncryptionRefusedError;
-expectType<'ENCRYPTION_REFUSED'>(refusal.code);
+expectType<'ALX_ERR_ENCRYPTION_REFUSED'>(refusal.code);
+expectType<number>(refusal.statusCode);
 expectType<number>(refusal.status);
-expectType<'open'>(failure.code);
+expectType<'ALX_ERR_OPEN'>(failure.code);
+expectType<string | undefined>(failure.reason);
+expectAssignable<encryption.OpenError>(new encryption.OpenError(undefined, { reason: 'replay' }));
+expectAssignable<encryption.EncryptionRefusedError>(
+  new encryption.EncryptionRefusedError('refused', { statusCode: 426 }),
+);
+expectError(new encryption.EncryptionRefusedError('refused'));
 expectType<string>(encryption.toBase64Url(new Uint8Array(4)));
 expectType<Uint8Array | null>(encryption.fromBase64('AAAA'));
 expectType<boolean>(encryption.equal(new Uint8Array(4), new Uint8Array(4)));

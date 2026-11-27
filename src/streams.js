@@ -2,7 +2,7 @@
 
 const { Emitter } = require('./utils.js');
 const { chunkEncode } = require('./chunks.js');
-const { ArgumentError } = require('./errors.js');
+const { ArgumentError, WrpcError } = require('./errors.js');
 
 const PUSH_EVENT = Symbol('push');
 const PULL_EVENT = Symbol('pull');
@@ -221,7 +221,7 @@ class WrpcReadable extends Emitter {
   // something its uploader can show. Only a string is a reason: terminate
   // is also handed over as a listener, and called with whatever that emits.
   async terminate(message, code = 499) {
-    this.#finish('terminated', typeof message === 'string' ? Object.assign(new Error(message), { code }) : null);
+    this.#finish('terminated', typeof message === 'string' ? new WrpcError(message, { code }) : null);
   }
 
   // Ends the stream for its reader with an error it can see: the iteration
@@ -229,8 +229,7 @@ class WrpcReadable extends Emitter {
   // For a sender that did not keep its announcement; terminate() is the
   // quiet end — the reader stops where it is. Answers the error.
   fail(message, code = 400) {
-    const error = new Error(message);
-    error.code = code;
+    const error = new WrpcError(message, { code });
     if (this.streaming) {
       this.error = error;
       this.#finish('terminated');

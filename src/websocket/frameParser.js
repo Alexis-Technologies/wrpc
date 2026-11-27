@@ -106,20 +106,23 @@ const isValidCloseCode = (code) => {
   return false;
 };
 
+// A peer's frame that breaks RFC 6455. `options.code` is one of
+// PARSE_ERR_CODES; the connection picks the close frame by it
+// (`parseErrorClose` in src/websocket/connection.js).
 class ParseError extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(message, options = {}) {
+    super(message, options);
     this.name = 'ParseError';
-    this.code = code;
+    this.code = options.code;
   }
 }
 
 const PARSE_ERR_CODES = {
-  MESSAGE_TOO_BIG: 'MESSAGE_TOO_BIG',
-  PROTOCOL_ERROR_COMMON: 'PROTOCOL_ERROR-COMMON',
-  PROTOCOL_ERROR_RSV: 'PROTOCOL_ERROR-RSV',
-  PROTOCOL_ERROR_CTRL_TOO_LONG: 'PROTOCOL_ERROR-CTRL_TOO_LONG',
-  INVALID_PAYLOAD: 'INVALID_PAYLOAD',
+  MESSAGE_TOO_BIG: 'ALX_ERR_PARSE_MESSAGE_TOO_BIG',
+  PROTOCOL_ERROR_COMMON: 'ALX_ERR_PARSE_PROTOCOL',
+  PROTOCOL_ERROR_RSV: 'ALX_ERR_PARSE_RSV',
+  PROTOCOL_ERROR_CTRL_TOO_LONG: 'ALX_ERR_PARSE_CONTROL_TOO_LONG',
+  INVALID_PAYLOAD: 'ALX_ERR_PARSE_INVALID_PAYLOAD',
 };
 
 class FrameParser {
@@ -140,7 +143,7 @@ class FrameParser {
 
     const allowedRsv = options.allowedRsv ?? 0;
     if ((rsv & ~allowedRsv) !== 0) {
-      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_RSV, 'RSV bits must be 0'));
+      return Result.from(new ParseError('RSV bits must be 0', { code: PARSE_ERR_CODES.PROTOCOL_ERROR_RSV }));
     }
 
     if (length === LEN_16_BIT) {
@@ -154,7 +157,9 @@ class FrameParser {
       offset += 8;
       const isSafeHigh = (high & MAX_SAFE_HIGH_MASK) === 0;
       if (!isSafeHigh) {
-        return Result.from(new ParseError(PARSE_ERR_CODES.MESSAGE_TOO_BIG, 'Payload length exceeds MAX_SAFE_INTEGER'));
+        return Result.from(
+          new ParseError('Payload length exceeds MAX_SAFE_INTEGER', { code: PARSE_ERR_CODES.MESSAGE_TOO_BIG }),
+        );
       }
       length = high * TWO_32 + low;
     }
@@ -187,23 +192,27 @@ class FrameParser {
   static checkControlFrame(frame) {
     const { fin, rsv, opcode, payload } = frame;
     if (!CONTROL_OPCODES.has(opcode) || !fin || rsv !== 0) {
-      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
+      return Result.from(new ParseError('Protocol error', { code: PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON }));
     }
     if (payload.length > 125) {
-      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_CTRL_TOO_LONG, 'Control frame too long'));
+      return Result.from(
+        new ParseError('Control frame too long', { code: PARSE_ERR_CODES.PROTOCOL_ERROR_CTRL_TOO_LONG }),
+      );
     }
     if (opcode === OPCODES.CLOSE) {
       if (payload.length === 0) return Result.from(true);
       if (payload.length === 1) {
-        return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
+        return Result.from(new ParseError('Protocol error', { code: PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON }));
       }
       const code = payload.readUInt16BE(0);
       const reason = payload.subarray(2);
       if (!isValidCloseCode(code)) {
-        return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, `Invalid close code: ${code}`));
+        return Result.from(
+          new ParseError(`Invalid close code: ${code}`, { code: PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON }),
+        );
       }
       if (!isValidUTF8(reason)) {
-        return Result.from(new ParseError(PARSE_ERR_CODES.INVALID_PAYLOAD, 'Invalid UTF-8 in close reason'));
+        return Result.from(new ParseError('Invalid UTF-8 in close reason', { code: PARSE_ERR_CODES.INVALID_PAYLOAD }));
       }
     }
     return Result.from(true);
@@ -212,17 +221,17 @@ class FrameParser {
   static checkDataFrame(frame) {
     const { fin, rsv, opcode, payload } = frame;
     if (!DATA_OPCODES.has(opcode)) {
-      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
+      return Result.from(new ParseError('Protocol error', { code: PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON }));
     }
     // RSV1 (compression) may only start a message, never continue one
     if (opcode === OPCODES.CONTINUATION && rsv !== 0) {
-      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
+      return Result.from(new ParseError('Protocol error', { code: PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON }));
     }
     // Compressed text is validated after inflation, not on the wire bytes
     const isCompressed = (rsv & RSV1) !== 0;
     const isText = opcode === OPCODES.TEXT;
     if (isText && fin && !isCompressed && !isValidUTF8(payload)) {
-      return Result.from(new ParseError(PARSE_ERR_CODES.INVALID_PAYLOAD, 'Invalid UTF-8 in text frame'));
+      return Result.from(new ParseError('Invalid UTF-8 in text frame', { code: PARSE_ERR_CODES.INVALID_PAYLOAD }));
     }
     return Result.from(true);
   }

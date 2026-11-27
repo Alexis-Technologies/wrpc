@@ -44,7 +44,7 @@ const {
   checkMessageSize,
 } = require('./framing.js');
 const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, TransportError } = require('../errors.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -285,8 +285,12 @@ class ChannelCodec {
     const queued = this.#channel.bufferedAmount + this.#pending;
     if (max === 0 || queued <= max) return false;
     this.#faulted = true;
-    const error = new Error(`Backpressure limit exceeded (${queued} bytes queued over ${max}), closing the channel`);
-    error.code = 'backpressure';
+    const error = new TransportError(
+      `Backpressure limit exceeded (${queued} bytes queued over ${max}), closing the channel`,
+      {
+        code: 'ALX_ERR_BACKPRESSURE',
+      },
+    );
     if (this.#onFault !== null) this.#onFault(error);
     this.#channel.close();
     return true;
@@ -315,9 +319,13 @@ class ChannelCodec {
     const closed = this.#channel.readyState !== 'open';
     if (partial || closed) this.#faulted = true;
     if (closed && !partial) return;
-    const wrapped = new Error(`data channel send failed${partial ? ' mid-message' : ''}: ${error?.message ?? error}`);
-    wrapped.code = partial ? 'desync' : 'send';
-    wrapped.cause = error;
+    const wrapped = new TransportError(
+      `data channel send failed${partial ? ' mid-message' : ''}: ${error?.message ?? error}`,
+      {
+        code: partial ? 'ALX_ERR_CHANNEL_DESYNC' : 'ALX_ERR_CHANNEL_SEND',
+        cause: error,
+      },
+    );
     if (this.#onFault !== null) this.#onFault(wrapped);
     if (partial) this.#channel.close();
   }
@@ -427,11 +435,8 @@ class ChannelCodec {
 
 // An inflate failure is the peer's protocol violation, reported in the
 // decoder's own shape so both transports treat it as they treat a bad frame.
-const inflateError = (error) => {
-  const wrapped = new FramingError(`inflate failed: ${error?.message ?? error}`, 'inflate');
-  wrapped.cause = error;
-  return wrapped;
-};
+const inflateError = (error) =>
+  new FramingError(`inflate failed: ${error?.message ?? error}`, { code: 'ALX_ERR_FRAMING_INFLATE', cause: error });
 
 class ClientRtcTransport extends ClientTransport {
   // A data channel can die silently exactly like a socket (ICE stalls, the

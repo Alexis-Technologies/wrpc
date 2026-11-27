@@ -24,7 +24,7 @@ const { clip } = require('./errors.js');
 // browser bundle for it.
 const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
 const { hasBytes, encodeAttachments } = require('../attachments.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -83,13 +83,6 @@ const encodePacket = (transport, packet) => {
   if (codec) return codec.encode(packet);
   if (transport.attachments !== false && hasBytes(packet)) return encodeAttachments(packet);
   return JSON.stringify(packet);
-};
-
-const refusal = (message) => {
-  const error = new Error(message);
-  error.code = 400;
-  error.expose = true;
-  return error;
 };
 
 class Context {
@@ -447,7 +440,7 @@ class Client extends Emitter {
   sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {
-      throw refusal(`Can't send wrpc event to http transport`);
+      throw new WrpcError(`Can't send wrpc event to http transport`, { code: 400, expose: true });
     }
     if (options !== null && (options.unreliable === true || options.compress === false)) {
       return void this.sendRaw(encodePacket(this.#transport, packet), options);
@@ -463,7 +456,7 @@ class Client extends Emitter {
   sendRaw(text, options = null) {
     const transport = this.#transport;
     if (!transport.connection) {
-      throw refusal(`Can't send wrpc event to http transport`);
+      throw new WrpcError(`Can't send wrpc event to http transport`, { code: 400, expose: true });
     }
     if (options !== null) {
       // A datagram where the transport can, the reliable write otherwise.
@@ -490,7 +483,7 @@ class Client extends Emitter {
   sendShared(message, options = null) {
     const transport = this.#transport;
     if (!transport.connection) {
-      throw refusal(`Can't send wrpc event to http transport`);
+      throw new WrpcError(`Can't send wrpc event to http transport`, { code: 400, expose: true });
     }
     if (options !== null && options.unreliable === true && typeof transport.writeUnreliable === 'function') {
       if (transport.writeUnreliable(message.text)) return true;
@@ -510,7 +503,7 @@ class Client extends Emitter {
    */
   ask(name, data, options = {}) {
     if (!this.#transport.connection) {
-      throw refusal(`Can't send wrpc event to http transport`);
+      throw new WrpcError(`Can't send wrpc event to http transport`, { code: 400, expose: true });
     }
     // An ask expects an answer, and a datagram may never arrive.
     if (options.unreliable) throw new ArgumentError('ask() cannot be unreliable: an answer is expected');
@@ -530,9 +523,7 @@ class Client extends Emitter {
       const wait = timeout > 0 ? timeout : DEFAULT_ASK_TIMEOUT;
       const timer = setTimeout(() => {
         this.#asks.delete(id);
-        const error = new Error('Ask timeout');
-        error.code = 408;
-        reject(error);
+        reject(new WrpcError('Ask timeout', { code: 408 }));
       }, wait);
       if (typeof timer.unref === 'function') timer.unref();
       this.#asks.set(id, { resolve, reject, timer });
@@ -546,10 +537,8 @@ class Client extends Emitter {
     this.#asks.delete(packet.id);
     clearTimeout(pending.timer);
     if (packet.error) {
-      const error = new Error(packet.error.message ?? 'Ask failed');
-      error.code = packet.error.code ?? 500;
-      if (packet.error.details !== undefined) error.details = packet.error.details;
-      pending.reject(error);
+      const { error } = packet;
+      pending.reject(new WrpcError(error.message ?? 'Ask failed', { code: error.code ?? 500, details: error.details }));
     } else {
       pending.resolve(packet.result);
     }
@@ -579,9 +568,11 @@ class Client extends Emitter {
 
   getStream(id) {
     if (!this.#transport.connection) {
-      throw refusal(`Can't receive stream from http transport`);
+      throw new WrpcError(`Can't receive stream from http transport`, { code: 400, expose: true });
     }
-    if (!this.binary) throw refusal(`Can't receive stream over a text-only transport`);
+    if (!this.binary) {
+      throw new WrpcError(`Can't receive stream over a text-only transport`, { code: 400, expose: true });
+    }
     const stream = this.streams.get(id);
     if (stream) return stream;
     throw new Error(`Stream ${id} is not initialized`);
@@ -589,9 +580,11 @@ class Client extends Emitter {
 
   createStream(name, size) {
     if (!this.#transport.connection) {
-      throw refusal(`Can't send wrpc streams to http transport`);
+      throw new WrpcError(`Can't send wrpc streams to http transport`, { code: 400, expose: true });
     }
-    if (!this.binary) throw refusal(`Can't send wrpc streams over a text-only transport`);
+    if (!this.binary) {
+      throw new WrpcError(`Can't send wrpc streams over a text-only transport`, { code: 400, expose: true });
+    }
     // The name and the size are the writable's to check (WrpcWritable): one
     // check for this end and for a client's. Zero is a size — an empty file
     // is a file.
@@ -639,8 +632,9 @@ class Client extends Emitter {
     const stream = this.#writables.get(id);
     if (!stream) return false;
     const { message, code } = error;
-    const reason = new Error(typeof message === 'string' ? clip(message, 255) : 'Stream refused');
-    reason.code = Number.isInteger(code) ? code : 400;
+    const reason = new WrpcError(typeof message === 'string' ? clip(message, 255) : 'Stream refused', {
+      code: Number.isInteger(code) ? code : 400,
+    });
     this.#log.debug({ event: 'stream.cancelled', id: clip(id), code: reason.code });
     stream.cancel(reason);
     return true;
@@ -651,7 +645,7 @@ class Client extends Emitter {
   // TypeError from inside a handler.
   #requireSessions(method) {
     if (this.#sessions) return this.#sessions;
-    throw refusal(`${method}: sessions are not available on this host`);
+    throw new WrpcError(`${method}: sessions are not available on this host`, { code: 400, expose: true });
   }
 
   initializeSession(token, data = {}) {
@@ -732,8 +726,7 @@ class Client extends Emitter {
     // An answer can no longer arrive: whoever asked is settled NOW instead
     // of waiting out the ask timeout on a peer that is gone.
     if (this.#asks.size > 0) {
-      const gone = new Error('Client disconnected');
-      gone.code = 503;
+      const gone = new WrpcError('Client disconnected', { code: 503 });
       for (const pending of this.#asks.values()) {
         clearTimeout(pending.timer);
         pending.reject(gone);

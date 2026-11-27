@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 
 const { OPCODES, CLOSE_CODES, RSV1 } = require('./constants.js');
 const { Frame, EMPTY_PING, EMPTY_PONG, encodeFrame, encodeFrameFrom } = require('./frame.js');
-const { FrameParser, isValidUTF8 } = require('./frameParser.js');
+const { FrameParser, isValidUTF8, PARSE_ERR_CODES } = require('./frameParser.js');
 const { SegmentQueue } = require('./segments.js');
 const { PreparedFrames } = require('./prepared.js');
 const { DeflateContext } = require('./deflateContext.js');
@@ -60,6 +60,24 @@ const INBOX_LOW = 8;
 // bursts themselves served as fast as before (bench/ws-fairness.js). A batch frame carries up to 128 calls, which is
 // why bytes count beside messages.
 const TURN_BUDGET = Object.freeze({ messages: 512, bytes: 256 * 1024 });
+
+// The close frame a ParseError's code ends the connection with: 1009 and
+// 1007 for theirs, 1002 with the reason that names the violation for the
+// rest.
+const parseErrorClose = (code, isClient) => {
+  switch (code) {
+    case PARSE_ERR_CODES.MESSAGE_TOO_BIG:
+      return Frame.errorClose('MESSAGE_TOO_BIG', isClient);
+    case PARSE_ERR_CODES.INVALID_PAYLOAD:
+      return Frame.errorClose('INVALID_PAYLOAD', isClient);
+    case PARSE_ERR_CODES.PROTOCOL_ERROR_RSV:
+      return Frame.protocolErrorClose('RSV', isClient);
+    case PARSE_ERR_CODES.PROTOCOL_ERROR_CTRL_TOO_LONG:
+      return Frame.protocolErrorClose('CTRL_TOO_LONG', isClient);
+    default:
+      return Frame.protocolErrorClose('COMMON', isClient);
+  }
+};
 
 const isMark = (mark) => mark === undefined || (Number.isInteger(mark) && mark > 0);
 
@@ -428,16 +446,8 @@ class Connection extends EventEmitter {
   }
 
   #processFrameParserError(error) {
-    const { code } = error;
-    const parts = code.split('-');
-    const type = parts[0];
-    const subtype = parts[1];
-    this.#fault('ws.frame', error, { close: code });
-    const frame =
-      type === 'PROTOCOL_ERROR'
-        ? Frame.protocolErrorClose(subtype, this.#isClient)
-        : Frame.errorClose(type, this.#isClient);
-    this.#fail(frame);
+    this.#fault('ws.frame', error, { close: error.code });
+    this.#fail(parseErrorClose(error.code, this.#isClient));
   }
 
   #trackMessageSize(size) {

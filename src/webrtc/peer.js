@@ -40,7 +40,7 @@ const GOODBYE_HOLD = 5000;
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
-const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError } = require('./assertions.js');
+const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError, outcomeOf } = require('./assertions.js');
 const { normalizeCompression } = require('../compression/index.js');
 const { ConfigError, ArgumentError } = require('../errors.js');
 
@@ -385,17 +385,17 @@ class WrpcPeer extends Emitter {
     // it had no metric at all, so a campaign of them was invisible.
     if (!isAssertion(message.assertion)) {
       this.#otel.recordRtcAssertion('missing');
-      throw new AssertionError('assertion: missing', 'missing');
+      throw new AssertionError('assertion: missing', { code: 'ALX_ERR_ASSERTION_MISSING' });
     }
     let verified = null;
     try {
       verified = await this.#verifier.verify(message.assertion, { from, sdp, now: Date.now() + this.#clock });
     } catch (error) {
-      // The verifier's refusal code is the outcome — signature, fingerprint,
-      // subject (a substitution), expired, kid, issuer, malformed (an
-      // operational fault). It used to read a `reason` no AssertionError
-      // ever had, so every refusal counted as 'invalid'.
-      this.#otel.recordRtcAssertion(error instanceof AssertionError ? error.code : 'invalid');
+      // The verifier's refusal code names the outcome (`outcomeOf`) —
+      // signature, fingerprint, subject (a substitution), expired, kid,
+      // issuer, malformed (an operational fault). It used to read a `reason`
+      // no AssertionError ever had, so every refusal counted as 'invalid'.
+      this.#otel.recordRtcAssertion(outcomeOf(error));
       throw error;
     }
     this.#otel.recordRtcAssertion('ok');

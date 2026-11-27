@@ -282,3 +282,12 @@ expectType<WrpcLogWriter>(peer.log);
 // A mesh dials a lost edge again; the pace is the application's to set.
 peer.join('lobby', { data: { name: 'ada' }, relink: { minDelay: 500, maxDelay: 10_000 } });
 peer.join('quiet', { relink: false });
+
+// Assertion refusals and the carrier's own faults carry ALX_ERR_ codes
+declare const refused: webrtc.AssertionError;
+expectType<webrtc.AssertionErrorCode>(refused.code);
+expectAssignable<webrtc.AssertionRefusal>(refused.code);
+expectAssignable<webrtc.AssertionError>(new webrtc.AssertionError('x', { code: 'ALX_ERR_ASSERTION_EXPIRED' }));
+declare const fault: webrtc.TransportError;
+expectType<'ALX_ERR_BACKPRESSURE' | 'ALX_ERR_CHANNEL_SEND' | 'ALX_ERR_CHANNEL_DESYNC'>(fault.code);
+expectAssignable<webrtc.FramingError>(new webrtc.FramingError('x', { code: 'ALX_ERR_FRAMING_EMPTY' }));

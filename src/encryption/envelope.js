@@ -271,9 +271,7 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
   const senders = new Map();
 
   const refuse = (reason) => {
-    const error = new OpenError();
-    error.reason = reason;
-    throw error;
+    throw new OpenError(undefined, { reason });
   };
 
   const remember = (id, entry) => {

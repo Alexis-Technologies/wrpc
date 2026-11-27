@@ -40,6 +40,8 @@ the access check, and the target procedure is already resolved — so
 plain code, not a policy DSL:
 
 ```js
+const { WrpcError } = require('@alexify/wrpc');
+
 const buckets = new WeakMap();
 
 const rateLimit = (limit = 50, windowMs = 1000) => async (context) => {
@@ -50,12 +52,7 @@ const rateLimit = (limit = 50, windowMs = 1000) => async (context) => {
     bucket = { start: now, used: 0 };
     buckets.set(key, bucket);
   }
-  if (++bucket.used > limit) {
-    const error = new Error('Rate limit exceeded');
-    error.code = 429;
-    error.expose = true;
-    throw error;
-  }
+  if (++bucket.used > limit) throw new WrpcError('Rate limit exceeded', { code: 429, expose: true });
 };
 
 const router = defineRouter(units, { hooks: { onRequest: rateLimit(50) } });

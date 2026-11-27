@@ -224,7 +224,7 @@ const runChannelContract = (harness) => {
     await waitFor(() => closes.length === 1, 'terminated');
     await timers.setImmediate();
     assert.strictEqual(errors.length, 1);
-    assert.strictEqual(errors[0].code, 'backpressure');
+    assert.strictEqual(errors[0].code, 'ALX_ERR_BACKPRESSURE');
     assert.match(errors[0].message, /Backpressure limit exceeded/);
     assert.strictEqual(end.bufferedAmount, 0);
     release();

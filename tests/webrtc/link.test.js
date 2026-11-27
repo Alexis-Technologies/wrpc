@@ -603,8 +603,8 @@ describe('rtc link', () => {
     a.start();
     b.start();
     const failed = Promise.all([
-      assert.rejects(a.waitOpen(), (error) => error.code === 'message-size'),
-      assert.rejects(b.waitOpen(), (error) => error.code === 'message-size'),
+      assert.rejects(a.waitOpen(), (error) => error.code === 'ALX_ERR_FRAMING_MESSAGE_SIZE'),
+      assert.rejects(b.waitOpen(), (error) => error.code === 'ALX_ERR_FRAMING_MESSAGE_SIZE'),
     ]);
     await within(failed, 'both refused');
     assert.strictEqual(a.state, 'failed');

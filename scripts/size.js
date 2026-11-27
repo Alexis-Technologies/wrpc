@@ -190,7 +190,14 @@ const ENTRIES = [
   // line as pieces — one line of 2 MiB fed in 1 KiB chunks took 6.4 s, each
   // doubling four times the time — and caps the event it is putting together
   // (`maxMessage`). Measured 32,288 B against 31,744.
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'src/sse/client.js', platform: 'browser', budget: 32 },
+  // 32 -> 33 for the error classes of alexiskills 1.2 (2026-11-27): every
+  // class takes (message, options), one WrpcError for a wire status on both
+  // ends (named, with `expose`, built from the wire by `toWrpcError`), a
+  // TransportError for a carrier's own faults and the ALX_ERR_ names of the
+  // 2.x codes — the classes live in src/errors.js, which every entry loads.
+  // Measured 32,802 B against 32,768; the main entry grew by the same 119 B
+  // and stays under its 31 KB.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'src/sse/client.js', platform: 'browser', budget: 33 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'src/sse/index.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'src/query/index.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -320,7 +327,13 @@ const ENTRIES = [
   // and 64,472 B once src/ walks with loops and reads arrays by index (the
   // rest of alexiskills 1.1: no array iteration method, no array
   // destructuring), 40 B under the new budget.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'src/webrtc/browser.js', platform: 'browser', budget: 63 },
+  // 63 -> 64 for the error classes of alexiskills 1.2 (2026-11-27), as the
+  // sse entry's 32 -> 33: (message, options) everywhere, the WrpcError the
+  // router, the dispatcher, a peer host's Client and the streams throw for a
+  // wire status in place of a hand-coded Error, TransportError, and the
+  // ALX_ERR_ codes of the framing and the trust assertions — the longer
+  // strings are most of it. Measured 64,813 B against 64,512.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'src/webrtc/browser.js', platform: 'browser', budget: 64 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'src/webrtc/index.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

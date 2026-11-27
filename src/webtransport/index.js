@@ -19,7 +19,7 @@ const { fromQuico } = require('./quico.js');
 // picks for `kind: 'wt'`.
 const { ServerWtTransport } = require('./transport.js');
 const framing = require('./framing.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, TransportError } = require('../errors.js');
 
 // How long a session may sit without opening its control stream before it
 // is refused: a client that connected and never spoke.
@@ -419,5 +419,6 @@ module.exports = {
   DEFAULT_MAX_PENDING,
   DEFAULT_HIGH_WATER_MARK,
   DEFAULT_LOW_WATER_MARK,
+  TransportError,
   ...framing,
 };

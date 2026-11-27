@@ -259,8 +259,9 @@ const { value, error } = FrameParser.parse(buffer, { allowedRsv });
 
 Parsing answers `{ value, error }` rather than throwing: a protocol violation
 from a peer is data, not an exception. `ParseError.code` is one of
-`PARSE_ERR_CODES` — `MESSAGE_TOO_BIG`, `PROTOCOL_ERROR-COMMON`,
-`PROTOCOL_ERROR-RSV`, `PROTOCOL_ERROR-CTRL_TOO_LONG`, `INVALID_PAYLOAD`.
+`PARSE_ERR_CODES` — `ALX_ERR_PARSE_MESSAGE_TOO_BIG`, `ALX_ERR_PARSE_PROTOCOL`,
+`ALX_ERR_PARSE_RSV`, `ALX_ERR_PARSE_CONTROL_TOO_LONG`, `ALX_ERR_PARSE_INVALID_PAYLOAD`
+(the [errors reference](./errors#thrown) says which close each one sends).
 
 `OPCODES` and `CLOSE_CODES` are exported as named constants
 (`CLOSE_CODES.NORMAL_CLOSE`, `OPCODES.BINARY`, …).

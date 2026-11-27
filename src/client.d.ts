@@ -5,6 +5,7 @@
 // (the `browser` types condition) re-exports ONLY this.
 
 import type { Encryption, EncryptionInfo } from './encryption/browser.js';
+import type { WrpcError } from './errors.js';
 
 /**
  * Structural view of a node Writable — what finalize()/pipe() need. Typed
@@ -143,14 +144,7 @@ export interface CompressionOptions {
   async?: boolean | { threshold?: number };
 }
 
-export { ConfigError, ArgumentError, ErrorCode } from './errors.js';
-
-export class WrpcError extends Error {
-  code: number;
-  /** Structured issue lists the server attached; an optional wire field. */
-  details?: unknown;
-  constructor(options: { message: string; code: number; details?: unknown });
-}
+export { ConfigError, ArgumentError, ErrorCode, WrpcError, WrpcErrorOptions } from './errors.js';
 
 export interface ReadableOptions {
   highWaterMark?: number;

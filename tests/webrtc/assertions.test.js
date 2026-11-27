@@ -62,8 +62,8 @@ describe('assertions', () => {
     assert.match(text, /^[A-Za-z0-9_-]+$/);
     assert.deepStrictEqual(base64urlDecode(text), bytes);
     assert.deepStrictEqual(base64urlDecode(''), new Uint8Array(0));
-    assert.throws(() => base64urlDecode('a+b'), refused('malformed'));
-    assert.throws(() => base64urlDecode(7), refused('malformed'));
+    assert.throws(() => base64urlDecode('a+b'), refused('ALX_ERR_ASSERTION_MALFORMED'));
+    assert.throws(() => base64urlDecode(7), refused('ALX_ERR_ASSERTION_MALFORMED'));
   });
 
   it('should normalize fingerprints and read them from an SDP at either level', () => {
@@ -118,31 +118,46 @@ describe('assertions', () => {
     await unkeyed.verify(assertion, { from: 'alice', sdp: sdpWith(FP.toLowerCase()) });
 
     // Every binding, refused with its code.
-    await assert.rejects(verifier.verify(assertion, { from: 'bob', sdp: CHROME_SDP }), refused('subject'));
+    await assert.rejects(
+      verifier.verify(assertion, { from: 'bob', sdp: CHROME_SDP }),
+      refused('ALX_ERR_ASSERTION_SUBJECT'),
+    );
     await assert.rejects(
       verifier.verify(assertion, { from: 'alice', sdp: sdpWith(FP.replace('4A', '4B')) }),
-      refused('fingerprint'),
+      refused('ALX_ERR_ASSERTION_FINGERPRINT'),
     );
-    await assert.rejects(verifier.verify(assertion, { from: 'alice', sdp: 'v=0\r\n' }), refused('fingerprint'));
+    await assert.rejects(
+      verifier.verify(assertion, { from: 'alice', sdp: 'v=0\r\n' }),
+      refused('ALX_ERR_ASSERTION_FINGERPRINT'),
+    );
     // The right fingerprint first and another one after it: no single one.
     await assert.rejects(
       verifier.verify(assertion, { from: 'alice', sdp: sdpWith(FP, `a=fingerprint:${OTHER}\r\n`) }),
-      refused('fingerprint'),
+      refused('ALX_ERR_ASSERTION_FINGERPRINT'),
     );
     await assert.rejects(
       verifier.verify(assertion, { from: 'alice', sdp: CHROME_SDP, now: (exp + 61) * 1000 }),
-      refused('expired'),
+      refused('ALX_ERR_ASSERTION_EXPIRED'),
     );
     await verifier.verify(assertion, { from: 'alice', sdp: CHROME_SDP, now: (exp + 59) * 1000 });
     const strict = createAssertionVerifier({ keys: keys.publicKey, issuer: 'someone.else' });
-    await assert.rejects(strict.verify(assertion, { from: 'alice', sdp: CHROME_SDP }), refused('issuer'));
+    await assert.rejects(
+      strict.verify(assertion, { from: 'alice', sdp: CHROME_SDP }),
+      refused('ALX_ERR_ASSERTION_ISSUER'),
+    );
     // Another key: the signature does not hold.
     const other = await generateAssertionKeys({ kid: 'k1' });
     const stranger = createAssertionVerifier({ keys: other.publicKey });
-    await assert.rejects(stranger.verify(assertion, { from: 'alice', sdp: CHROME_SDP }), refused('signature'));
+    await assert.rejects(
+      stranger.verify(assertion, { from: 'alice', sdp: CHROME_SDP }),
+      refused('ALX_ERR_ASSERTION_SIGNATURE'),
+    );
     // A tampered payload: the signature no longer covers it.
     const forged = tamper(assertion, 1, (p) => ({ ...p, sub: 'bob' }));
-    await assert.rejects(verifier.verify(forged, { from: 'bob', sdp: CHROME_SDP }), refused('signature'));
+    await assert.rejects(
+      verifier.verify(forged, { from: 'bob', sdp: CHROME_SDP }),
+      refused('ALX_ERR_ASSERTION_SIGNATURE'),
+    );
   });
 
   it('should check the header before any crypto', async () => {
@@ -156,45 +171,58 @@ describe('assertions', () => {
         tamper(assertion, 0, (h) => ({ ...h, alg: 'none' })),
         context,
       ),
-      refused('alg'),
+      refused('ALX_ERR_ASSERTION_ALG'),
     );
     await assert.rejects(
       verifier.verify(
         tamper(assertion, 0, (h) => ({ ...h, alg: 'HS256' })),
         context,
       ),
-      refused('alg'),
+      refused('ALX_ERR_ASSERTION_ALG'),
     );
     await assert.rejects(
       verifier.verify(
         tamper(assertion, 0, (h) => ({ ...h, typ: 'JWT' })),
         context,
       ),
-      refused('typ'),
+      refused('ALX_ERR_ASSERTION_TYP'),
     );
     await assert.rejects(
       verifier.verify(
         tamper(assertion, 0, (h) => ({ ...h, kid: 7 })),
         context,
       ),
-      refused('kid'),
+      refused('ALX_ERR_ASSERTION_KID'),
     );
     await assert.rejects(
       verifier.verify(
         tamper(assertion, 0, (h) => ({ ...h, kid: 'other' })),
         context,
       ),
-      refused('kid'),
+      refused('ALX_ERR_ASSERTION_KID'),
     );
     for (const bad of ['', 'a.b', 'a.b.c.d', 'x'.repeat(5000), 42, null, `${assertion}!`]) {
-      await assert.rejects(verifier.verify(bad, context), refused('malformed'));
+      await assert.rejects(verifier.verify(bad, context), refused('ALX_ERR_ASSERTION_MALFORMED'));
     }
-    await assert.rejects(verifier.verify('e30.e30.e30', context), refused('typ'), 'empty objects parse, then fail typ');
+    await assert.rejects(
+      verifier.verify('e30.e30.e30', context),
+      refused('ALX_ERR_ASSERTION_TYP'),
+      'empty objects parse, then fail typ',
+    );
     // Valid base64url, invalid JSON / non-object JSON.
     const enc = (text) => base64urlEncode(new TextEncoder().encode(text));
-    await assert.rejects(verifier.verify(`${enc('{')}.${enc('{}')}.AA`, context), refused('malformed'));
-    await assert.rejects(verifier.verify(`${enc('[]')}.${enc('{}')}.AA`, context), refused('malformed'));
-    await assert.rejects(verifier.verify(`${enc('{}')}.${enc('"x"')}.AA`, context), refused('malformed'));
+    await assert.rejects(
+      verifier.verify(`${enc('{')}.${enc('{}')}.AA`, context),
+      refused('ALX_ERR_ASSERTION_MALFORMED'),
+    );
+    await assert.rejects(
+      verifier.verify(`${enc('[]')}.${enc('{}')}.AA`, context),
+      refused('ALX_ERR_ASSERTION_MALFORMED'),
+    );
+    await assert.rejects(
+      verifier.verify(`${enc('{}')}.${enc('"x"')}.AA`, context),
+      refused('ALX_ERR_ASSERTION_MALFORMED'),
+    );
     assert.strictEqual(isAssertion('a.b.c'), true);
     assert.strictEqual(isAssertion('a.b'), false);
   });
@@ -225,11 +253,11 @@ describe('assertions', () => {
     assert.strictEqual(asked, 2, 'both keys known now');
     // A kid nobody publishes: one refetch, then refused.
     const third = await generateAssertionKeys({ kid: 'k3' });
-    await assert.rejects(verifier.verify((await sign(third)).assertion, context), refused('kid'));
+    await assert.rejects(verifier.verify((await sign(third)).assertion, context), refused('ALX_ERR_ASSERTION_KID'));
     assert.strictEqual(asked, 3);
     // A keys function that fails or answers garbage refuses with 'kid' too.
     const broken = createAssertionVerifier({ keys: async () => [] });
-    await assert.rejects(broken.verify((await sign(first)).assertion, context), refused('kid'));
+    await assert.rejects(broken.verify((await sign(first)).assertion, context), refused('ALX_ERR_ASSERTION_KID'));
     const failing = createAssertionVerifier({
       keys: async () => {
         throw new Error('offline');
@@ -237,7 +265,7 @@ describe('assertions', () => {
     });
     await assert.rejects(
       failing.verify((await sign(first)).assertion, context),
-      (error) => error.code === 'kid' && /offline/.test(error.message),
+      (error) => error.code === 'ALX_ERR_ASSERTION_KID' && /offline/.test(error.message),
     );
   });
 
@@ -295,7 +323,7 @@ describe('assertions', () => {
     });
     await assert.rejects(
       verifier.verify(token, context),
-      (error) => error.code === 'kid' && /offline/.test(error.message),
+      (error) => error.code === 'ALX_ERR_ASSERTION_KID' && /offline/.test(error.message),
     );
     // A verify loads again once the backoff passed — it used to await the
     // same rejection for the life of the verifier.
@@ -335,12 +363,18 @@ describe('assertions', () => {
     assert.strictEqual((await verifier.verify((await sign(good, 'good')).assertion, context)).sub, 'alice');
     await timers.setTimeout(10);
     assert.deepStrictEqual(unhandled, [], 'the bad import rejected with nobody to hear it');
-    await assert.rejects(verifier.verify((await sign(good, 'bad')).assertion, context), refused('kid'));
+    await assert.rejects(
+      verifier.verify((await sign(good, 'bad')).assertion, context),
+      refused('ALX_ERR_ASSERTION_KID'),
+    );
     // The keys endpoint goes down: an unknown kid is refused, and the set
     // that was still verifies.
     down = true;
     const other = await generateAssertionKeys({ kid: 'other' });
-    await assert.rejects(verifier.verify((await sign(other, 'other')).assertion, context), refused('kid'));
+    await assert.rejects(
+      verifier.verify((await sign(other, 'other')).assertion, context),
+      refused('ALX_ERR_ASSERTION_KID'),
+    );
     assert.strictEqual((await verifier.verify((await sign(good, 'good')).assertion, context)).sub, 'alice');
     await timers.setTimeout(10);
     assert.deepStrictEqual(unhandled, []);
@@ -364,10 +398,12 @@ describe('assertions', () => {
     });
     // Fifty tokens under a kid nobody publishes: one refresh, not fifty —
     // a flood of them used to be a flood on the keys endpoint.
-    for (let i = 0; i < 50; i++) await assert.rejects(verifier.verify(token, context), refused('kid'));
+    for (let i = 0; i < 50; i++) {
+      await assert.rejects(verifier.verify(token, context), refused('ALX_ERR_ASSERTION_KID'));
+    }
     assert.strictEqual(asked, 2, 'the initial load and one refresh');
     now = 30_000;
-    await assert.rejects(verifier.verify(token, context), refused('kid'));
+    await assert.rejects(verifier.verify(token, context), refused('ALX_ERR_ASSERTION_KID'));
     assert.strictEqual(asked, 3, 'one more once the interval passed');
     let eagerly = 0;
     const eager = createAssertionVerifier({
@@ -377,8 +413,8 @@ describe('assertions', () => {
       },
       refreshInterval: 0,
     });
-    await assert.rejects(eager.verify(token, context), refused('kid'));
-    await assert.rejects(eager.verify(token, context), refused('kid'));
+    await assert.rejects(eager.verify(token, context), refused('ALX_ERR_ASSERTION_KID'));
+    await assert.rejects(eager.verify(token, context), refused('ALX_ERR_ASSERTION_KID'));
     assert.strictEqual(eagerly, 3, '0: every unknown kid asks again');
     assert.throws(() => createAssertionVerifier({ keys: first.publicKey, refreshInterval: -1 }), /refreshInterval/);
     assert.throws(() => createAssertionVerifier({ keys: first.publicKey, refreshInterval: 1.5 }), /refreshInterval/);
@@ -418,7 +454,7 @@ describe('assertions', () => {
     now = 60_000;
     assert.strictEqual((await verifier.verify(token, context)).sub, 'alice', 'within maxAge the set stands');
     now = 61_000;
-    await assert.rejects(verifier.verify(token, context), refused('kid'));
+    await assert.rejects(verifier.verify(token, context), refused('ALX_ERR_ASSERTION_KID'));
     assert.strictEqual((await verifier.verify((await sign(k2)).assertion, context)).sub, 'alice');
     assert.throws(() => createAssertionVerifier({ keys: k1.publicKey, maxAge: -1 }), /maxAge/);
   });

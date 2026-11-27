@@ -111,7 +111,7 @@ describe('aead', () => {
           (reason) => reason,
         );
         assert.ok(error instanceof OpenError, `expected an OpenError, got ${error}`);
-        assert.strictEqual(error.code, 'open');
+        assert.strictEqual(error.code, 'ALX_ERR_OPEN');
         assert.strictEqual(error.message, 'encryption: the message does not open');
       }
       assert.strictEqual(hex(await key.open(nonce, sealed, aad)), hex(utf8('payload')));

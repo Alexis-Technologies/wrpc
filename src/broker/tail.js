@@ -48,11 +48,10 @@
 // yielded to the feed is the ADVANCED CURSOR, not the entry's own position.
 
 const { backoffDelay } = require('../utils.js');
-const { codedError } = require('./ids.js');
 const { positiveInteger } = require('./retry.js');
 const { Deque } = require('../deque.js');
 const { sleep } = require('./adapter.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, WrpcError } = require('../errors.js');
 
 const DEFAULT_HIGH_WATER_MARK = 1024;
 const DEFAULT_PAGE = 256;
@@ -254,7 +253,7 @@ class TopicTails {
           if (tail.failure === null) break;
           if (reader.failure === tail.failure) reader.failure = null;
           if (signal?.aborted) return ABORTED;
-          if (attempt >= MAX_REJOINS - 1) throw codedError('Log tail ended', 503);
+          if (attempt >= MAX_REJOINS - 1) throw new WrpcError('Log tail ended', { code: 503, expose: true });
           await sleep(backoffDelay({ ...REJOIN_BACKOFF, attempt }));
         }
       }
@@ -290,7 +289,10 @@ class TopicTails {
         // adapter called incomplete with nothing in it. Asked again
         // after a pause, a bounded number of times.
         if (++stalls > MAX_STALLS) {
-          throw codedError(hole ? 'Log read fell behind a gap in the topic' : 'Log read could not reach the tip', 503);
+          throw new WrpcError(hole ? 'Log read fell behind a gap in the topic' : 'Log read could not reach the tip', {
+            code: 503,
+            expose: true,
+          });
         }
         await sleep(STALL_DELAY);
       }
@@ -354,7 +356,7 @@ class TopicTails {
       [Symbol.asyncIterator]: () => {
         // One iteration per read(): a second loop over the same reader
         // would split its queue between two consumers.
-        if (started) throw codedError('A log read can be iterated once', 500);
+        if (started) throw new WrpcError('A log read can be iterated once', { code: 500, expose: true });
         started = true;
         const iterator = iterate();
         // return()/throw() before the first next() end a generator without
@@ -382,7 +384,7 @@ class TopicTails {
     for (const tail of this.#tails.values()) {
       this.#stop(tail);
       // A reader parked on a closed broker used to wait forever.
-      for (const member of tail.readers) member.fail(codedError('Log closed', 503));
+      for (const member of tail.readers) member.fail(new WrpcError('Log closed', { code: 503, expose: true }));
     }
     this.#tails.clear();
   }

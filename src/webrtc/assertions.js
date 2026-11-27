@@ -34,17 +34,24 @@ const SKEW_MS = 60_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
+// Why a token was refused: `options.code` is `ALX_ERR_ASSERTION_*`, and its
+// last word, lowercased, is the `wrpc.rtc.outcome` it counts as (`outcomeOf`).
 class AssertionError extends Error {
-  constructor(message, code) {
-    super(message);
+  constructor(message, options = {}) {
+    super(message, options);
     this.name = 'AssertionError';
-    this.code = code;
+    this.code = options.code;
   }
 }
 
-const refuse = (message, code) => {
-  throw new AssertionError(message, code);
+const refuse = (message, options) => {
+  throw new AssertionError(message, options);
 };
+
+// The metric label of a refusal: `signature` for ALX_ERR_ASSERTION_SIGNATURE.
+// The labels predate the codes and dashboards read them.
+const outcomeOf = (error) =>
+  error instanceof AssertionError ? error.code.slice(error.code.lastIndexOf('_') + 1).toLowerCase() : 'invalid';
 
 // base64url without Buffer: btoa/atob exist in every browser and in Node
 // since 16. Tokens are a few hundred bytes, so a string built byte by byte
@@ -58,13 +65,15 @@ const base64urlEncode = (bytes) => {
 const BASE64URL = /^[A-Za-z0-9_-]*$/;
 
 const base64urlDecode = (text) => {
-  if (typeof text !== 'string' || !BASE64URL.test(text)) refuse('assertion: not base64url', 'malformed');
+  if (typeof text !== 'string' || !BASE64URL.test(text)) {
+    refuse('assertion: not base64url', { code: 'ALX_ERR_ASSERTION_MALFORMED' });
+  }
   const padded = text + '='.repeat((4 - (text.length % 4)) % 4);
   let binary = '';
   try {
     binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
   } catch {
-    refuse('assertion: not base64url', 'malformed');
+    refuse('assertion: not base64url', { code: 'ALX_ERR_ASSERTION_MALFORMED' });
   }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -78,9 +87,9 @@ const parseJson = (bytes, what) => {
   try {
     value = JSON.parse(decoder.decode(bytes));
   } catch {
-    refuse(`assertion: ${what} is not JSON`, 'malformed');
+    refuse(`assertion: ${what} is not JSON`, { code: 'ALX_ERR_ASSERTION_MALFORMED' });
   }
-  if (!isObject(value)) refuse(`assertion: ${what} is not an object`, 'malformed');
+  if (!isObject(value)) refuse(`assertion: ${what} is not an object`, { code: 'ALX_ERR_ASSERTION_MALFORMED' });
   return value;
 };
 
@@ -90,7 +99,7 @@ const isAssertion = (value) =>
 
 /** Splits a compact JWS into its parts; the header and payload parsed, the signed bytes kept. */
 const parseJws = (token) => {
-  if (!isAssertion(token)) refuse('assertion: not a compact JWS', 'malformed');
+  if (!isAssertion(token)) refuse('assertion: not a compact JWS', { code: 'ALX_ERR_ASSERTION_MALFORMED' });
   const dot = token.indexOf('.');
   const second = token.indexOf('.', dot + 1);
   const header = parseJson(base64urlDecode(token.slice(0, dot)), 'header');
@@ -175,7 +184,8 @@ const noop = () => {};
  * without one answers any), verifies the signature, then binds: `sub` must be `from`,
  * `fp` must be the fingerprint in `sdp`, `exp` must be after `now` (with a
  * minute of skew), `iss` must match when one is expected. Throws an
- * AssertionError with a `code` — the reason a link was refused.
+ * AssertionError with a `code` (`ALX_ERR_ASSERTION_*`) — the reason a link
+ * was refused.
  */
 const createAssertionVerifier = ({
   keys,
@@ -279,21 +289,21 @@ const createAssertionVerifier = ({
         if (refreshed) return refreshed;
       }
     }
-    return refuse(`assertion: unknown key '${kid}'`, 'kid');
+    return refuse(`assertion: unknown key '${kid}'`, { code: 'ALX_ERR_ASSERTION_KID' });
   };
 
   const verify = async (token, { from, sdp, now = Date.now() } = {}) => {
     const { header, payload, signed, signature } = parseJws(token);
-    if (header.typ !== TYP) refuse(`assertion: typ must be ${TYP}`, 'typ');
-    if (header.alg !== ALG) refuse(`assertion: alg must be ${ALG}`, 'alg');
+    if (header.typ !== TYP) refuse(`assertion: typ must be ${TYP}`, { code: 'ALX_ERR_ASSERTION_TYP' });
+    if (header.alg !== ALG) refuse(`assertion: alg must be ${ALG}`, { code: 'ALX_ERR_ASSERTION_ALG' });
     const kid = header.kid === undefined ? '' : header.kid;
-    if (typeof kid !== 'string') refuse('assertion: kid must be a string', 'kid');
+    if (typeof kid !== 'string') refuse('assertion: kid must be a string', { code: 'ALX_ERR_ASSERTION_KID' });
     let key = null;
     try {
       key = await keyFor(kid);
     } catch (error) {
       if (error instanceof AssertionError) throw error;
-      refuse(`assertion: keys unavailable (${error.message})`, 'kid');
+      refuse(`assertion: keys unavailable (${error.message})`, { code: 'ALX_ERR_ASSERTION_KID' });
     }
     let valid = false;
     try {
@@ -301,17 +311,25 @@ const createAssertionVerifier = ({
     } catch {
       valid = false;
     }
-    if (valid !== true) refuse('assertion: bad signature', 'signature');
-    if (typeof payload.sub !== 'string' || payload.sub !== from) refuse('assertion: not about this peer', 'subject');
-    const fingerprint = normalizeFingerprint(payload.fp);
-    if (fingerprint === null) refuse('assertion: no fingerprint', 'fingerprint');
-    const declared = sdpFingerprint(sdp);
-    if (declared === null) refuse('assertion: the description declares no single fingerprint', 'fingerprint');
-    if (declared !== fingerprint) refuse('assertion: fingerprint does not match the description', 'fingerprint');
-    if (typeof payload.exp !== 'number' || !(payload.exp * 1000 + SKEW_MS > now)) {
-      refuse('assertion: expired', 'expired');
+    if (valid !== true) refuse('assertion: bad signature', { code: 'ALX_ERR_ASSERTION_SIGNATURE' });
+    if (typeof payload.sub !== 'string' || payload.sub !== from) {
+      refuse('assertion: not about this peer', { code: 'ALX_ERR_ASSERTION_SUBJECT' });
     }
-    if (issuer !== null && payload.iss !== issuer) refuse('assertion: unexpected issuer', 'issuer');
+    const fingerprint = normalizeFingerprint(payload.fp);
+    if (fingerprint === null) refuse('assertion: no fingerprint', { code: 'ALX_ERR_ASSERTION_FINGERPRINT' });
+    const declared = sdpFingerprint(sdp);
+    if (declared === null) {
+      refuse('assertion: the description declares no single fingerprint', { code: 'ALX_ERR_ASSERTION_FINGERPRINT' });
+    }
+    if (declared !== fingerprint) {
+      refuse('assertion: fingerprint does not match the description', { code: 'ALX_ERR_ASSERTION_FINGERPRINT' });
+    }
+    if (typeof payload.exp !== 'number' || !(payload.exp * 1000 + SKEW_MS > now)) {
+      refuse('assertion: expired', { code: 'ALX_ERR_ASSERTION_EXPIRED' });
+    }
+    if (issuer !== null && payload.iss !== issuer) {
+      refuse('assertion: unexpected issuer', { code: 'ALX_ERR_ASSERTION_ISSUER' });
+    }
     return Object.freeze({ ...payload });
   };
 
@@ -320,6 +338,7 @@ const createAssertionVerifier = ({
 
 module.exports = {
   AssertionError,
+  outcomeOf,
   ASSERTION_TYP: TYP,
   ASSERTION_ALG: ALG,
   ES256,

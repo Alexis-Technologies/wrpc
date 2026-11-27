@@ -27,7 +27,7 @@
 
 const { createLoggerWriter } = require('../../logging.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
+const { toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const {
@@ -46,7 +46,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
-const { ConfigError, ArgumentError } = require('../../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_ACK_WAIT = 30_000;
@@ -355,13 +355,15 @@ const createNatsBroker = (options = {}) => {
         earliest.then(() => undefined),
       );
     }
-    if (parseId(after) === null) return failedRead(codedError('Malformed event id', 400));
+    if (parseId(after) === null) return failedRead(new WrpcError('Malformed event id', { code: 400, expose: true }));
     const position = Number(after);
     const checked = (async () => {
       const state = await streamState(topic);
-      if (position > state.last) throw codedError('Event id is beyond the end of the log', 400);
+      if (position > state.last) {
+        throw new WrpcError('Event id is beyond the end of the log', { code: 400, expose: true });
+      }
       if (state.first > 0 && position + 1 < state.first) {
-        throw codedError('Event history was trimmed past this id', 410);
+        throw new WrpcError('Event history was trimmed past this id', { code: 410, expose: true });
       }
     })();
     // Surfaced through the read it guards (wrapRead); never unhandled.
@@ -370,7 +372,7 @@ const createNatsBroker = (options = {}) => {
   };
 
   const append = async (topic, value, { headers = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const { js: stream } = await managers();
     const { name, subject, config } = logStream(topic);
     await ensureStream(name, subject, config);
@@ -382,7 +384,7 @@ const createNatsBroker = (options = {}) => {
   // queue
 
   const produce = async (name, body, { headers = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const { js: stream } = await managers();
     const { name: streamId, subject, config } = queueStream(name);
     await ensureStream(streamId, subject, config);
@@ -390,7 +392,7 @@ const createNatsBroker = (options = {}) => {
   };
 
   const consume = async (name, onDelivery, consumeOptions = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = consumeOptions;
     checkConsume('nats queue.consume', onDelivery, prefetch, deadLetter);
     const { js: stream, jsm: manager } = await managers();
@@ -613,7 +615,7 @@ const createNatsBroker = (options = {}) => {
   };
 
   const listen = async (address, onMessage, { group = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     checkListen('nats direct.listen', address, onMessage);
     // What `stop.healthy` answers: a subscription that reported an error
     // (a permissions violation, a slow-consumer drop) delivers nothing more.
@@ -655,7 +657,7 @@ const createNatsBroker = (options = {}) => {
   };
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed) throw new WrpcError('Broker is closed', { code: 503, expose: true });
     const text = typeof body === 'string';
     const extra = { [TEXT_HEADER]: text ? '1' : '0' };
     if (correlationId !== null && correlationId !== undefined) extra[CORRELATION_HEADER] = String(correlationId);

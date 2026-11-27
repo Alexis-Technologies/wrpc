@@ -100,7 +100,7 @@ export declare function createW3cAdapter(source?: { RTCPeerConnection?: unknown 
 export declare const KIND_TEXT: 0;
 export declare const KIND_BINARY: 1;
 
-export { FramingError, FramingErrorCode } from '../errors.js';
+export { FramingError, FramingErrorCode, TransportError, TransportErrorCode } from '../errors.js';
 
 /** Fragment sink: the frame is valid only for the duration of the call. */
 export type FrameSink = (frame: Uint8Array) => void;
@@ -550,21 +550,31 @@ export interface AssertionClaims {
   [claim: string]: unknown;
 }
 
-export type AssertionRefusal =
-  | 'malformed'
-  | 'typ'
-  | 'alg'
-  | 'kid'
-  | 'signature'
-  | 'subject'
-  | 'fingerprint'
-  | 'expired'
-  | 'issuer'
-  | 'missing';
+/**
+ * The check an assertion failed. Its suffix, lowercased, is the
+ * `wrpc.rtc.outcome` the refusal counts as (`signature` for
+ * `ALX_ERR_ASSERTION_SIGNATURE`).
+ */
+export type AssertionErrorCode =
+  | 'ALX_ERR_ASSERTION_MALFORMED'
+  | 'ALX_ERR_ASSERTION_TYP'
+  | 'ALX_ERR_ASSERTION_ALG'
+  | 'ALX_ERR_ASSERTION_KID'
+  | 'ALX_ERR_ASSERTION_SIGNATURE'
+  | 'ALX_ERR_ASSERTION_SUBJECT'
+  | 'ALX_ERR_ASSERTION_FINGERPRINT'
+  | 'ALX_ERR_ASSERTION_EXPIRED'
+  | 'ALX_ERR_ASSERTION_ISSUER'
+  | 'ALX_ERR_ASSERTION_MISSING';
+
+/** @deprecated The 2.x name of {@link AssertionErrorCode}; removed in 3.0. */
+export type AssertionRefusal = AssertionErrorCode;
 
 /** Why an assertion was refused; `code` names the check that failed. */
 export declare class AssertionError extends Error {
-  readonly code: AssertionRefusal;
+  readonly name: 'AssertionError';
+  readonly code: AssertionErrorCode;
+  constructor(message: string, options: ErrorOptions & { code: AssertionErrorCode });
 }
 
 export interface AssertionVerifierOptions {

@@ -12,6 +12,7 @@ const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
 const { publicErrorMessage, publicErrorDetails, wireError, clip, lineLevels } = require('./errors.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
+const { WrpcError } = require('../errors.js');
 
 const DEFAULT_VERSION = '*';
 
@@ -513,10 +514,7 @@ const tellSender = (client, stream, asked) => (reason) => {
   let error = reason;
   if (stream.error === null) {
     if (!asked || stream.bytesReceived === stream.size) return;
-    if (error === null) {
-      error = new Error(`Stream ${stream.label} is no longer read`);
-      error.code = CANCELLED;
-    }
+    if (error === null) error = new WrpcError(`Stream ${stream.label} is no longer read`, { code: CANCELLED });
     // Written for the sender, whatever its code: a 5xx message is
     // otherwise a server internal and stays here.
     error.expose = true;

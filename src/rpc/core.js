@@ -60,7 +60,7 @@ const {
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
 const { readDeclared, normalizeDeclaredHeaders } = require('./handshake.js');
 const { AMBIENT_HEADERS } = require('./reserved.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 // After this long an unsettled onConnect chain logs a warning: a hook that
 // never resolves holds the client's dispatch (see #addClient), and the warn
@@ -782,10 +782,12 @@ class RpcServer extends Emitter {
     // added, the same 426 the core answers on its own surface.
     if (this.#encryption?.required) {
       this.#refusePlaintext('http');
-      const error = new Error('Upgrade Required: this server answers sealed requests only');
-      error.code = 426;
+      const error = new WrpcError('Upgrade Required: this server answers sealed requests only', {
+        code: 426,
+        expose: true,
+      });
+      // The host's error handler reads statusCode (fastify's does).
       error.statusCode = 426;
-      error.expose = true;
       throw error;
     }
     const transport = new ServerHttpTransport({ headers, remoteAddress, respond: () => {} }, { headers: {} });

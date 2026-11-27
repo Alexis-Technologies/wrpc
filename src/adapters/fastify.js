@@ -17,7 +17,7 @@ const {
 } = require('./common.js');
 const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 // A sealed request and an attachments frame: bytes under their own type
 // (the parsers registered in wrpcFastify).
@@ -99,12 +99,10 @@ const resolveEngine = (fastify, options) => {
 const argsOf = (request) => ({ params: request.params, query: request.query, body: request.body });
 
 const forbidden = () => {
-  const error = new Error('Forbidden');
-  error.code = 403;
+  const error = new WrpcError('Forbidden', { code: 403, expose: true });
   // fastify's own error handler reads statusCode; wrpc's reads code. Both
   // are set so `restErrors: 'app'` keeps the status too.
   error.statusCode = 403;
-  error.expose = true;
   return error;
 };
 

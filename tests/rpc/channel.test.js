@@ -324,7 +324,11 @@ describe('attachChannel', () => {
     pair.a.send(new Uint8Array([0b01]));
     await waitFor(() => !rpc.clients.has(attached), 'detached');
     const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
-    assert.strictEqual(warned?.err.code, 'empty', `expected the empty-fragment refusal: ${JSON.stringify(warnings)}`);
+    assert.strictEqual(
+      warned?.err.code,
+      'ALX_ERR_FRAMING_EMPTY',
+      `expected the empty-fragment refusal: ${JSON.stringify(warnings)}`,
+    );
     await waitFor(() => pair.b.readyState === 'closed', 'the channel closed');
   });
 });

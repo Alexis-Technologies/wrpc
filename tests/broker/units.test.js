@@ -12,7 +12,6 @@ const {
   brokerName,
 } = require('../../src/broker/port.js');
 const {
-  codedError,
   toText,
   toBytes,
   toHeaders,
@@ -67,11 +66,6 @@ describe('ids', () => {
     assert.strictEqual(reasonText(42), '42');
     assert.strictEqual(reasonText('a'.repeat(600)).length, 512);
     assert.strictEqual(reasonText('abcdef', 3), 'abc');
-  });
-
-  it('should expose coded errors', () => {
-    const error = codedError('nope', 410);
-    assert.deepStrictEqual([error.message, error.code, error.expose], ['nope', 410, true]);
   });
 
   it('should normalize bodies and headers', () => {

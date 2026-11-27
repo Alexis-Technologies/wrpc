@@ -65,7 +65,7 @@ const defaultMaxFragments = (maxReassembly) => Math.max(MIN_MAX_FRAGMENTS, Math.
  * nothing usable is reported (no sctp, 0, 1, Infinity). A reported size
  * UNDER the floor is honoured as-is: the floor is a fallback, never an
  * override — down to MIN_NEGOTIABLE_SIZE, under which the peer's demand is
- * refused with a FramingError ('message-size') for the link to fail on.
+ * refused with a FramingError (`ALX_ERR_FRAMING_MESSAGE_SIZE`) for the link to fail on.
  */
 const negotiateMessageSize = (sctp, ceiling = MAX_MESSAGE_SIZE) => {
   const advertised = sctp !== null && sctp !== undefined ? sctp.maxMessageSize : 0;
@@ -73,7 +73,9 @@ const negotiateMessageSize = (sctp, ceiling = MAX_MESSAGE_SIZE) => {
   if (!usable) return Math.min(MIN_MESSAGE_SIZE, ceiling);
   const size = Math.floor(advertised);
   if (size < MIN_NEGOTIABLE_SIZE) {
-    throw new FramingError(`peer max-message-size ${size} is under ${MIN_NEGOTIABLE_SIZE}`, 'message-size');
+    throw new FramingError(`peer max-message-size ${size} is under ${MIN_NEGOTIABLE_SIZE}`, {
+      code: 'ALX_ERR_FRAMING_MESSAGE_SIZE',
+    });
   }
   return Math.min(size, ceiling);
 };
@@ -109,7 +111,7 @@ const decodeText = (bytes) => {
   try {
     return TEXT_DECODER.decode(bytes);
   } catch {
-    throw new FramingError('invalid UTF-8 in a text frame', 'utf8');
+    throw new FramingError('invalid UTF-8 in a text frame', { code: 'ALX_ERR_FRAMING_UTF8' });
   }
 };
 
@@ -250,17 +252,17 @@ class FrameDecoder {
    */
   push(input) {
     const frame = toBytes(input);
-    if (frame.length < HEADER_BYTES) throw this.#fail('empty frame', 'empty');
+    if (frame.length < HEADER_BYTES) throw this.#fail('empty frame', { code: 'ALX_ERR_FRAMING_EMPTY' });
     const header = frame[0];
     if ((header & RESERVED_MASK) !== 0 || ((header & FLAG_COMPRESSED) !== 0 && !this.compressed)) {
-      throw this.#fail('reserved header bits set', 'reserved');
+      throw this.#fail('reserved header bits set', { code: 'ALX_ERR_FRAMING_RESERVED' });
     }
     const kind = header & MESSAGE_MASK;
     const fin = (header & FLAG_FIN) !== 0;
     const payload = frame.subarray(HEADER_BYTES);
     // A fragment that continues carries something: an empty one costs the
     // receiver a view and moves the byte cap not at all.
-    if (!fin && payload.length === 0) throw this.#fail('empty fragment', 'empty');
+    if (!fin && payload.length === 0) throw this.#fail('empty fragment', { code: 'ALX_ERR_FRAMING_EMPTY' });
     if (this.#parts === null) {
       if (fin) return this.#finish(kind, payload);
       this.#parts = [payload];
@@ -269,7 +271,9 @@ class FrameDecoder {
       this.#guard();
       return null;
     }
-    if (kind !== this.#kind) throw this.#fail('continuation kind does not match the message', 'kind');
+    if (kind !== this.#kind) {
+      throw this.#fail('continuation kind does not match the message', { code: 'ALX_ERR_FRAMING_KIND' });
+    }
     this.#parts.push(payload);
     this.#size += payload.length;
     this.#guard();
@@ -292,13 +296,17 @@ class FrameDecoder {
   }
 
   #guard() {
-    if (this.#size > this.#maxReassembly) throw this.#fail('message exceeds maxReassembly', 'too-large');
-    if (this.#parts.length > this.#maxFragments) throw this.#fail('message exceeds maxFragments', 'fragments');
+    if (this.#size > this.#maxReassembly) {
+      throw this.#fail('message exceeds maxReassembly', { code: 'ALX_ERR_FRAMING_TOO_LARGE' });
+    }
+    if (this.#parts.length > this.#maxFragments) {
+      throw this.#fail('message exceeds maxFragments', { code: 'ALX_ERR_FRAMING_FRAGMENTS' });
+    }
   }
 
-  #fail(message, code) {
+  #fail(message, options) {
     this.reset();
-    return new FramingError(message, code);
+    return new FramingError(message, options);
   }
 
   #finish(flags, bytes) {
@@ -308,7 +316,7 @@ class FrameDecoder {
     try {
       return { kind, data: TEXT_DECODER.decode(bytes), compressed: false };
     } catch {
-      throw this.#fail('invalid UTF-8 in a text frame', 'utf8');
+      throw this.#fail('invalid UTF-8 in a text frame', { code: 'ALX_ERR_FRAMING_UTF8' });
     }
   }
 }

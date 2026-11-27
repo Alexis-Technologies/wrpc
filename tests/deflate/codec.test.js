@@ -132,7 +132,7 @@ describe('deflate codec', () => {
     assert.ok(same(zlib.inflateRawSync(stream), expected), 'zlib reads the same stream');
     assert.throws(
       () => inflateRaw(stream, { maxOutput: 1000 }),
-      (error) => error instanceof DeflateError && error.code === 'too-large',
+      (error) => error instanceof DeflateError && error.code === 'ALX_ERR_DEFLATE_TOO_LARGE',
     );
   });
 
@@ -154,7 +154,7 @@ describe('deflate codec', () => {
     assert.deepStrictEqual(buildTable(new Uint8Array(4), 4), { table: null, bits: 0 });
     assert.throws(
       () => buildTable(new Uint8Array([1, 1, 1]), 3),
-      (error) => error.code === 'huffman',
+      (error) => error.code === 'ALX_ERR_DEFLATE_HUFFMAN',
     );
   });
 
@@ -303,30 +303,30 @@ describe('deflate codec', () => {
     };
     assert.strictEqual(
       code(() => inflateRaw(new Uint8Array(0))),
-      'truncated',
+      'ALX_ERR_DEFLATE_TRUNCATED',
     );
     assert.strictEqual(
       code(() => inflateRaw(good.subarray(0, 10))),
-      'truncated',
+      'ALX_ERR_DEFLATE_TRUNCATED',
     );
     assert.strictEqual(
       code(() => inflateRaw(good.subarray(0, good.length - 1))),
-      'truncated',
+      'ALX_ERR_DEFLATE_TRUNCATED',
     );
     assert.strictEqual(
       code(() => inflateRaw(new Uint8Array([0b111]))),
-      'block',
+      'ALX_ERR_DEFLATE_BLOCK',
       'BTYPE 11 is reserved',
     );
     // A stored block whose NLEN is not LEN's complement.
     assert.strictEqual(
       code(() => inflateRaw(new Uint8Array([1, 3, 0, 0, 0, 65, 66, 67]))),
-      'stored',
+      'ALX_ERR_DEFLATE_STORED',
     );
     // A stored block that promises more bytes than follow.
     assert.strictEqual(
       code(() => inflateRaw(new Uint8Array([1, 10, 0, 0xf5, 0xff, 65]))),
-      'truncated',
+      'ALX_ERR_DEFLATE_TRUNCATED',
     );
     // A distance reaching before the start of the output (fixed block: length 3, distance 1 on an empty window).
     const back = Buffer.from(deflateRaw(Buffer.from('aaaa')));
@@ -335,13 +335,15 @@ describe('deflate codec', () => {
     const withDict = deflateRaw(Buffer.from('market/tick'), { dictionary });
     const result = code(() => inflateRaw(withDict));
     assert.ok(
-      result === 'distance' || result === 'huffman' || result === 'truncated',
+      result === 'ALX_ERR_DEFLATE_DISTANCE' ||
+        result === 'ALX_ERR_DEFLATE_HUFFMAN' ||
+        result === 'ALX_ERR_DEFLATE_TRUNCATED',
       `read without its dictionary: ${result}`,
     );
     // The cap.
     assert.strictEqual(
       code(() => inflateRaw(zlib.deflateRawSync(Buffer.alloc(100_000, 0x20)), { maxOutput: 4096 })),
-      'too-large',
+      'ALX_ERR_DEFLATE_TOO_LARGE',
     );
     assert.strictEqual(
       code(() => inflateRaw(zlib.deflateRawSync(rows(300)), { maxOutput: rows(300).length })),
@@ -350,7 +352,7 @@ describe('deflate codec', () => {
     );
     // Over-subscribed dynamic tree: HLIT/HDIST/HCLEN then code-length code lengths that oversubscribe.
     const bad = Buffer.from([0b101, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
-    assert.ok(['huffman', 'truncated'].includes(code(() => inflateRaw(bad))));
+    assert.ok(['ALX_ERR_DEFLATE_HUFFMAN', 'ALX_ERR_DEFLATE_TRUNCATED'].includes(code(() => inflateRaw(bad))));
     assert.throws(() => inflateRaw('text'), TypeError);
   });
 

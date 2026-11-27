@@ -36,7 +36,7 @@ export declare function createDeflateCodec(
 /**
  * Raw DEFLATE → bytes, synchronously: stored, fixed and dynamic blocks,
  * `dictionary` preloading the window, `maxOutput` the cap past which a
- * DeflateError('too-large') is thrown rather than a bigger allocation.
+ * DeflateError (`ALX_ERR_DEFLATE_TOO_LARGE`) is thrown rather than a bigger allocation.
  */
 export declare function inflateRaw(
   input: ArrayBuffer | ArrayBufferView,
@@ -53,10 +53,18 @@ export declare function deflateRaw(
   options?: { dictionary?: ArrayBuffer | ArrayBufferView | null; level?: number },
 ): Uint8Array;
 
-/** What was wrong with the input, or `too-large` past `maxOutput`. */
-export type DeflateErrorCode = 'truncated' | 'huffman' | 'stored' | 'distance' | 'block' | 'too-large';
+/** What was wrong with the input, or `ALX_ERR_DEFLATE_TOO_LARGE` past `maxOutput`. */
+export type DeflateErrorCode =
+  | 'ALX_ERR_DEFLATE_TRUNCATED'
+  | 'ALX_ERR_DEFLATE_HUFFMAN'
+  | 'ALX_ERR_DEFLATE_STORED'
+  | 'ALX_ERR_DEFLATE_DISTANCE'
+  | 'ALX_ERR_DEFLATE_BLOCK'
+  | 'ALX_ERR_DEFLATE_TOO_LARGE';
 
 /** Every malformed input is one of these, with a code. */
 export declare class DeflateError extends Error {
+  readonly name: 'DeflateError';
   readonly code: DeflateErrorCode;
+  constructor(message: string, options: ErrorOptions & { code: DeflateErrorCode });
 }

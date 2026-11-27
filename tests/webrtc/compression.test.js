@@ -85,7 +85,7 @@ describe('rtc framing', () => {
     const strict = new FrameDecoder();
     assert.throws(
       () => strict.push(frames[0]),
-      (error) => error instanceof FramingError && error.code === 'reserved',
+      (error) => error instanceof FramingError && error.code === 'ALX_ERR_FRAMING_RESERVED',
     );
 
     const lenient = new FrameDecoder();
@@ -109,7 +109,7 @@ describe('rtc framing', () => {
     plain[0] &= ~FLAG_COMPRESSED;
     assert.throws(
       () => lenient.push(plain),
-      (error) => error.code === 'kind',
+      (error) => error.code === 'ALX_ERR_FRAMING_KIND',
     );
 
     // A plain single-fragment message still decodes as text, compressed: false.
@@ -122,7 +122,7 @@ describe('rtc framing', () => {
     // Bits 3-7 stay reserved even with deflate on.
     assert.throws(
       () => lenient.push(new Uint8Array([0b1000 | FLAG_FIN, 1])),
-      (error) => error.code === 'reserved',
+      (error) => error.code === 'ALX_ERR_FRAMING_RESERVED',
     );
   });
 });
@@ -236,7 +236,7 @@ describe('rtc compression (raw channel)', () => {
     client.write(big);
     await closed;
     assert.strictEqual(errors.length, 1);
-    assert.strictEqual(errors[0].code, 'reserved');
+    assert.strictEqual(errors[0].code, 'ALX_ERR_FRAMING_RESERVED');
   });
 
   it('should keep both directions in order with an asynchronous codec', async (t) => {
@@ -307,7 +307,7 @@ describe('rtc compression (raw channel)', () => {
     client.write(JSON.stringify({ pad: 'x'.repeat(200_000) }));
     await closed;
     assert.ok(errors.length >= 1);
-    assert.strictEqual(errors[0].code, 'inflate');
+    assert.strictEqual(errors[0].code, 'ALX_ERR_FRAMING_INFLATE');
     assert.match(String(errors[0].message), /ERR_BUFFER_TOO_LARGE|maxOutputLength|larger than|exceed/i);
   });
 
