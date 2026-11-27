@@ -243,9 +243,9 @@ class ClientWtTransport extends ClientTransport {
   }
 
   /** A stream packet is seen before serialization: the mux may take it. */
-  send(obj) {
-    if (this.#channel !== null && this.#channel.control(obj)) return;
-    super.send(obj);
+  send(packet) {
+    if (this.#channel !== null && this.#channel.control(packet)) return;
+    super.send(packet);
   }
 
   /** The codec ids in effect — `{ encode, decode }` — or null while the two lists share none. */

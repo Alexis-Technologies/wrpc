@@ -367,8 +367,8 @@ class Broadcast {
       const mine = legs[0];
       const theirs = legs[1];
       return {
-        answers: [...mine.answers, ...theirs.answers],
-        errors: [...mine.errors, ...theirs.errors],
+        answers: mine.answers.concat(theirs.answers),
+        errors: mine.errors.concat(theirs.errors),
         expected: local.expected + theirs.expected,
         incomplete: Boolean(theirs.incomplete),
       };

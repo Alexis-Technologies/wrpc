@@ -14,7 +14,6 @@
 const { META_PARAM, META_HEADER, META_PREFIX, BEARER_PROTOCOL } = require('../wire.js');
 const { ConfigError } = require('../errors.js');
 
-// ---------------------------------------------------------------------------
 // Client-side token stores. The contract is three functions, sync or async
 // (IndexedDB is only reachable through async, so every caller awaits):
 //   { get(key), set(key, value), delete(key) }
@@ -80,7 +79,6 @@ const cookieStorage = (doc, { prefix = 'wrpc:', maxAge = 31536000, path = '/', s
   },
 });
 
-// ---------------------------------------------------------------------------
 // bearerAuth: the client-side composition this subpath exists for. Wires a
 // store, the app's signIn and (optionally) its refresh into the THREE client
 // options that make bearer work end to end:
@@ -147,7 +145,6 @@ const bearerAuth = ({ store, signIn, refresh, key = 'tokens', on }) => {
   return options;
 };
 
-// ---------------------------------------------------------------------------
 // Server-side token transports (the sessions.transport injection). Both are
 // non-ambient: the credential is script-attached, so the safe-method CSRF
 // rule does not apply and write() has nothing to stamp.

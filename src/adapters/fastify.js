@@ -76,7 +76,7 @@ const resolveEngine = (fastify, options) => {
   );
 };
 
-// ---- Delegated REST routes ------------------------------------------------
+// Delegated REST routes
 //
 // A procedure with an `http` mapping becomes a REAL fastify route: fastify
 // owns routing, schema validation, serialization and swagger; wrpc supplies
@@ -328,7 +328,7 @@ const wrpcFastify = async (fastify, options = {}) => {
   const base = rpc.basePath;
   const engine = resolveEngine(fastify, options);
 
-  // ---- HTTP: fastify routes feeding the engine-agnostic core -------------
+  // HTTP: fastify routes feeding the engine-agnostic core
 
   const handle = async (request, reply) => {
     // Fastify already parsed the body; the core re-parses the JSON packet,
@@ -435,7 +435,7 @@ const wrpcFastify = async (fastify, options = {}) => {
   // pipeline keeps running.
   if (options.mirror) setupMirror(fastify, rpc, options);
 
-  // ---- WebSocket: engine attach ------------------------------------------
+  // WebSocket: engine attach
 
   const source = engine.attach({
     // The engine reports through the server's writer, as the Server shell

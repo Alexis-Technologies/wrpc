@@ -202,7 +202,6 @@ const createAmqpBroker = (options = {}) => {
     return bag;
   };
 
-  // ---------------------------------------------------------------------
   // backplane
 
   // The two exchanges this adapter declares — the backplane's and the
@@ -393,7 +392,6 @@ const createAmqpBroker = (options = {}) => {
     },
   };
 
-  // ---------------------------------------------------------------------
   // log — a stream queue, the offset as the id
 
   const logQueue = (topic) => name(prefix, 'log', topic);
@@ -641,7 +639,6 @@ const createAmqpBroker = (options = {}) => {
     return `${offset === null ? 0 : offset}`;
   };
 
-  // ---------------------------------------------------------------------
   // queue
 
   const workQueue = (queue) => name(prefix, 'q', queue);
@@ -901,7 +898,6 @@ const createAmqpBroker = (options = {}) => {
     };
   };
 
-  // ---------------------------------------------------------------------
   // direct
 
   // ONE direct exchange for every address, the address as the routing key:
@@ -1095,8 +1091,6 @@ const createAmqpBroker = (options = {}) => {
       });
     });
   };
-
-  // ---------------------------------------------------------------------
 
   const close = async () => {
     if (closed) return;

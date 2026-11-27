@@ -341,7 +341,7 @@ class RtcLink extends Emitter {
     return true;
   }
 
-  // ---- dialling
+  // dialling
 
   #dial(state) {
     // A dial still in progress is replaced: whoever waited on it learns so.
@@ -480,7 +480,7 @@ class RtcLink extends Emitter {
     }
   }
 
-  // ---- perfect negotiation
+  // perfect negotiation
 
   async #offer(options = undefined) {
     const pc = this.#pc;
@@ -576,7 +576,7 @@ class RtcLink extends Emitter {
     }
   }
 
-  // ---- connection lifecycle
+  // connection lifecycle
 
   #onConnectionState(pc) {
     const ice = pc.iceConnectionState;
@@ -651,7 +651,7 @@ class RtcLink extends Emitter {
     void this.emit('close', closure).catch((error) => this.#error(error, 'listener.close'));
   }
 
-  // ---- timers
+  // timers
 
   #armConnectTimer() {
     this.#clearConnectTimer();
@@ -697,7 +697,7 @@ class RtcLink extends Emitter {
     this.#clearRestartTimer();
   }
 
-  // ---- plumbing
+  // plumbing
 
   // A description signal, with this side's caps when it has any — every
   // description, so a redial's fresh pc and an ICE restart announce them

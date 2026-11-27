@@ -16,12 +16,13 @@ const ServerWsTransport = ServerTransport.transport.ws;
 class ServerWtTransport extends ServerWsTransport {
   kind = 'wt';
 
-  send(obj, code = 200, text = null) {
+  send(packet, code = 200, text = null) {
     const socket = this.connection;
     // Under a codec the mux is off on both ends (the client announced no
     // streams), and control() answers false without looking further.
-    if (obj.type === 'stream' && typeof socket.streamControl === 'function' && socket.streamControl(obj)) return true;
-    return super.send(obj, code, text);
+    const hasMux = typeof socket.streamControl === 'function';
+    if (packet.type === 'stream' && hasMux && socket.streamControl(packet)) return true;
+    return super.send(packet, code, text);
   }
 }
 

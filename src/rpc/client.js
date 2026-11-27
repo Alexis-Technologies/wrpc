@@ -335,23 +335,23 @@ class Client extends Emitter {
    * `compress: false` sends this packet uncompressed on a transport that
    * negotiated permessage-deflate (ignored elsewhere).
    */
-  send(obj, options = {}) {
+  send(packet, options = {}) {
     const { code, method, text } = options;
     const transport = this.#transport;
     let flushed = false;
     if (options.compress === false && typeof transport.writeWith === 'function') {
       const codec = transport.codec;
-      flushed = transport.writeWith(codec ? codec.encode(obj) : (text ?? JSON.stringify(obj)), options);
+      flushed = transport.writeWith(codec ? codec.encode(packet) : (text ?? JSON.stringify(packet)), options);
     } else {
-      flushed = transport.send(obj, code, text);
+      flushed = transport.send(packet, code, text);
     }
     // Debug on purpose: one line per successful call is a firehose. A
     // console logger drops debug outright; a structured logger's own level
     // decides. Failures still log at error, unconditionally. The writer's
     // `debugEnabled` flag is what keeps the entry object and the message
     // string from being built for a writer that would drop them.
-    if (this.#log.debugEnabled && obj.type === 'callback' && !obj.error) {
-      this.#log.debug({ event: 'call.ok', method, id: obj.id }, `${this.source}\tCALL\t${method}\tOK`);
+    if (this.#log.debugEnabled && packet.type === 'callback' && !packet.error) {
+      this.#log.debug({ event: 'call.ok', method, id: packet.id }, `${this.source}\tCALL\t${method}\tOK`);
     }
     return flushed;
   }
@@ -561,7 +561,6 @@ class Client extends Emitter {
     return true;
   }
 
-  // ---------------------------------------------------------------------
   // Rooms. The registry owns both directions, so this client keeps no room
   // state of its own that a missed leave could leave stale.
 

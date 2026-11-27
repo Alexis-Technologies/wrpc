@@ -70,6 +70,14 @@ const PLAIN_HEADERS = withoutHeader(SECURITY_HEADERS, HSTS);
 // header of wrpc's own: it is CORS-safelisted, so it costs no preflight a
 // 1.0 server — or an application's own `cors.headers` list, which REPLACES
 // the default — would refuse.
+// Building an id index makes a batch's ordering O(n), but the Map costs
+// more than the quadratic it removes until the batch gets big: the linear
+// scan wins 1.23x at 4 answers and 1.05x at 8, and loses 1.18x at 16 and
+// 3.91x at 128 (docs/guide/performance.md) — so the switch sits between 8
+// and 16; the client's default batch.maxSize of 16 is the first measured
+// size where the index wins. Re-run bench/batch-ordering.js before moving
+// either.
+const INDEX_THRESHOLD = 12;
 const FRAME_TYPE = 'application/octet-stream';
 const readsFrames = (headers) => {
   const accept = headers?.accept;
@@ -293,18 +301,18 @@ class ServerHttpTransport extends ServerTransport {
   // Both special modes ignore `text` deliberately: batch mode collects the
   // OBJECTS to re-order and re-serialize as one frame, and REST mode writes
   // the bare result rather than the callback envelope the text carries.
-  send(obj, code = 200, text = null) {
-    if (this.#rest && obj.type === 'callback') {
+  send(packet, code = 200, text = null) {
+    if (this.#rest && packet.type === 'callback') {
       // The REST body codec (codec.rest) encodes VALUES — the plain result
       // and the wire error object — never envelopes. Absent, JSON as ever.
       const codec = this.#rest.codec ?? null;
-      if (obj.error) {
-        return this.write(codec ? codec.encode(obj.error) : JSON.stringify(obj.error), obj.error.code ?? code);
+      if (packet.error) {
+        return this.write(codec ? codec.encode(packet.error) : JSON.stringify(packet.error), packet.error.code ?? code);
       }
       // A REST body is a plain value with no frame to carry bytes in: a
       // result holding them needs codec.rest, and says so instead of
       // shipping the objects JSON makes of typed arrays.
-      if (codec === null && this.attachments !== false && hasBytes(obj.result)) {
+      if (codec === null && this.attachments !== false && hasBytes(packet.result)) {
         const error = { message: 'Binary results on REST need codec.rest', code: 501 };
         return this.write(JSON.stringify(error), 501);
       }
@@ -312,11 +320,11 @@ class ServerHttpTransport extends ServerTransport {
       // 204 promises "no content": the result (if any) is discarded on the
       // wire by contract, not by accident.
       if (status === 204) return this.write('', 204);
-      return this.#writeCacheable(restBody(codec, obj.result), status);
+      return this.#writeCacheable(restBody(codec, packet.result), status);
     }
-    if (!this.#batch) return super.send(obj, code, text);
+    if (!this.#batch) return super.send(packet, code, text);
     if (this.#responded) return true;
-    this.#collected.push(obj);
+    this.#collected.push(packet);
     if (this.#collected.length < this.#batch.length) return true;
     const ordered = this.#ordered();
     return this.write(this.#encodeBatch(ordered), 200);
@@ -330,17 +338,9 @@ class ServerHttpTransport extends ServerTransport {
     return JSON.stringify(ordered);
   }
 
-  // Building an id index makes this O(n), but the Map costs more than the
-  // quadratic it removes until the batch gets big: the linear scan wins 1.23x
-  // at 4 answers and 1.05x at 8, and loses 1.18x at 16 and 3.91x at 128
-  // (docs/guide/performance.md) — so the switch sits between 8 and 16; the
-  // client's default batch.maxSize of 16 is the first measured size where
-  // the index wins. Re-run bench/batch-ordering.js before moving either.
-  static #INDEX_THRESHOLD = 12;
-
   #ordered() {
     const collected = this.#collected;
-    if (collected.length >= ServerHttpTransport.#INDEX_THRESHOLD) return this.#orderedIndexed();
+    if (collected.length >= INDEX_THRESHOLD) return this.#orderedIndexed();
     const pending = collected.slice();
     const answers = [];
     const batch = this.#batch;

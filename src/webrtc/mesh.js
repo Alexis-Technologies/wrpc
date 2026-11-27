@@ -270,7 +270,9 @@ class Mesh extends Emitter {
     const onOpen = () => {
       // The edge is back: whatever was waiting to dial it again is over.
       this.#settle(link.id);
-      void this.emit('join', { id: link.id, data: data ?? link.data }).catch((e) => this.#peer.escalate(e, this));
+      void this.emit('join', { id: link.id, data: data ?? link.data }).catch((listenerError) =>
+        this.#peer.escalate(listenerError, this),
+      );
     };
     if (link.open) onOpen();
     else link.once('open', onOpen);
@@ -321,7 +323,9 @@ class Mesh extends Emitter {
     if (!pending.said && relink.minDelay * 2 ** pending.attempt >= relink.maxDelay) {
       pending.said = true;
       this.#peer.log.warn({ event: 'mesh.unreachable', room: this.#room, peer: id, attempts: pending.attempt });
-      void this.emit('unreachable', { id, attempts: pending.attempt }).catch((e) => this.#peer.escalate(e, this));
+      void this.emit('unreachable', { id, attempts: pending.attempt }).catch((listenerError) =>
+        this.#peer.escalate(listenerError, this),
+      );
     }
     pending.attempt++;
     clearTimeout(pending.timer);

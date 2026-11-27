@@ -374,16 +374,16 @@ class ClientTransport extends Emitter {
     this.url = url;
   }
 
-  send(obj) {
+  send(packet) {
     // The codec is handed to the transport at bind time (client core).
-    // `obj.meta` rides along so a transport with a header block can mirror
+    // `packet.meta` rides along so a transport with a header block can mirror
     // it; a control packet has none, and ws/worker ignore the argument. A
     // packet holding bytes leaves as an attachments frame (attachments.js)
     // unless the client opted out or the peer speaks revision 1, where the
     // bytes are the JSON 1.0 made of them; a codec owns the wire and skips it.
-    if (this.codec) return void this.write(this.codec.encode(obj), obj?.meta);
-    const framed = this.attachments !== false && this.revision === 2 && hasBytes(obj);
-    this.write(framed ? encodeAttachments(obj) : JSON.stringify(obj), obj?.meta);
+    if (this.codec) return void this.write(this.codec.encode(packet), packet?.meta);
+    const framed = this.attachments !== false && this.revision === 2 && hasBytes(packet);
+    this.write(framed ? encodeAttachments(packet) : JSON.stringify(packet), packet?.meta);
   }
 
   // Drop the connection without waiting for a close handshake. The default
@@ -1114,8 +1114,8 @@ class WrpcClient extends Emitter {
       await this.#within(this.#authenticate(this, { reconnected, attempts }));
     } catch (error) {
       this.#log.warn({ event: 'authenticate.failed', err: error, attempts, url: this.url });
-      void this.emit('authenticate-failed', { error, attempts, reconnected }).catch((e) =>
-        this.#escalate(e, 'listener.authenticate-failed'),
+      void this.emit('authenticate-failed', { error, attempts, reconnected }).catch((listenerError) =>
+        this.#escalate(listenerError, 'listener.authenticate-failed'),
       );
       // Same reasoning, same ordering, as the restore path below: put the
       // pre-open attempt count back BEFORE terminate() synchronously hands
@@ -1157,7 +1157,9 @@ class WrpcClient extends Emitter {
       if (units.length > 0) await this.load(...units);
     } catch (error) {
       this.#log.warn({ event: 'restore.failed', err: error, attempts, url: this.url });
-      void this.emit('restore-failed', { error, attempts }).catch((e) => this.#escalate(e, 'listener.restore-failed'));
+      void this.emit('restore-failed', { error, attempts }).catch((listenerError) =>
+        this.#escalate(listenerError, 'listener.restore-failed'),
+      );
       // The attempt counter was reset to 0 the moment the socket opened, so
       // a restore failing afterwards used to hand #scheduleReconnect a zero:
       // retry at minDelay forever, the window never growing, `retries` never
@@ -1265,7 +1267,6 @@ class WrpcClient extends Emitter {
     }, delay);
   }
 
-  // ---------------------------------------------------------------------
   // Heartbeat: ping -> await pong -> ping. One timer is armed at a time, so
   // a stalled connection cannot pile pings up behind the missing pong.
 
@@ -2205,8 +2206,8 @@ class WrpcClient extends Emitter {
           // surface their original refusal, so nothing else says why.
           this.#otel.recordRefresh('failed');
           this.#log.warn({ event: 'refresh.failed', err: refreshError });
-          void this.emit('refresh-failed', { error: refreshError, cause: error }).catch((e) =>
-            this.#escalate(e, 'listener.refresh-failed'),
+          void this.emit('refresh-failed', { error: refreshError, cause: error }).catch((listenerError) =>
+            this.#escalate(listenerError, 'listener.refresh-failed'),
           );
           throw refreshError;
         },
@@ -2411,7 +2412,7 @@ class WrpcClient extends Emitter {
     });
   }
 
-  // --- Call deadlines --------------------------------------------------
+  // Call deadlines
   //
   // One timer for every call in flight instead of a setTimeout per call.
   // Calls are bucketed by deadline, one lane per distinct timeout value

@@ -82,15 +82,15 @@ class PreparedFrames {
   // to need a window's frame starts ONE zlib.deflateRaw, and every later
   // recipient of the same emit waits on that same result — still one
   // deflate per window per fan-out, just not on the event loop.
-  deflatedAsync(windowBits, options, cb) {
+  deflatedAsync(windowBits, options, callback) {
     const frames = this.#slots();
     const slot = windowBits - MIN_WINDOW_BITS;
     const current = frames[slot];
     if (current !== null) {
-      if (Buffer.isBuffer(current)) return void cb(null, current);
-      return void current.push(cb);
+      if (Buffer.isBuffer(current)) return void callback(null, current);
+      return void current.push(callback);
     }
-    const waiters = [cb];
+    const waiters = [callback];
     frames[slot] = waiters;
     compressAsync(
       this.payload,

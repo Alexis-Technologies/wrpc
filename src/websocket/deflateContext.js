@@ -27,7 +27,7 @@ class DeflateContext {
   #inflate = null;
   #options;
   #closed = false;
-  // Per-direction operation queues: [{ input, maxLength, cb }], head in flight.
+  // Per-direction operation queues: [{ input, maxLength, callback }], head in flight.
   #deflateOps = [];
   #inflateOps = [];
 
@@ -59,17 +59,17 @@ class DeflateContext {
 
   // Compresses one message on the live stream: write, then a sync flush so
   // the output ends on a byte boundary with the empty stored block RFC 7692
-  // 7.2.1 says to strip. cb(error, buffer).
-  compress(payload, cb) {
-    if (this.#closed) return void cb(new ClosedError('deflate context closed'));
+  // 7.2.1 says to strip. callback(error, buffer).
+  compress(payload, callback) {
+    if (this.#closed) return void callback(new ClosedError('deflate context closed'));
     this.#schedule(
       this.#deflateOps,
       () => this.#deflateStream(),
       payload,
       Infinity,
       (error, output) => {
-        if (error) return void cb(error);
-        cb(null, output.subarray(0, output.length - TRAILER.length));
+        if (error) return void callback(error);
+        callback(null, output.subarray(0, output.length - TRAILER.length));
       },
     );
   }
@@ -79,13 +79,19 @@ class DeflateContext {
   // watched as it produces output, and a message that would exceed the cap
   // fails with ERR_BUFFER_TOO_LARGE — the code the sync path's
   // maxOutputLength uses — after at most one chunk past it.
-  decompress(payload, maxLength, cb) {
-    if (this.#closed) return void cb(new ClosedError('deflate context closed'));
-    this.#schedule(this.#inflateOps, () => this.#inflateStream(), Buffer.concat([payload, TRAILER]), maxLength, cb);
+  decompress(payload, maxLength, callback) {
+    if (this.#closed) return void callback(new ClosedError('deflate context closed'));
+    this.#schedule(
+      this.#inflateOps,
+      () => this.#inflateStream(),
+      Buffer.concat([payload, TRAILER]),
+      maxLength,
+      callback,
+    );
   }
 
-  #schedule(ops, stream, input, maxLength, cb) {
-    ops.push({ stream, input, maxLength, cb });
+  #schedule(ops, stream, input, maxLength, callback) {
+    ops.push({ stream, input, maxLength, callback });
     if (ops.length === 1) this.#next(ops);
   }
 
@@ -94,7 +100,7 @@ class DeflateContext {
     const op = ops[0];
     run(op.stream(), op.input, op.maxLength, (error, output) => {
       ops.shift();
-      op.cb(error, output);
+      op.callback(error, output);
       this.#next(ops);
     });
   }
@@ -115,7 +121,7 @@ class DeflateContext {
 // One write + Z_SYNC_FLUSH on a zlib stream, collecting the output. The
 // stream's 'data' and 'error' listeners are attached for the duration of
 // the operation only: a context serves one message at a time.
-const run = (stream, input, maxLength, cb) => {
+const run = (stream, input, maxLength, callback) => {
   const chunks = [];
   let total = 0;
   let settled = false;
@@ -124,7 +130,7 @@ const run = (stream, input, maxLength, cb) => {
     settled = true;
     stream.off('data', onData);
     stream.off('error', onError);
-    cb(error, output);
+    callback(error, output);
   };
   const onData = (chunk) => {
     total += chunk.length;

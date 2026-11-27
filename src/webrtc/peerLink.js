@@ -112,7 +112,6 @@ class PeerLink extends Emitter {
     this.#bindAll();
   }
 
-  /** The remote peer's id. */
   get id() {
     return this.#id;
   }
@@ -155,7 +154,6 @@ class PeerLink extends Emitter {
     return this.#state;
   }
 
-  /** The RtcLink underneath. */
   get link() {
     return this.#link;
   }
@@ -190,7 +188,7 @@ class PeerLink extends Emitter {
     return this.#opened.promise;
   }
 
-  // ---- the remote's api, delegated
+  // the remote's api, delegated
 
   load(...units) {
     return this.#remote.load(...units);
@@ -210,7 +208,7 @@ class PeerLink extends Emitter {
     return this.#remote.unrespond(name);
   }
 
-  // ---- the host side, addressed
+  // the host side, addressed
 
   /** An event to the remote peer, through this router's Client for it. */
   send(name, data) {
@@ -244,7 +242,7 @@ class PeerLink extends Emitter {
     this.#link.close();
   }
 
-  // ---- lifecycle (WrpcPeer drives these)
+  // lifecycle (WrpcPeer drives these)
 
   /**
    * @internal Dials. The initiator offers; a responder that asked for the

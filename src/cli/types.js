@@ -102,7 +102,6 @@ const fail = (message) => {
   throw new CliError(message);
 };
 
-// ---------------------------------------------------------------------------
 // argv
 
 const FLAGS_WITH_VALUE = new Set([
@@ -188,7 +187,6 @@ const parseArgs = (argv) => {
   return { ...options, url };
 };
 
-// ---------------------------------------------------------------------------
 // rendering
 
 /**
@@ -430,7 +428,6 @@ const renderTypes = (introspection, options = {}) => {
   return lines.join('\n');
 };
 
-// ---------------------------------------------------------------------------
 // OpenAPI projection
 //
 // `introspect()` already carries everything a path item needs — the
@@ -585,7 +582,6 @@ const renderStatic = (introspection, options = {}) => {
   return ["'use strict';", '', ...header, `module.exports = ${json};`, ''].join('\n');
 };
 
-// ---------------------------------------------------------------------------
 // the server
 
 const INTROSPECT = 'system/introspect';
@@ -659,7 +655,6 @@ const fetchIntrospection = async (url, units, doFetch, timeout = DEFAULT_TIMEOUT
   return packet.result;
 };
 
-// ---------------------------------------------------------------------------
 // entry point
 
 /**

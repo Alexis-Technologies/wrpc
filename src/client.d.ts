@@ -271,7 +271,7 @@ export class WrpcReadable extends Emitter {
 }
 
 export interface Transport {
-  send(obj: object): void;
+  send(packet: object): void;
   /** `false` means above the high-water mark: wait for 'drain'. `void` counts as accepted. */
   write(data: string | ArrayBufferView): boolean | void;
 }
@@ -406,7 +406,7 @@ declare class ClientTransport extends Emitter {
   close(): void;
   /** Synchronous, unconditional: flips `active` and emits 'close' without a peer handshake. */
   terminate(): void;
-  send(obj: object): void;
+  send(packet: object): void;
   /** Returns the flow-control signal when the wire has one (`false` = above the high-water mark, then 'drain'). */
   write(data: string | ArrayBufferView): boolean | void;
   /**
@@ -583,7 +583,7 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   getStream(id: string): WrpcReadable | WrpcWritable;
   createStream(name: string, size: number): WrpcWritable;
   createBlobUploader(blob: Blob): BlobUploader;
-  send(obj: object): void;
+  send(packet: object): void;
   /** Fire-and-forget event to the server; `name` is 'unit/event'. */
   sendEvent<Name extends ClientSendName<Api> | (string & {})>(
     name: Name,

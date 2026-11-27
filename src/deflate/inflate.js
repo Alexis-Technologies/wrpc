@@ -213,7 +213,7 @@ class Inflater {
     this.#limit = dictLen + maxOutput;
   }
 
-  // ---- bits
+  // bits
 
   #fill(n) {
     const input = this.#input;
@@ -269,7 +269,7 @@ class Inflater {
     return entry & 0xffff;
   }
 
-  // ---- output
+  // output
 
   #room(n) {
     const needed = this.#outLen + n;
@@ -285,7 +285,7 @@ class Inflater {
     this.#out = grown;
   }
 
-  // ---- blocks
+  // blocks
 
   #stored() {
     // Drop the rest of the current byte, then LEN / NLEN as whole bytes.

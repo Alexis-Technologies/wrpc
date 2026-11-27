@@ -125,7 +125,6 @@ class MemoryBroker {
     return this.#epoch;
   }
 
-  // -------------------------------------------------------------------------
   // log
 
   #topic(topic) {
@@ -245,7 +244,6 @@ class MemoryBroker {
     });
   }
 
-  // -------------------------------------------------------------------------
   // queue
 
   #queueState(queue) {
@@ -413,7 +411,6 @@ class MemoryBroker {
     });
   }
 
-  // -------------------------------------------------------------------------
   // direct
 
   #listen(address, onMessage, { group = null } = {}) {
@@ -487,8 +484,6 @@ class MemoryBroker {
     }
     return Promise.resolve();
   }
-
-  // -------------------------------------------------------------------------
 
   close() {
     if (this.#closed) return;

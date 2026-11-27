@@ -556,16 +556,16 @@ class RpcServer extends Emitter {
   // The seam the cluster reaches this node's clients through: selectors and
   // descriptors here, correlation and channels there.
   #clusterOps() {
-    const select = (sel = {}) => {
-      if (typeof sel.id === 'string') {
-        const client = this.#byId.get(sel.id);
+    const select = (selector = {}) => {
+      if (typeof selector.id === 'string') {
+        const client = this.#byId.get(selector.id);
         if (!client) return [];
         // id AND room: the room is a condition on that one client, not a
         // second population — an addressed relay bounded by a membership.
-        if (typeof sel.room === 'string' && !client.in(sel.room)) return [];
+        if (typeof selector.room === 'string' && !client.in(selector.room)) return [];
         return [client];
       }
-      if (typeof sel.room === 'string') return Array.from(this.#rooms.members(sel.room));
+      if (typeof selector.room === 'string') return Array.from(this.#rooms.members(selector.room));
       // Persistent connections only: a per-request HTTP client is not a
       // peer anyone means to enumerate, join or disconnect. Filtered while
       // collecting — Array.from().filter() built the whole client list first
@@ -589,8 +589,8 @@ class RpcServer extends Emitter {
       },
       // One pass: the filter+map chain allocated an intermediate array on top
       // of the one select() already built.
-      descriptors: (sel) => {
-        const selected = select(sel);
+      descriptors: (selector) => {
+        const selected = select(selector);
         const out = [];
         for (let i = 0; i < selected.length; i++) {
           const client = selected[i];
@@ -608,28 +608,28 @@ class RpcServer extends Emitter {
         }
         return out;
       },
-      join: (sel, rooms) => {
+      join: (selector, rooms) => {
         if (!Array.isArray(rooms)) return;
-        const selected = select(sel);
+        const selected = select(selector);
         for (let i = 0; i < selected.length; i++) {
           for (let j = 0; j < rooms.length; j++) selected[i].join(rooms[j]);
         }
       },
-      leave: (sel, rooms) => {
+      leave: (selector, rooms) => {
         if (!Array.isArray(rooms)) return;
-        const selected = select(sel);
+        const selected = select(selector);
         for (let i = 0; i < selected.length; i++) {
           for (let j = 0; j < rooms.length; j++) selected[i].leave(rooms[j]);
         }
       },
-      disconnect: (sel) => {
-        const selected = select(sel);
+      disconnect: (selector) => {
+        const selected = select(selector);
         for (let i = 0; i < selected.length; i++) selected[i].close();
       },
       // The local leg of Cluster.send / RpcServer.sendTo: a per-request HTTP
       // client cannot receive one, and is skipped the way Broadcast skips it.
-      event: (sel, name, data) => {
-        const selected = select(sel);
+      event: (selector, name, data) => {
+        const selected = select(selector);
         for (let i = 0; i < selected.length; i++) if (selected[i].persistent) selected[i].sendEvent(name, data);
       },
       // The remote leg of a broadcast ask: LOCAL delivery only — the

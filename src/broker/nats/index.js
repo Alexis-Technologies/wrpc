@@ -137,7 +137,6 @@ const createNatsBroker = (options = {}) => {
     return bag;
   };
 
-  // ---------------------------------------------------------------------
   // backplane
 
   const channelSubject = (channel) => `${prefix}.bp.${token(channel)}`;
@@ -178,7 +177,6 @@ const createNatsBroker = (options = {}) => {
     },
   };
 
-  // ---------------------------------------------------------------------
   // JetStream plumbing (log + queue)
 
   let js = null;
@@ -226,7 +224,6 @@ const createNatsBroker = (options = {}) => {
     config: { retention: 'workqueue', ...streamConfig.queue },
   });
 
-  // ---------------------------------------------------------------------
   // log
 
   const streamState = async (topic) => {
@@ -381,7 +378,6 @@ const createNatsBroker = (options = {}) => {
     return `${ack.seq}`;
   };
 
-  // ---------------------------------------------------------------------
   // queue
 
   const produce = async (name, body, { headers = null } = {}) => {
@@ -606,7 +602,6 @@ const createNatsBroker = (options = {}) => {
     };
   };
 
-  // ---------------------------------------------------------------------
   // direct
 
   const addressSubject = (address) => `${prefix}.direct.${token(address)}`;
@@ -670,8 +665,6 @@ const createNatsBroker = (options = {}) => {
       reply: replyTo === null || replyTo === undefined ? undefined : replyTo,
     });
   };
-
-  // ---------------------------------------------------------------------
 
   const close = async () => {
     if (closed) return;

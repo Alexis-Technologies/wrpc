@@ -86,7 +86,6 @@ const runStandardSchema = async (validator, value) => {
 const isValidator = (value) =>
   typeof value === 'function' || (typeof value === 'object' && value !== null && '~standard' in value);
 
-// ---------------------------------------------------------------------------
 // Hooks: named lifecycle phases, fastify-style. No `next` — a hook runs, and
 // either returns (letting the pipeline continue) or throws a coded error
 // (ending the call with that code). "After" is a later phase, not code after
@@ -113,7 +112,7 @@ const INVOCATION_PHASES = [
 ];
 // Phases that run around a connection's lifetime (router-level only).
 const CONNECTION_PHASES = ['onConnect', 'onDisconnect'];
-const ROUTER_PHASES = [...INVOCATION_PHASES, ...CONNECTION_PHASES];
+const ROUTER_PHASES = INVOCATION_PHASES.concat(CONNECTION_PHASES);
 // The subset a single procedure can carry in its own options.
 const PROCEDURE_PHASES = ['preValidation', 'preHandler', 'preSerialization', 'onError'];
 
@@ -175,7 +174,6 @@ const assignKey = (target, key, value) => {
   Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 };
 
-// ---------------------------------------------------------------------------
 // Declarative REST mapping and the fastify-shaped schema object.
 //
 // `http: { method, path, status? }` maps a procedure onto a real HTTP
@@ -590,7 +588,6 @@ const concatHooks = (base, extra, phases) => {
   return result;
 };
 
-// ---------------------------------------------------------------------------
 // Injected JSON Schema compilers. Structural, per the zero-dependency rule:
 // `ajv` is anything with compile(schema) -> validateFn (ajv-shaped: the fn
 // answers a boolean and exposes `.errors`), `serializer` anything with
@@ -1118,7 +1115,6 @@ class Router {
   }
 }
 
-// ---------------------------------------------------------------------------
 // The effective fastify-shaped schema a host (fastify routes, swagger,
 // introspection consumers) receives: the user's declaration with wrpc's own
 // lifecycle error statuses documented underneath. Which statuses apply is

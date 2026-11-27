@@ -108,7 +108,6 @@ const defaultName = (method, tail) => {
   return `${verbs[method]}${suffix}`;
 };
 
-// ---------------------------------------------------------------------------
 // JSON Schema -> the closed `signature` format (protocol.md), best-effort:
 // anything the format cannot express becomes 'unknown', never a guess.
 
@@ -152,8 +151,6 @@ const routeSignature = (schema) => {
   if (success) signature.returns = signatureType(success);
   return Object.keys(signature).length > 0 ? signature : null;
 };
-
-// ---------------------------------------------------------------------------
 
 const buildUrl = (url, params, query, stringify) => {
   const segments = url.split('/');

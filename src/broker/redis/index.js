@@ -32,6 +32,7 @@ const { toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const { Deque } = require('../../deque.js');
+const { jsonParse } = require('../../utils.js');
 const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
@@ -101,14 +102,8 @@ const decodeEntry = (id, fields) => {
     if (fields[i] === 'v') value = fields[i + 1];
     else if (fields[i] === 'h') headers = fields[i + 1];
   }
-  let parsed = null;
-  if (headers) {
-    try {
-      parsed = JSON.parse(headers);
-    } catch {
-      parsed = null;
-    }
-  }
+  // jsonParse answers null for headers that are no JSON, as the catch did.
+  const parsed = headers ? jsonParse(headers) : null;
   return { id, value, headers: toHeaders(parsed) };
 };
 
@@ -193,7 +188,6 @@ const createRedisBroker = (options = {}) => {
   const key = (kind, name) => `${prefix}:${kind}:${token(name)}`;
   const report = reporter(log);
 
-  // ---------------------------------------------------------------------
   // log
 
   const streamKey = (topic) => key('log', topic);
@@ -348,7 +342,6 @@ const createRedisBroker = (options = {}) => {
     return client.xadd(streamKey(topic), '*', ...fields);
   };
 
-  // ---------------------------------------------------------------------
   // queue
 
   // A queue's stream and its delayed set live under ONE hash tag — the
@@ -628,7 +621,6 @@ const createRedisBroker = (options = {}) => {
     };
   };
 
-  // ---------------------------------------------------------------------
   // direct
 
   const inboxKey = (address) => key('inbox', address);
@@ -829,8 +821,6 @@ const createRedisBroker = (options = {}) => {
     // Nobody at all: the fast 503 an RPC caller wants instead of a timeout.
     if (subscribers === 0) throw new WrpcError(`No listener at ${address}`, { code: 503, expose: true });
   };
-
-  // ---------------------------------------------------------------------
 
   // A connection parked in a blocking read cannot answer QUIT until the
   // block expires, so the ones this adapter blocks on are dropped instead.

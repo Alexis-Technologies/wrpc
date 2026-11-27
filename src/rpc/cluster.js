@@ -165,9 +165,9 @@ class Cluster extends Emitter {
    * `local` is the seam to the owning RpcServer: how remote requests and
    * commands reach this node's clients without Cluster knowing the server.
    *   count(room), snapshot() -> { clients, rooms }
-   *   descriptors(sel) -> Array
-   *   join(sel, rooms) / leave(sel, rooms) / disconnect(sel)
-   *   event(sel, name, data)   — deliver one event to the selected client(s)
+   *   descriptors(selector) -> Array
+   *   join(selector, rooms) / leave(selector, rooms) / disconnect(selector)
+   *   event(selector, name, data)   — deliver one event to the selected client(s)
    *   ask(rooms, name, data, timeout, onCount) -> Promise<{answers, errors}>
    */
   constructor({
@@ -248,7 +248,6 @@ class Cluster extends Emitter {
     return this.#pendingSubs === 0;
   }
 
-  // -----------------------------------------------------------------------
   // Lifecycle
 
   start() {
@@ -318,8 +317,8 @@ class Cluster extends Emitter {
           if (this.#closed) return;
           if (attempt === 0) {
             this.#pendingSubs++;
-            void Promise.resolve(this.emit('degraded', { channel, error })).catch((e) =>
-              this.#log.error({ err: e, event: 'cluster.listener', name: 'degraded' }),
+            void Promise.resolve(this.emit('degraded', { channel, error })).catch((listenerError) =>
+              this.#log.error({ err: listenerError, event: 'cluster.listener', name: 'degraded' }),
             );
           }
           // Jittered, as the rooms backplane's is: no two instances retry in step.
@@ -476,7 +475,6 @@ class Cluster extends Emitter {
     return encodeAttachments(envelope, ENVELOPE_DEPTH);
   }
 
-  // -----------------------------------------------------------------------
   // Presence: replicated counters, local reads
 
   /** Fired by the registry on every successful local join/leave. */
@@ -725,7 +723,6 @@ class Cluster extends Emitter {
     return false;
   }
 
-  // -----------------------------------------------------------------------
   // Node-to-node messaging (the serverSideEmit pair)
 
   // NOTE: as everywhere in wrpc, `emit` is the LOCAL Emitter emit — it is
@@ -783,18 +780,18 @@ class Cluster extends Emitter {
     return this.#responders.delete(name);
   }
 
-  // -----------------------------------------------------------------------
   // Introspection and commands
 
   /**
-   * Descriptors of matching clients across the cluster. `sel` narrows by
+   * Descriptors of matching clients across the cluster. `selector` narrows by
    * room (`{ room }`) or matches everyone (`{}`). Resolves with an array;
    * when a node never answered inside `timeout`, the partial array carries
    * a non-enumerable `incomplete: true` and the miss is logged.
    */
-  fetchClients(sel = {}, options = {}) {
-    const local = this.#local.descriptors(sel);
-    return this.#request('fetch', { sel }, options.timeout ?? this.#requestTimeout).then(({ payloads, incomplete }) => {
+  fetchClients(selector = {}, options = {}) {
+    const local = this.#local.descriptors(selector);
+    const timeout = options.timeout ?? this.#requestTimeout;
+    return this.#request('fetch', { sel: selector }, timeout).then(({ payloads, incomplete }) => {
       const clients = local;
       let truncated = false;
       for (let i = 0; i < payloads.length; i++) {
@@ -863,11 +860,11 @@ class Cluster extends Emitter {
   // `args` is the envelope's op-specific part: { rooms } for join/leave,
   // { name, data } for event — the same keys on the wire, so a node that
   // predates an op ignores it and one that knows it reads it (additive).
-  #applyOp(op, sel, args) {
-    if (op === 'join') this.#local.join(sel, args.rooms);
-    else if (op === 'leave') this.#local.leave(sel, args.rooms);
-    else if (op === 'disconnect') this.#local.disconnect(sel);
-    else if (op === 'event') this.#local.event(sel, args.name, args.data);
+  #applyOp(op, selector, args) {
+    if (op === 'join') this.#local.join(selector, args.rooms);
+    else if (op === 'leave') this.#local.leave(selector, args.rooms);
+    else if (op === 'disconnect') this.#local.disconnect(selector);
+    else if (op === 'event') this.#local.event(selector, args.name, args.data);
     else return false;
     return true;
   }
@@ -876,30 +873,30 @@ class Cluster extends Emitter {
   // room between send and delivery is not selected — a relay bounded by a
   // membership must not outlive it.
   #command(op, target, args, room = undefined) {
-    const apply = (sel) => {
+    const apply = (selector) => {
       // `op` here is a literal from join()/leave()/disconnect()/send(), never
       // user input, so an unknown one is a bug in this file and should be loud.
-      if (!this.#applyOp(op, sel, args)) throw new ProtocolError(`Unknown cluster command op '${op}'`);
+      if (!this.#applyOp(op, selector, args)) throw new ProtocolError(`Unknown cluster command op '${op}'`);
     };
     // An addressed command rides the target instance's own channel — one
     // publish, one receiver — instead of asking every node to filter.
     // Answers whether the command was applied here or handed to the
     // backplane: false is "known not to be delivered".
     if (typeof target === 'string') {
-      const sel = room === undefined ? { id: target } : { id: target, room };
+      const selector = room === undefined ? { id: target } : { id: target, room };
       const instance = instanceOfClientId(target);
       if (instance === this.#instance || instance === null) {
-        apply(sel);
+        apply(selector);
         return true;
       }
       if (!this.#backplane || this.#closed) return false;
       // Only an event carries what an application wrote (`data`).
-      return this.#post(instanceChannel(instance), { t: 'cmd', op, sel, ...args }, args.data);
+      return this.#post(instanceChannel(instance), { t: 'cmd', op, sel: selector, ...args }, args.data);
     }
-    const sel = target && typeof target === 'object' ? target : {};
-    apply(sel);
+    const selector = target && typeof target === 'object' ? target : {};
+    apply(selector);
     if (!this.#backplane || this.#closed) return true;
-    this.#post(CLUSTER_CHANNEL, { t: 'cmd', op, sel, ...args });
+    this.#post(CLUSTER_CHANNEL, { t: 'cmd', op, sel: selector, ...args });
     return true;
   }
 
@@ -927,7 +924,6 @@ class Cluster extends Emitter {
     });
   }
 
-  // -----------------------------------------------------------------------
   // The request/reply engine
 
   #request(op, args, timeout) {
@@ -1147,19 +1143,20 @@ class Cluster extends Emitter {
       case 'q':
         return void this.#serve(envelope);
       case 'cmd': {
-        const { op, sel, rooms, name, data } = envelope;
+        const { op, sel: selector, rooms, name, data } = envelope;
         // Wire-shape sanity on the most powerful envelope type: op a
         // string, sel a plain object, rooms (when present) an array of
         // strings, an event's name a non-empty string — a malformed
         // command is dropped, never partially run.
         if (typeof op !== 'string') return;
-        if (sel !== undefined && (typeof sel !== 'object' || sel === null || Array.isArray(sel))) return;
+        const isRecord = typeof selector === 'object' && selector !== null && !Array.isArray(selector);
+        if (selector !== undefined && !isRecord) return;
         if (rooms !== undefined && (!Array.isArray(rooms) || !isStringList(rooms))) return;
         if (op === 'event' && (typeof name !== 'string' || name.length === 0)) return;
         try {
           // `op` arrived from a peer: an unrecognised one is ignored, the same
           // way the switch's own default ignores an unrecognised envelope type.
-          this.#applyOp(op, sel ?? {}, { rooms, name, data });
+          this.#applyOp(op, selector ?? {}, { rooms, name, data });
         } catch (error) {
           this.#log.error({ err: error, event: 'cluster.command', op });
         }

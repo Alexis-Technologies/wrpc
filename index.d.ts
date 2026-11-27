@@ -867,7 +867,7 @@ export interface InboundTransport extends Emitter {
   connection?: unknown;
   write(data: string | Uint8Array): boolean;
   /** A packet to the peer (`ServerTransport.send`): the backpressure boolean. */
-  send(obj: object, code?: number): boolean;
+  send(packet: object, code?: number): boolean;
   /** An error packet to the peer (`ServerTransport.error`). */
   error(code?: number, options?: ErrorOptions): boolean;
   close(): void;
@@ -901,7 +901,7 @@ export class ServerTransport extends Emitter {
   setRevision(revision: 1 | 2): void;
   error(code?: number, options?: ErrorOptions): boolean;
   /** Returns the transport's backpressure signal (false = above the mark). */
-  send(obj: object, code?: number): boolean;
+  send(packet: object, code?: number): boolean;
   /** The raw write every send() ends in; returns the same backpressure signal. */
   write(data: string | Uint8Array): boolean;
   /** @experimental A packet as one datagram where the connection has them (WebTransport); false otherwise. */

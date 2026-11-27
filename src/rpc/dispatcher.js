@@ -110,15 +110,15 @@ const levelFor = (client, kind) => {
 // method names used to mint a new time series per guess.
 const UNKNOWN_TARGET = '<unknown>';
 
-const isError = (err) => err?.constructor?.name?.includes('Error') || false;
+const isError = (value) => value?.constructor?.name?.includes('Error') || false;
 
 // Monotonic where available; Date.now is the fallback for a host without it.
 const now = () => (typeof performance === 'object' ? performance.now() : Date.now());
 
-const split = (s, separator) => {
-  const i = s.indexOf(separator);
-  if (i < 0) return [s, ''];
-  return [s.slice(0, i), s.slice(i + separator.length)];
+const split = (text, separator) => {
+  const at = text.indexOf(separator);
+  if (at < 0) return [text, ''];
+  return [text.slice(0, at), text.slice(at + separator.length)];
 };
 
 // No query string is the common REST call, and URLSearchParams + fromEntries

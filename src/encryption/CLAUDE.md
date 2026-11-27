@@ -22,7 +22,7 @@ SESSION encryption (client↔server, ws): `noise.js` (one file, both platforms �
 
 Core wiring: `RpcServer` option `encryption`, `#sealSocket` (the mode is announced by `wrpc_e=1` in the connect URL because the SERVER may send first — `wantsEncryption(meta.url)`), the restore thunk awaits `sealed.ready` and sets `client.encryption`, `attach(…, { encrypted })` + `handleHttpCall` refuse under `required` (426), `encryptionKey()`.
 
-Client wiring: `static encrypts = true` on a transport that carries it, `WrpcClient.#checkEncryption` over every fallback candidate up front, `worker` + `encryption` is a TypeError (the option belongs to `WrpcClientProxy`, which forwards it).
+Client wiring: `static encrypts = true` on a transport that carries it, `WrpcClient.#checkEncryption` over every fallback candidate up front, `worker` + `encryption` is a `ConfigError` (the option belongs to `WrpcClientProxy`, which forwards it).
 
 On WebTransport (`src/client/webtransport.js`) the same injected object runs over the control stream after the caps exchange with kind `'wt'` in the prologue, and the three ways around the channel are switched off under it: `StreamMux` is `null` (as under a codec — so no `streams` cap, chunks ride the control stream), no datagram writer/reader, `#compression` forced `null`; `#attach` returns the handshake promise so `open()` resolves only once sealed. The SERVER needed no wt change at all — `attachSession` → `attachSocket` wraps the `WtSocket`, and `SealedSocket` offering neither `streamControl` nor `sendUnreliable` is what turns the server's mux and datagrams off. `tests/websocket/protocolClient.js` now keeps the query string of its URL.
 
@@ -39,3 +39,5 @@ END-TO-END helpers (`e2ee.js`, shared): `createIdentity(seed?)` (the SEED is the
 `browser.js` is the shared barrel, `index.js` spreads it and adds the Node-only halves as they land.
 
 Two rules added after the phases above: `authorize` admits a connection only by answering `true` (as the client's `verifyServer` always did), and what a peer sends while this end's handshake is still running is bounded on both ends — `MAX_HELD` frames or `MAX_HELD_BYTES` in `src/encryption/session.js`, past which the server closes 1008 (reason `held`) and the client fails its `open()`.
+
+The Noise Protocol Framework's own letters stay (`e`, `s`, `re`, `rs`, `ck`, `h` in `src/encryption/noise.js`): the handshake is checked token by token against the specification, so they are not spelled out as `js-conventions` would have it.

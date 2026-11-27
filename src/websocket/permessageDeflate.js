@@ -197,24 +197,24 @@ const decompress = (payload, maxLength) =>
 
 // The same two, off the event loop: zlib's callback API runs in libuv's
 // threadpool. Same bytes as the sync pair for the same input.
-const compressAsync = (payload, windowBits, cb, options = null) => {
+const compressAsync = (payload, windowBits, callback, options = null) => {
   zlib.deflateRaw(
     payload,
     options === null
       ? { windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH }
       : { ...options, windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH },
     (error, compressed) => {
-      if (error) return void cb(error);
-      cb(null, compressed.subarray(0, compressed.length - TRAILER.length));
+      if (error) return void callback(error);
+      callback(null, compressed.subarray(0, compressed.length - TRAILER.length));
     },
   );
 };
 
-const decompressAsync = (payload, maxLength, cb) => {
+const decompressAsync = (payload, maxLength, callback) => {
   zlib.inflateRaw(
     Buffer.concat([payload, TRAILER]),
     { windowBits: MAX_WINDOW_BITS, maxOutputLength: maxLength, finishFlush: zlib.constants.Z_SYNC_FLUSH },
-    cb,
+    callback,
   );
 };
 

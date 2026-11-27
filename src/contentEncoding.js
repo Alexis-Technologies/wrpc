@@ -44,7 +44,7 @@ const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // One coding, in the shape the transports read:
 //   token                 the Content-Encoding value
 //   encode(body)          the whole body at once; a custom one may answer a promise
-//   encodeAsync(body, cb) the same through zlib's threadpool, or null
+//   encodeAsync(body, callback) the same through zlib's threadpool, or null
 //   createStream()        a persistent encoder that emits each write's output
 //                         as it is written (SSE), or null
 const gzipEncoder = ({ level, memLevel }, name) => {

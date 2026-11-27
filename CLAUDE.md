@@ -97,7 +97,7 @@ The `npm-publish` skill walks through it (only as `/npm-publish`); the "Release 
 
 ## Skills
 
-The skills are [alexiskills](https://alexiskills.vercel.app), `@alexify/metaskills` 1.1.2, a devDependency: all 37, through one symlink, `.claude/skills` → `node_modules/@alexify/metaskills/skills`, made by `prepare` (`alexiskills claude`) on every `pnpm install` and left out by `.gitignore`. What the six metarhia 1.0.5 skills kept here until 2.3 said of wRPC alone is in "Conventions" and "Release process".
+The skills are [alexiskills](https://alexiskills.vercel.app), `@alexify/metaskills` 1.2.0, a devDependency: all 37, through one symlink, `.claude/skills` → `node_modules/@alexify/metaskills/skills`, made by `prepare` (`alexiskills claude`) on every `pnpm install` and left out by `.gitignore`. What the six metarhia 1.0.5 skills kept here until 2.3 said of wRPC alone is in "Conventions" and "Release process".
 
 - **The skills are not edited here**: a change goes to `Alexis-Technologies/metaskills` and comes back with a release. A skill of our own beside them turns the symlink into a directory of links; one named like a package skill hides it.
 - **A review reads the skills first**: the review that ran without them missed what `data-structures` says in one line (never a hot `Array.shift`).

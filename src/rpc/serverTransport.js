@@ -61,18 +61,18 @@ class ServerTransport extends Emitter {
   // compiled-serializer fast path built one (see handleRpc); passing both
   // keeps the object available to the overrides that need it (batch
   // collection, REST unwrapping) while the plain path skips a stringify.
-  send(obj, code = 200, text = null) {
+  send(packet, code = 200, text = null) {
     // An injected codec (RpcServer options.codec, assigned per transport)
     // re-frames every packet; it wins over precompiled `text` by
     // construction — the server refuses codec + serializers up front.
-    if (this.codec) return this.write(this.codec.encode(obj), code);
+    if (this.codec) return this.write(this.codec.encode(packet), code);
     // Precompiled text was built by the dispatcher on a packet it already
     // knows holds no bytes; anything else is walked once here, and a
     // packet with bytes leaves as an attachments frame (attachments.js)
     // unless the server opted out.
     if (text !== null && text !== undefined) return this.write(text, code);
-    if (this.attachments !== false && hasBytes(obj)) return this.write(encodeAttachments(obj), code);
-    return this.write(JSON.stringify(obj), code);
+    if (this.attachments !== false && hasBytes(packet)) return this.write(encodeAttachments(packet), code);
+    return this.write(JSON.stringify(packet), code);
   }
 }
 

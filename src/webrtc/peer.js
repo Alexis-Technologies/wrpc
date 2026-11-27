@@ -343,7 +343,7 @@ class WrpcPeer extends Emitter {
     void this.emit('close').catch((error) => this.escalate(error));
   }
 
-  // ---- what the ports are made of
+  // what the ports are made of
 
   // A signal to a peer; a signaler that throws or rejects is this peer's
   // error, never the caller's.

@@ -898,7 +898,7 @@ export class Client extends Emitter {
    * `compress: false` sends this packet uncompressed on a transport that
    * negotiated permessage-deflate (ignored elsewhere).
    */
-  send(obj: object, options?: { code?: number; method?: string; compress?: boolean }): boolean;
+  send(packet: object, options?: { code?: number; method?: string; compress?: boolean }): boolean;
   /**
    * Writes an ALREADY-serialized packet. With `unreliable: true`, as a
    * datagram where the transport can; reliably otherwise. `compress: false`

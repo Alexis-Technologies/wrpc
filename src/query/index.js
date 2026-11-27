@@ -8,10 +8,10 @@ const { ConfigError, ArgumentError } = require('../errors.js');
 // file works with React Query, Solid Query, Svelte Query and query-core alike
 // — and never imports any of them.
 //
-// Nothing is required here, by design. The wrpc client and the queryClient are
-// INJECTED and checked structurally, which is the same rule the engine, the
-// backplane and the framework adapters follow: zero runtime dependencies, and
-// duck typing instead of instanceof.
+// Nothing is required here but src/errors.js, by design: the wrpc client and
+// the queryClient are INJECTED and checked structurally, which is the same
+// rule the engine, the backplane and the framework adapters follow: zero
+// runtime dependencies, and duck typing instead of instanceof.
 //
 //   const { QueryClient, useQuery } = ...              // the user's own
 //   const wq = createQueryUtils(client, { queryClient });
@@ -104,7 +104,9 @@ const createQueryUtils = (client, options = {}) => {
    */
   const queryKey = (path, args) => {
     const base = Array.isArray(path) ? path : [path];
-    return args === undefined ? [...prefix, ...base] : [...prefix, ...base, args];
+    const key = prefix.concat(base);
+    if (args !== undefined) key.push(args);
+    return key;
   };
 
   return Object.freeze({

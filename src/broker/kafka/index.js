@@ -311,7 +311,6 @@ const createKafkaBroker = (options = {}) => {
     }
   };
 
-  // ---------------------------------------------------------------------
   // backplane
 
   const backplaneTopic = backplaneOptions.topic ?? `${prefix}.backplane`;
@@ -392,7 +391,6 @@ const createKafkaBroker = (options = {}) => {
     },
   };
 
-  // ---------------------------------------------------------------------
   // log
 
   const logTopic = (topic) => topicName(prefix, 'log', topic);
@@ -668,7 +666,6 @@ const createKafkaBroker = (options = {}) => {
     return encodeVector({ [result.partition]: offset });
   };
 
-  // ---------------------------------------------------------------------
   // queue
 
   const queueTopic = (queue) => topicName(prefix, 'q', queue);
@@ -865,8 +862,6 @@ const createKafkaBroker = (options = {}) => {
       },
     };
   };
-
-  // ---------------------------------------------------------------------
 
   const close = async () => {
     if (closed) return;

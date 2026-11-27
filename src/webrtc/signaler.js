@@ -182,12 +182,10 @@ class WrpcSignaler extends Emitter {
     return this.#instance;
   }
 
-  /** The WrpcClient this signaler rides. */
   get client() {
     return this.#client;
   }
 
-  /** The unit name on the server. */
   get unit() {
     return this.#unit;
   }
