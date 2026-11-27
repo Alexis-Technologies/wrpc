@@ -4,6 +4,19 @@ const { destroy: destroyStream } = require('node:stream');
 
 const { WRPC_V1 } = require('../wire.js');
 
+const { isOriginAllowed } = require('../transport.js');
+const { STATUS_CODES } = require('../status.js');
+
+const { getPathname } = require('../websocket/upgrade.js');
+const { ConfigError, WrpcError } = require('../errors.js');
+
+// Shared plumbing for everything that turns a host framework's request into
+// the abstract call description RpcServer.handleHttpCall consumes:
+// { method, url, headers, body, remoteAddress, respond, onAbort }.
+// Node-only by construction — adapters are never bundled for the browser.
+
+const MAX_BODY_SIZE = 10 * 1024 * 1024;
+
 // The streaming half of the abstract HTTP call, implemented once for every
 // host that hands over a node ServerResponse (the built-in shell, express
 // and fastify all do). Returning null means the response is already gone.
@@ -25,19 +38,6 @@ const nodeStream =
       onDrain: (listener) => void res.on('drain', listener),
     };
   };
-
-const { isOriginAllowed } = require('../transport.js');
-const { STATUS_CODES } = require('../status.js');
-
-// Shared plumbing for everything that turns a host framework's request into
-// the abstract call description RpcServer.handleHttpCall consumes:
-// { method, url, headers, body, remoteAddress, respond, onAbort }.
-// Node-only by construction — adapters are never bundled for the browser.
-
-const MAX_BODY_SIZE = 10 * 1024 * 1024;
-
-const { getPathname } = require('../websocket/upgrade.js');
-const { ConfigError, WrpcError } = require('../errors.js');
 
 // The one upgrade gate every host shares. With an explicit ws.path the
 // engine already gates the pathname, and the default RPC-path gate would
@@ -184,15 +184,15 @@ const revisionProtocols = (rpc, ws = {}) =>
   rpc.revision === 1 && !ws.protocols && !ws.handleProtocols ? { protocols: [WRPC_V1] } : null;
 
 module.exports = {
+  getPathname,
   MAX_BODY_SIZE,
+  nodeStream,
+  createUpgradeGate,
+  shutdown,
+  respondBodyError,
   receiveBody,
   normalizeBody,
   statusLine,
   eachHeader,
-  nodeStream,
-  getPathname,
-  createUpgradeGate,
-  shutdown,
   revisionProtocols,
-  respondBodyError,
 };

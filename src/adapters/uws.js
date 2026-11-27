@@ -48,101 +48,6 @@ const createUpgradeRequest = (path, query, headers, remoteAddress) => ({
   socket: { remoteAddress },
 });
 
-/**
- * WrpcSocket over a uws WebSocket.
- *
- * The uws handle is invalid the moment its close handler runs — every method
- * on it throws "Invalid access of closed uWS.WebSocket" afterwards — so every
- * call here is gated on #closed rather than trusting the caller's timing.
- */
-class UwsSocket extends EventEmitter {
-  #ws;
-  #closed = false;
-
-  constructor(ws, { remoteAddress = '', protocol = '', log = null } = {}) {
-    super();
-    this.#ws = ws;
-    this.remoteAddress = remoteAddress;
-    this.protocol = protocol;
-    // A writer, already normalized by the engine — this socket reports the
-    // one failure nothing above it can see (uws dropping a frame).
-    this.log = log;
-  }
-
-  get closed() {
-    return this.#closed;
-  }
-
-  get bufferedAmount() {
-    if (this.#closed) return 0;
-    try {
-      return this.#ws.getBufferedAmount();
-    } catch {
-      return 0;
-    }
-  }
-
-  // The third uws argument asks for permessage-deflate on this message;
-  // it defaults to false in uws, so without it a compressor configured on
-  // the engine never compressed a single outbound frame. `compress: false`
-  // is the per-message opt-out the built-in engine honours too.
-  send(data, options = null) {
-    if (this.#closed) return false;
-    const isBinary = typeof data !== 'string';
-    const compress = options === null || options.compress !== false;
-    let status = -1;
-    try {
-      status = this.#ws.send(data, isBinary, compress);
-    } catch {
-      // Raced a close between the guard and the call.
-      return false;
-    }
-    if (status === DROPPED) {
-      // uws silently discarded the message (maxBackpressure hit with
-      // closeOnBackpressureLimit off). A hole in the frame stream corrupts
-      // the RPC protocol, so fail loudly instead of continuing.
-      const error = new TransportError('uws dropped an outgoing message: backpressure limit exceeded', {
-        code: 'ALX_ERR_BACKPRESSURE',
-      });
-      // Logged as well as emitted: 'error' on a socket frequently has no
-      // listener, and this is a connection dying from a limit the operator
-      // configured — exactly the thing they need to see to raise it.
-      this.log?.error({ err: error, event: 'uws.dropped', bytes: this.bufferedAmount });
-      // A node EventEmitter throws an 'error' nobody listens for, and the
-      // terminate() below would never run.
-      if (this.listenerCount('error') > 0) this.emit('error', error);
-      this.terminate();
-      return false;
-    }
-    return status === SUCCESS;
-  }
-
-  close(code = 1000, reason = '') {
-    if (this.#closed) return;
-    try {
-      this.#ws.end(code, reason);
-    } catch {
-      // already gone
-    }
-  }
-
-  terminate() {
-    if (this.#closed) return;
-    try {
-      this.#ws.close();
-    } catch {
-      // already gone
-    }
-  }
-
-  // Called from the uws close handler; after this the handle is poison.
-  markClosed(code, reason) {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.emit('close', code, reason);
-  }
-}
-
 const createUwsEngine = (engineOptions = {}) => {
   const {
     uws = null,
@@ -456,4 +361,99 @@ const createUwsEngine = (engineOptions = {}) => {
   };
 };
 
-module.exports = { createUwsEngine, UwsSocket, BACKPRESSURE, SUCCESS, DROPPED };
+/**
+ * WrpcSocket over a uws WebSocket.
+ *
+ * The uws handle is invalid the moment its close handler runs — every method
+ * on it throws "Invalid access of closed uWS.WebSocket" afterwards — so every
+ * call here is gated on #closed rather than trusting the caller's timing.
+ */
+class UwsSocket extends EventEmitter {
+  #ws;
+  #closed = false;
+
+  constructor(ws, { remoteAddress = '', protocol = '', log = null } = {}) {
+    super();
+    this.#ws = ws;
+    this.remoteAddress = remoteAddress;
+    this.protocol = protocol;
+    // A writer, already normalized by the engine — this socket reports the
+    // one failure nothing above it can see (uws dropping a frame).
+    this.log = log;
+  }
+
+  get closed() {
+    return this.#closed;
+  }
+
+  get bufferedAmount() {
+    if (this.#closed) return 0;
+    try {
+      return this.#ws.getBufferedAmount();
+    } catch {
+      return 0;
+    }
+  }
+
+  // The third uws argument asks for permessage-deflate on this message;
+  // it defaults to false in uws, so without it a compressor configured on
+  // the engine never compressed a single outbound frame. `compress: false`
+  // is the per-message opt-out the built-in engine honours too.
+  send(data, options = null) {
+    if (this.#closed) return false;
+    const isBinary = typeof data !== 'string';
+    const compress = options === null || options.compress !== false;
+    let status = -1;
+    try {
+      status = this.#ws.send(data, isBinary, compress);
+    } catch {
+      // Raced a close between the guard and the call.
+      return false;
+    }
+    if (status === DROPPED) {
+      // uws silently discarded the message (maxBackpressure hit with
+      // closeOnBackpressureLimit off). A hole in the frame stream corrupts
+      // the RPC protocol, so fail loudly instead of continuing.
+      const error = new TransportError('uws dropped an outgoing message: backpressure limit exceeded', {
+        code: 'ALX_ERR_BACKPRESSURE',
+      });
+      // Logged as well as emitted: 'error' on a socket frequently has no
+      // listener, and this is a connection dying from a limit the operator
+      // configured — exactly the thing they need to see to raise it.
+      this.log?.error({ err: error, event: 'uws.dropped', bytes: this.bufferedAmount });
+      // A node EventEmitter throws an 'error' nobody listens for, and the
+      // terminate() below would never run.
+      if (this.listenerCount('error') > 0) this.emit('error', error);
+      this.terminate();
+      return false;
+    }
+    return status === SUCCESS;
+  }
+
+  close(code = 1000, reason = '') {
+    if (this.#closed) return;
+    try {
+      this.#ws.end(code, reason);
+    } catch {
+      // already gone
+    }
+  }
+
+  terminate() {
+    if (this.#closed) return;
+    try {
+      this.#ws.close();
+    } catch {
+      // already gone
+    }
+  }
+
+  // Called from the uws close handler; after this the handle is poison.
+  markClosed(code, reason) {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.emit('close', code, reason);
+  }
+}
+
+module.exports = { BACKPRESSURE, SUCCESS, DROPPED, createUwsEngine, UwsSocket };

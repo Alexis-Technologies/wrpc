@@ -26,6 +26,11 @@ const { ConfigError, WrpcError } = require('../errors.js');
 
 const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
+// JSON Schema -> the closed `signature` format (protocol.md), best-effort:
+// anything the format cannot express becomes 'unknown', never a guess.
+
+const SIGNATURE_DEPTH = 4;
+
 const capitalize = (text) => (text.length === 0 ? text : text[0].toUpperCase() + text.slice(1));
 
 // 'org-users' / 'org_users' -> 'orgUsers'
@@ -107,11 +112,6 @@ const defaultName = (method, tail) => {
   const verbs = { POST: 'create', PUT: 'replace', PATCH: 'update', DELETE: 'delete' };
   return `${verbs[method]}${suffix}`;
 };
-
-// JSON Schema -> the closed `signature` format (protocol.md), best-effort:
-// anything the format cannot express becomes 'unknown', never a guess.
-
-const SIGNATURE_DEPTH = 4;
 
 const signatureType = (schema, depth = 0) => {
   if (!schema || typeof schema !== 'object' || depth >= SIGNATURE_DEPTH) return 'unknown';
@@ -330,4 +330,4 @@ const setupMirror = (fastify, rpc, options) => {
   });
 };
 
-module.exports = { setupMirror, defaultName, defaultUnit, routeSignature };
+module.exports = { defaultUnit, defaultName, routeSignature, setupMirror };

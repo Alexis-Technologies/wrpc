@@ -467,4 +467,4 @@ const wrpcFastify = async (fastify, options = {}) => {
 wrpcFastify[Symbol.for('skip-override')] = true;
 wrpcFastify[Symbol.for('fastify.display-name')] = '@alexify/wrpc';
 
-module.exports = { wrpcFastify, findUwsApp };
+module.exports = { findUwsApp, wrpcFastify };
