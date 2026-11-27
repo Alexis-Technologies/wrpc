@@ -131,7 +131,9 @@ describe('rooms backplane', () => {
     assert.strictEqual(wire.length, 1);
     assert.ok(wire[0].message.startsWith('wrpc-sealed:0:'));
     assert.strictEqual(isSealedEnvelope(wire[0].message), true);
-    for (const needle of ['4111', 'payment', 'operator', 'lobby', 'instance']) {
+    // The whole card, not '4111': four digits turn up in ciphertext and in a
+    // hex instance id by chance, and failed one run in a few thousand.
+    for (const needle of [SECRET.card, 'payment', 'operator', 'lobby', 'instance']) {
       assert.ok(!wire[0].message.includes(needle), needle);
       assert.ok(!Buffer.from(wire[0].message.split(':')[2], 'base64').includes(needle), needle);
     }
@@ -302,7 +304,7 @@ describe('rooms backplane', () => {
     assert.match(errors[0].err.message, /current key "gone"/);
     assert.strictEqual(sealing.socket.events.length, 2, 'delivered locally');
     assert.strictEqual(other.socket.events.length, 1, 'and nowhere else');
-    assert.ok(!JSON.stringify(published).includes('4111'), 'nothing plaintext crossed the backplane');
+    assert.ok(!JSON.stringify(published).includes(SECRET.card), 'nothing plaintext crossed the backplane');
   });
 
   it('should roll out in three deploys and lose nothing', async (t) => {
@@ -377,7 +379,7 @@ describe('cluster', () => {
     const wire = published.filter((m) => !m.channel.includes('room:'));
     assert.ok(wire.length > 2);
     assert.ok(wire.every((m) => m.message.startsWith('wrpc-sealed:0:')));
-    assert.ok(wire.every((m) => !m.message.includes('4111') && !m.message.includes('s3cret')));
+    assert.ok(wire.every((m) => !m.message.includes(SECRET.card) && !m.message.includes('s3cret')));
 
     // An envelope lifted from the shared channel onto a node's own does not open there
     const { log, warnings } = logs();
