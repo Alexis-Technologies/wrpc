@@ -90,9 +90,9 @@ class StreamMux {
   #onFallback;
   #gate;
   #onActivity;
-  #maxHeld;
-  #holdTimeout;
-  #openTimeout;
+  #maxHeld = 0;
+  #holdTimeout = 0;
+  #openTimeout = 0;
   #enabled = false;
   // Whether the peer announced streams — what makes an inbound
   // unidirectional stream one of ours to read. Kept apart from #enabled,

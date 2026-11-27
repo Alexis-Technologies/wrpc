@@ -45,9 +45,17 @@ const DEFAULT_ASK_TIMEOUT = 7_000;
 // declared metadata keys are peer-controlled, and a plain literal would
 // answer meta.headers['toString'] with a real function.
 const FROZEN_EMPTY = Object.freeze({ __proto__: null });
+// The names in `headers` a ws handshake DECLARED (a carrier token, the
+// query) rather than carried — what readDeclared answers; `[]` on every
+// other transport, so a handler reads `meta.declared.includes(name)` bare.
+const NO_NAMES = Object.freeze([]);
+
+// The keys of buildMeta's answer, in its order: `declared` was missing here,
+// and `meta.declared.includes(name)` threw on a client built without meta.
 const EMPTY_META = Object.freeze({
   data: FROZEN_EMPTY,
   headers: FROZEN_EMPTY,
+  declared: NO_NAMES,
   url: '',
   remoteAddress: '',
   protocol: '',
@@ -61,10 +69,6 @@ const EMPTY_META = Object.freeze({
 // request and alive until its answer, leaving that mode took handleHttpCall
 // from 256k to 305k requests/s (bench/http-call.js). Null-prototyped and
 // frozen either way.
-// The names in `headers` a ws handshake DECLARED (a carrier token, the
-// query) rather than carried — what readDeclared answers; `[]` on every
-// other transport, so a handler reads `meta.declared.includes(name)` bare.
-const NO_NAMES = Object.freeze([]);
 
 const buildMeta = ({ headers, url, remoteAddress, protocol, data, declared } = {}) =>
   Object.freeze({
@@ -178,6 +182,11 @@ class Client extends Emitter {
   // — `{ protocol, pattern, cipher, kid, remoteStatic, handshakeHash }` —
   // and null on a connection that is not one (src/encryption/server.js).
   encryption = null;
+  // What a host-built client (a broker binding) tells its spans: their kind
+  // and extra attributes, null for the server's own. Read on every traced
+  // call (src/telemetry/server.js).
+  spanKind = null;
+  spanAttributes = null;
 
   constructor(transport, options = {}) {
     super({ warn: emitterWarning(options.log) });

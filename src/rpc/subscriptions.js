@@ -165,13 +165,11 @@ const runSubscription = async (
     while (true) {
       const { value, done } = await iterator.next();
       if (done || signal.aborted) break;
-      const packet = { type: 'data', id };
-      if (isTracked(value)) {
-        packet.eventId = value.id;
-        packet.data = value.data;
-      } else {
-        packet.data = value;
-      }
+      // Whole literals, one per kind: the packet used to be built field by
+      // field, in two shapes, once per yielded value.
+      const packet = isTracked(value)
+        ? { type: 'data', id, eventId: value.id, data: value.data }
+        : { type: 'data', id, data: value };
       const flushed = client.send(packet);
       if (stats) stats.values++;
       if (flushed === false) {

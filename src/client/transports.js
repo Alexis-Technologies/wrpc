@@ -22,6 +22,8 @@ class ClientWsTransport extends ClientTransport {
   heartbeat = true;
   // Until the server selected `wrpc.v2`: a 1.0 server selects `wrpc.v1`.
   revision = 1;
+  // The subprotocol the server selected, once open.
+  protocol = '';
 
   #socket = null;
   #opening = null;

@@ -169,7 +169,7 @@ class StreamParser {
   // once both ends named the same codec, a protocol error before.
   compressed = false;
 
-  #max;
+  #max = 0;
   #onMessage;
   // Buffered reads, the index of the first live one and the read cursor
   // within it — a FIFO byte queue in the shape of src/websocket/segments.js,

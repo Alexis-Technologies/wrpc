@@ -305,7 +305,7 @@ class WrpcReadable extends Emitter {
     /* c8 ignore next -- read()/waitEvent(PUSH_EVENT) callers already guard against an empty queue */
     if (this.#head === chunks.length) return undefined;
     const data = chunks[this.#head];
-    chunks[this.#head++] = undefined;
+    chunks[this.#head++] = null;
     if (this.#head === chunks.length) {
       chunks.length = 0;
       this.#head = 0;

@@ -79,7 +79,7 @@ const optionalId = (value, what) => (value === undefined || value === null ? nul
 // null-prototype record — so it travels inside the cluster's client
 // descriptors (client.data is what fetchClients replicates) and the roster
 // can be assembled from descriptors alone, local or remote.
-//   { id, instance, since, revoked?, rooms: { [room]: joinData } }
+//   { id, instance, since, revoked, rooms: { [room]: joinData } }
 const rtcOf = (client) => {
   const rtc = client.data?.rtc;
   return typeof rtc === 'object' && rtc !== null && typeof rtc.id === 'string' ? rtc : null;
@@ -350,7 +350,7 @@ const createSignalingUnit = (options = {}) => {
       if (duplicate === 'refuse') throw new WrpcError(`${name}: '${id}' is already connected`, { code: 409 });
       replace(holder, server, instance);
     }
-    const rtc = { __proto__: null, id, instance, since: Date.now(), rooms: Object.create(null) };
+    const rtc = { __proto__: null, id, instance, since: Date.now(), revoked: false, rooms: Object.create(null) };
     client.data.rtc = rtc;
     registry.set(id, client);
     client.once('close', () => {

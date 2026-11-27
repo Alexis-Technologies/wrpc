@@ -884,6 +884,10 @@ export class Client extends Emitter {
    * authenticated key under XX.
    */
   readonly encryption: EncryptionInfo | null;
+  /** What a host-built client (a broker binding) tells its spans: their kind, or null for the server's own. */
+  spanKind: number | null;
+  /** …and extra span attributes (`messaging.*` for a consumed message), or null. */
+  spanAttributes: Record<string, string | number | boolean> | null;
   /** False on a text-only transport (SSE), where binary streams cannot go. */
   readonly binary: boolean;
   /** Resolves when the transport drained, when it closed, or when `signal` aborts. */

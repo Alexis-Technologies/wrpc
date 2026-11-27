@@ -182,4 +182,13 @@ describe('stream lifecycle', () => {
     assert.strictEqual(transport.listenerCount('close'), 0);
     await client.drain(controller.signal);
   });
+  // EMPTY_META, the meta of a client built without one, had no `declared`:
+  // the documented `ctx.meta.declared.includes(name)` threw a TypeError.
+  it('should give a client built without meta the same keys as one built with it', () => {
+    const bare = new Client(new FakeTransport(), { log: null });
+    assert.deepStrictEqual(bare.meta.declared, []);
+    assert.strictEqual(bare.meta.declared.includes('x-tenant'), false);
+    const { buildMeta } = require('../src/rpc/client.js');
+    assert.deepStrictEqual(Object.keys(bare.meta), Object.keys(buildMeta({ url: '/', headers: {} })));
+  });
 });

@@ -242,6 +242,16 @@ narrower promise — see
   next.
 - **A closing ws connection's 200 ms destroy grace has an owner**:
   `terminate()` and the socket's `close` clear it.
+- **`ctx.meta.declared` is `[]` on a client built without meta**, as the
+  client guide says; it was `undefined` there, and `declared.includes(name)`
+  threw.
+- **What a peer can make the server remember is bounded**: a room channel
+  keeps the sequence of 1,024 publishers at most (one per instance that
+  ever published, so a long-lived room grew with every deploy), and a
+  signaler 4,096 peer addresses (only a `leave` let one go); the oldest
+  goes first. A procedure's queue lets a waiter go in O(1) — a timeout that
+  fired for every queued waiter shifted the array once per waiter
+  (`bench/semaphore.js`).
 - **A Redis log read that resumes from an id fails when Redis does.** The
   first retained id was read with `XINFO`, whose every error stood for "no
   such key": a refused connection, a `NOAUTH` or a timeout read as an empty

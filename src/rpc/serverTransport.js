@@ -16,6 +16,13 @@ class ServerTransport extends Emitter {
   // Which wire this is, for log entries and metric attributes. Subclasses
   // override it; the base value covers a transport nobody labelled.
   kind = 'unknown';
+  // The packet codec and whether a packet with bytes leaves as a frame:
+  // read on every send, and set by whoever attaches the transport (the
+  // core, a peer host, setRevision). Declared here so every transport has
+  // both from birth — they were added later to some, and the send path saw
+  // two shapes.
+  codec = null;
+  attachments = true;
 
   constructor(source) {
     // No listener cap: transports are fan-out points — every backpressured

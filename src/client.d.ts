@@ -397,6 +397,10 @@ declare class ClientTransport extends Emitter {
   persistent: boolean;
   /** Opts into the client's app-level ping/pong; the client owns the timers. */
   heartbeat: boolean;
+  /** The packet codec the client binds the transport with, or null for JSON. */
+  codec: WrpcCodec | null;
+  /** False while a packet holding bytes leaves as JSON — the client's `attachments: false`, or a packet codec. */
+  attachments: boolean;
   constructor(url: string);
   open(options?: WrpcClientOptions): Promise<void>;
   close(): void;

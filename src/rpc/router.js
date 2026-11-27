@@ -1028,14 +1028,16 @@ class Router {
   // Anything but an array of unit keys means "no filter" — REST calls
   // deliver plain-object args here.
   introspect(units = null, options = {}) {
-    const filter = Array.isArray(units) ? units : null;
+    // A Set once, not includes() per unit: the list is the caller's, as
+    // long as the caller makes it.
+    const filter = Array.isArray(units) ? new Set(units) : null;
     // The input schema parts travel by default: they are what a client's
     // injected ajv pre-validates against, saving the round trip a doomed
     // call would make. `schemas: false` strips them (they can be sizable).
     const { schemas = true } = options;
     const result = {};
     for (const { version, unitKey, entry } of unitVersions(this.#units)) {
-      if (filter && !filter.includes(unitKey)) continue;
+      if (filter && !filter.has(unitKey)) continue;
       const methodsInfo = {};
       for (const method of entry.methods) {
         const proc = method[1];

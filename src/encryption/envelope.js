@@ -134,7 +134,7 @@ const normalizeEnvelopeEncryption = (value, name) => {
  */
 class ReplayWindow {
   #seen;
-  #size;
+  #size = 0;
   #top = -1;
 
   constructor(size) {

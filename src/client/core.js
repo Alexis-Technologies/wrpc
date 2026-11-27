@@ -363,6 +363,11 @@ class ClientTransport extends Emitter {
   // starts at 1 and raises it once its peer said 2 — only then does a
   // packet with bytes leave as a frame.
   revision = 2;
+  // The packet codec and whether bytes leave as a frame, which WrpcClient
+  // hands over at bind time: declared so every transport has both from
+  // birth, read on every send and message.
+  codec = null;
+  attachments = true;
 
   constructor(url) {
     super();
@@ -495,6 +500,9 @@ class WrpcClient extends Emitter {
   #batch = null;
   #pending = [];
   #pendingBytes = 0;
+  // A flush is scheduled: on a microtask, or with the timer below. One kind
+  // per field — the timer field held a string, a Timeout or null.
+  #flushQueued = false;
   #flushTimer = null;
   #streams = new Map();
   // The streams this client SENDS, by id, while they are open — #streams
@@ -1520,19 +1528,18 @@ class WrpcClient extends Emitter {
   }
 
   #schedule() {
-    if (this.#flushTimer !== null) return;
+    if (this.#flushQueued) return;
+    this.#flushQueued = true;
     const { flush } = this.#batch;
-    if (flush === 'microtask') {
-      this.#flushTimer = 'microtask';
-      return void queueMicrotask(() => this.flush());
-    }
+    if (flush === 'microtask') return void queueMicrotask(() => this.flush());
     this.#flushTimer = unref(setTimeout(() => this.flush(), flush));
   }
 
   /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
   flush() {
-    if (this.#flushTimer !== null && this.#flushTimer !== 'microtask') clearTimeout(this.#flushTimer);
+    if (this.#flushTimer !== null) clearTimeout(this.#flushTimer);
     this.#flushTimer = null;
+    this.#flushQueued = false;
     if (this.#pending.length === 0) return;
     const pending = this.#pending;
     this.#pending = [];

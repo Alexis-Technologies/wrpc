@@ -105,17 +105,17 @@ class WtChannel {
   #datagrams = null;
   #datagramsInFlight = 0;
   #datagramsDropped = 0;
-  #maxDatagrams;
+  #maxDatagrams = 0;
   #mux = null;
   #parser;
   #queued = 0;
   #pressured = false;
   #closed = false;
-  #highWater;
-  #lowWater;
-  #maxBackpressure;
-  #maxMessage;
-  #closeTimeout;
+  #highWater = 0;
+  #lowWater = 0;
+  #maxBackpressure = 0;
+  #maxMessage = 0;
+  #closeTimeout = 0;
   // Per-message compression (src/compression): the normalized option, and
   // what is in effect once the peer named a codec of the list — null until
   // then, and forever when the option is off.

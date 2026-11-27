@@ -520,7 +520,9 @@ expectType<Record<string, string>>(wrpc.buildHeaders(null, undefined, 2));
 // Every server transport says the revision it speaks, and changes it in one place.
 declare const anyTransport: wrpc.ServerTransport;
 expectType<1 | 2>(anyTransport.revision);
-expectType<boolean | undefined>(anyTransport.attachments);
+// Declared from birth: every transport has both fields, the send path one shape.
+expectType<boolean>(anyTransport.attachments);
+expectType<wrpc.WrpcCodec | null>(anyTransport.codec);
 expectType<void>(anyTransport.setRevision(1));
 declare const portTransport: InstanceType<typeof wrpc.ServerTransport.transport.event>;
 expectType<1 | 2>(portTransport.negotiate(2));

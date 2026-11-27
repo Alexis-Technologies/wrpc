@@ -110,8 +110,8 @@ const UPDATE = Object.freeze({ create: false });
 
 class MemorySessionStore {
   #sessions = new Map(); // token -> { data, expires }
-  #maxSessions;
-  #ttl;
+  #maxSessions = 0;
+  #ttl = 0;
   #log;
   #otel;
 

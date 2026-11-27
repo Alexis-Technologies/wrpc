@@ -893,7 +893,9 @@ export class ServerTransport extends Emitter {
    */
   revision: 1 | 2;
   /** False while a packet holding bytes leaves as JSON — revision 1, or the server's `attachments: false`. */
-  attachments?: boolean;
+  attachments: boolean;
+  /** The packet codec the server attached the transport with, or null for JSON. */
+  codec: WrpcCodec | null;
   constructor(source: string);
   /** Sets the revision and `attachments` with it; emits 'revision' with the one that was left. */
   setRevision(revision: 1 | 2): void;

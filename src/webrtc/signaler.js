@@ -49,6 +49,9 @@ const { isPeerId: isId } = require('./ids.js');
 const { ConfigError, ArgumentError, ClosedError } = require('../errors.js');
 
 const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close', 'connect']);
+// The peer addresses a signaler remembers: every signal and roster names
+// one, and only a `leave` let one go. Past this many the oldest goes.
+const MAX_ADDRESSES = 4096;
 
 const isSignalMessage = (message) =>
   typeof message === 'object' && message !== null && SIGNAL_MESSAGE_TYPES.includes(message.type);
@@ -128,7 +131,7 @@ class WrpcSignaler extends Emitter {
         if (isId(payload.to) && payload.to !== this.#id) return;
         if (isId(payload.toInstance) && payload.toInstance !== this.#instance) return;
         const address = optionalId(payload.address);
-        if (address) this.#addresses.set(payload.from, address);
+        if (address) this.#remember(payload.from, address);
         return this.emit('signal', {
           from: payload.from,
           instance: optionalId(payload.instance),
@@ -139,7 +142,7 @@ class WrpcSignaler extends Emitter {
       },
       join: (payload) => {
         if (typeof payload !== 'object' || payload === null) return;
-        if (isId(payload.id) && isId(payload.address)) this.#addresses.set(payload.id, payload.address);
+        if (isId(payload.id) && isId(payload.address)) this.#remember(payload.id, payload.address);
         return this.emit('join', payload);
       },
       leave: (payload) => {
@@ -259,7 +262,7 @@ class WrpcSignaler extends Emitter {
     const members = Array.isArray(result?.members) ? result.members : [];
     for (let i = 0; i < members.length; i++) {
       const member = members[i];
-      if (isId(member?.id) && isId(member.address)) this.#addresses.set(member.id, member.address);
+      if (isId(member?.id) && isId(member.address)) this.#remember(member.id, member.address);
     }
     return members;
   }
@@ -321,6 +324,13 @@ class WrpcSignaler extends Emitter {
     // close() may have run while the calls above were in flight.
     if (this.#closed || this.#replaced) return;
     await this.emit('reset', { id: this.#id, previous, rooms });
+  }
+
+  #remember(id, address) {
+    if (this.#addresses.size >= MAX_ADDRESSES && !this.#addresses.has(id)) {
+      this.#addresses.delete(this.#addresses.keys().next().value);
+    }
+    this.#addresses.set(id, address);
   }
 
   // A failure nobody awaits, for the 'error' listeners when there are any.

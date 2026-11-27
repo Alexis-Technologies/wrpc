@@ -442,6 +442,11 @@ class Broadcast {
 const DEFAULT_LINGER = 5_000;
 // Channels whose publish counters are kept per generation (see #seq).
 const DEFAULT_MAX_TRACKED = 16384;
+// The publishers a channel remembers the sequence of: one per instance that
+// ever published to it, so a long-lived room met a new one with every
+// deploy and forgot none. Past this many the oldest is let go — a publisher
+// it meets again starts over, its first gap unseen.
+const MAX_PEERS = 1024;
 
 class RoomsBackplane {
   #backplane;
@@ -766,7 +771,10 @@ class RoomsBackplane {
       this.#peers.set(channel, peers);
     }
     const peer = peers.get(instance);
-    if (peer === undefined) return void peers.set(instance, { epoch, seq });
+    if (peer === undefined) {
+      if (peers.size >= MAX_PEERS) peers.delete(peers.keys().next().value);
+      return void peers.set(instance, { epoch, seq });
+    }
     if (peer.epoch !== epoch) {
       peer.epoch = epoch;
       peer.seq = seq;

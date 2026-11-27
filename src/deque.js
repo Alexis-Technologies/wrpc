@@ -52,7 +52,7 @@ class Deque {
   shift() {
     if (this.#length === 0) return undefined;
     const value = this.#slots[this.#head];
-    this.#slots[this.#head] = undefined;
+    this.#slots[this.#head] = null;
     this.#head = (this.#head + 1) & this.#mask;
     this.#length--;
     if (this.#mask >= MIN_CAPACITY && this.#length * 4 <= this.#mask) this.#resize(this.#slots.length / 2);

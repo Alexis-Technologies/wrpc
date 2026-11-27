@@ -157,7 +157,6 @@ const HEAD_READS = {
   'src/utils.js': {
     'this.#queue.shift();': 'EventStream, at its highWaterMark (1,024 by default); utils.js is on the browser budget',
     'return Promise.resolve({ value: this.#queue.shift(), done: false });': 'the same queue',
-    'const waiter = this.#queue.shift();': 'Semaphore waiters, capped by its `size`',
   },
   'src/websocket/connection.js': {
     "if (typeof this.#socket.unshift === 'function') this.#socket.unshift(head);": 'a stream method, not an array',

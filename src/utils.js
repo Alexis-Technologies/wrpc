@@ -192,7 +192,7 @@ class EventStream {
   #waiting = null;
   #done = false;
   #error = null;
-  #highWaterMark;
+  #highWaterMark = 0;
   #onAbort = null;
   #signal = null;
 
@@ -318,11 +318,17 @@ const backoffDelay = ({ attempt = 0, minDelay, maxDelay, factor = 2, jitter = tr
 // enter() resolves when a slot frees up, rejects on queue overflow or
 // after `timeout` ms in the queue.
 class Semaphore {
-  #concurrency;
-  #counter;
-  #size;
-  #timeout;
-  #queue = [];
+  #concurrency = 0;
+  #counter = 0;
+  #size = 0;
+  #timeout = 0;
+  // A Set, not an array: a waiter leaves from anywhere when it gives up, and
+  // a timeout fires for every waiter queued at about the same time — each
+  // indexOf + splice shifted what was left, N² in all; a delete is O(1), and
+  // a Set still answers its oldest member first. bench/semaphore.js: 10,000
+  // removals 2.0 M -> 19 M/s; 10,000 waiters aborted through the semaphore
+  // 104 k -> 120 k/s, its promises the rest of the cost.
+  #queue = new Set();
 
   constructor({ concurrency, size = 0, timeout = 0 } = {}) {
     this.#concurrency = concurrency;
@@ -351,29 +357,30 @@ class Semaphore {
         this.#counter--;
         return void resolve(true);
       }
-      if (this.#queue.length >= this.#size) {
+      if (this.#queue.size >= this.#size) {
         return void reject(new TransportError('Semaphore queue is full', { code: 'ALX_ERR_QUEUE_FULL' }));
       }
       const waiter = { resolve, reject, timer: null, release: null };
       const evict = () => {
-        const index = this.#queue.indexOf(waiter);
-        if (index > -1) this.#queue.splice(index, 1);
+        this.#queue.delete(waiter);
         if (waiter.timer) clearTimeout(waiter.timer);
-        waiter.release?.();
       };
       const isOwnFirst = this.#timeout > 0 && (waitMs <= 0 || this.#timeout < waitMs);
       if (isOwnFirst) {
         waiter.timer = setTimeout(() => {
           evict();
+          waiter.release?.();
           reject(new TransportError('Semaphore timeout', { code: 'ALX_ERR_TIMEOUT' }));
         }, this.#timeout);
       } else if (waitMs > 0) {
         waiter.timer = setTimeout(() => {
           evict();
+          waiter.release?.();
           resolve(false);
         }, waitMs);
       }
       if (signal) {
+        // `once`: the abort that runs this has taken the listener off already.
         const onAbort = () => {
           evict();
           reject(new ClosedError('Semaphore entry aborted', { code: 'ALX_ERR_ABORTED' }));
@@ -381,16 +388,18 @@ class Semaphore {
         signal.addEventListener('abort', onAbort, { once: true });
         waiter.release = () => signal.removeEventListener('abort', onAbort);
       }
-      this.#queue.push(waiter);
+      this.#queue.add(waiter);
     });
   }
 
   leave() {
-    const waiter = this.#queue.shift();
-    if (!waiter) {
+    const head = this.#queue.values().next();
+    if (head.done) {
       if (this.#counter < this.#concurrency) this.#counter++;
       return;
     }
+    const waiter = head.value;
+    this.#queue.delete(waiter);
     if (waiter.timer) clearTimeout(waiter.timer);
     waiter.release?.();
     waiter.resolve(true);
