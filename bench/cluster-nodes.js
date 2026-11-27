@@ -134,13 +134,13 @@ const main = async () => {
     let received = 0;
     far.api.bench.on('tick', (data) => {
       received++;
-      latencies.push(Date.now() - data.t);
+      latencies.push(performance.timeOrigin + performance.now() - data.t);
     });
     let emits = 0;
     const started = performance.now();
     while (performance.now() - started < MEASURE_MS) {
       const before = received;
-      await peers[0].client.api.bench.fanout({ room, data: { t: Date.now() } });
+      await peers[0].client.api.bench.fanout({ room, data: { t: performance.timeOrigin + performance.now() } });
       emits++;
       await waitUntil(() => received > before || received, 2000, 'remote delivery');
     }

@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
 const { checkLimit } = require('../src/utils.js');
 const { RpcServer, WrpcClient, defineRouter, procedure } = require('../index.js');
 const { PeerHost } = require('../src/webrtc/index.js');
-const { bootServer, connectClient } = require('./helpers/server.js');
+const { bootServer, connectClient, waitFor } = require('./helpers/server.js');
 const { MIB, bytes } = require('./helpers/streams.js');
 
 const router = () => defineRouter({ files: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
@@ -82,8 +82,7 @@ describe('a limit that is none', () => {
     client.on('error', () => {});
     const upload = client.createStream('big.bin', 4 * MIB);
     await upload.writeAll(bytes(4 * MIB));
-    const deadline = Date.now() + 3000;
-    while (!upload.closed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(() => upload.closed, { message: 'the refused upload never closed', timeout: 3000 });
     assert.strictEqual(upload.error.code, 413);
   });
 });

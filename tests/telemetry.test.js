@@ -521,7 +521,7 @@ describe('a live server emits spans and metrics for real traffic', () => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${server.address().port}/api`, { reconnect: false });
     await client.load('probe');
     await client.api.probe.echo({ ok: 1 });
-    await assert.rejects(client.api.probe.boom());
+    await assert.rejects(client.api.probe.boom(), (error) => error.name === 'WrpcError' && error.code === 500);
     await new Promise((resolve) => {
       client.api.probe.feed.subscribe({}, { onData: (value) => values.push(value), onEnd: resolve });
     });

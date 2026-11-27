@@ -312,6 +312,9 @@ const login = async (base, user) => {
 // Registers the specification's cases in the caller's `describe`, one per
 // behavior, against the instance `entry.boot()` stands up.
 const runAdapterSpec = (entry) => {
+  // Handed to every case, never to the describe: a skipped describe lists
+  // none of its cases (tests/CLAUDE.md).
+  const caseOptions = { skip: entry.skip ?? false };
   // A case's own instance, closed when that case ends.
   const boot = async (t, options) => {
     const instance = await entry.boot({ router, ...options });
@@ -325,13 +328,15 @@ const runAdapterSpec = (entry) => {
   let origin = '';
   let base = '';
   before(async () => {
+    // Its cases are skipped one by one; the boot they share is skipped here.
+    if (caseOptions.skip) return;
     main = await entry.boot({ router });
     origin = `http://127.0.0.1:${main.port}`;
     base = `${origin}/api`;
   });
   after(() => main?.close());
 
-  it('should answer a call packet with its callback on the packet endpoint', async () => {
+  it('should answer a call packet with its callback on the packet endpoint', caseOptions, async () => {
     const { res, body, id } = await rpcPost(base, 'test/hello', { name: 'Ada' });
     assert.strictEqual(res.status, 200);
     assert.strictEqual(body.type, 'callback');
@@ -339,7 +344,7 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(body.result, 'Hello, Ada');
   });
 
-  it('should keep system/introspect public on the packet endpoint', async () => {
+  it('should keep system/introspect public on the packet endpoint', caseOptions, async () => {
     const { res, body } = await rpcPost(base, 'system/introspect', {});
     assert.strictEqual(res.status, 200);
     assert.ok(body.result.test, 'introspection exposes the test unit');
@@ -347,30 +352,34 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(body.result.test.whoami.access, 'session');
   });
 
-  it('should announce the revision over http, and let bytes travel as bytes once the client has seen it', async (t) => {
-    // Every host answers `wrpc-version: 2`, exposed to script on another
-    // origin; a client that read it sends a call holding bytes as a frame
-    // (`application/octet-stream` — the body a host must hand over raw), and
-    // asked with Accept, is answered with one.
-    const probe = await rpcPost(base, 'test/hello', { name: 'Ada' });
-    assert.strictEqual(probe.res.headers.get('wrpc-version'), '2');
-    assert.strictEqual(probe.res.headers.get('access-control-expose-headers'), 'wrpc-version');
-    const client = await WrpcClient.connect(base, { reconnect: false });
-    t.after(() => void client.close());
-    await client.load('test');
-    assert.strictEqual(client.revision, 2);
-    const echoed = await client.api.test.echo({ blob: Uint8Array.of(1, 2, 3) });
-    assert.ok(echoed.blob instanceof Uint8Array, 'a frame went up, and a frame came back');
-    assert.deepStrictEqual([...echoed.blob], [1, 2, 3]);
-  });
+  it(
+    'should announce the revision over http, and let bytes travel as bytes once the client has seen it',
+    caseOptions,
+    async (t) => {
+      // Every host answers `wrpc-version: 2`, exposed to script on another
+      // origin; a client that read it sends a call holding bytes as a frame
+      // (`application/octet-stream` — the body a host must hand over raw), and
+      // asked with Accept, is answered with one.
+      const probe = await rpcPost(base, 'test/hello', { name: 'Ada' });
+      assert.strictEqual(probe.res.headers.get('wrpc-version'), '2');
+      assert.strictEqual(probe.res.headers.get('access-control-expose-headers'), 'wrpc-version');
+      const client = await WrpcClient.connect(base, { reconnect: false });
+      t.after(() => void client.close());
+      await client.load('test');
+      assert.strictEqual(client.revision, 2);
+      const echoed = await client.api.test.echo({ blob: Uint8Array.of(1, 2, 3) });
+      assert.ok(echoed.blob instanceof Uint8Array, 'a frame went up, and a frame came back');
+      assert.deepStrictEqual([...echoed.blob], [1, 2, 3]);
+    },
+  );
 
-  it("should take a GET's args from the query as strings in REST mode", async () => {
+  it("should take a GET's args from the query as strings in REST mode", caseOptions, async () => {
     const { res, body } = await rpcGet(`${base}/test/echo?a=1&b=two`);
     assert.strictEqual(res.status, 200);
     assert.deepStrictEqual(body.result, { a: '1', b: 'two' });
   });
 
-  it('should merge query params with the body in a REST mode POST, the body winning', async () => {
+  it('should merge query params with the body in a REST mode POST, the body winning', caseOptions, async () => {
     const res = await fetch(`${base}/test/echo?a=1&b=query`, {
       method: 'POST',
       headers: JSON_HEADERS,
@@ -381,7 +390,7 @@ const runAdapterSpec = (entry) => {
     assert.deepStrictEqual(body.result, { a: '1', b: 'body', c: 3 });
   });
 
-  it('should answer a plain result of a declarative REST route with its own status', async () => {
+  it('should answer a plain result of a declarative REST route with its own status', caseOptions, async () => {
     const res = await fetch(`${base}/things/42?x=1`, {
       method: 'POST',
       headers: JSON_HEADERS,
@@ -391,7 +400,7 @@ const runAdapterSpec = (entry) => {
     assert.deepStrictEqual(await res.json(), { thingId: '42', q: { x: '1' }, name: 'Alpha' });
   });
 
-  it('should refuse a header value that would split the response, never write it', async () => {
+  it('should refuse a header value that would split the response, never write it', caseOptions, async () => {
     const res = await fetch(`${base}/split`);
     assert.strictEqual(res.status, 500, 'the handler threw at the seam');
     assert.strictEqual(res.headers.get('x-injected'), null, 'nothing of the value reached the wire');
@@ -405,7 +414,7 @@ const runAdapterSpec = (entry) => {
     await spelled.text();
   });
 
-  it('should answer an unknown method with a 404 error packet', async () => {
+  it('should answer an unknown method with a 404 error packet', caseOptions, async () => {
     const { res, body, id } = await rpcPost(base, 'test/nothing', {});
     assert.strictEqual(res.status, 404);
     assert.strictEqual(body.type, 'callback');
@@ -413,14 +422,14 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(body.error.code, 404);
   });
 
-  it("should propagate a handler error's own code", async () => {
+  it("should propagate a handler error's own code", caseOptions, async () => {
     const { res, body } = await rpcPost(base, 'test/fail', {});
     assert.strictEqual(res.status, 418);
     assert.strictEqual(body.error.code, 418);
     assert.strictEqual(body.error.message, 'Boom');
   });
 
-  it('should answer 500 to what throws while a request is routed, never leave it hanging', async (t) => {
+  it('should answer 500 to what throws while a request is routed, never leave it hanging', caseOptions, async (t) => {
     // An injected query parser that throws stands for any input nothing
     // refused first: every host used to drop the rejection on the floor.
     const failing = await boot(t, {
@@ -440,29 +449,33 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(next.result, 'Hello, again', 'and the server goes on');
   });
 
-  it('should answer 403 to a session procedure without a session (access control)', async () => {
+  it('should answer 403 to a session procedure without a session (access control)', caseOptions, async () => {
     const { res, body } = await rpcPost(base, 'test/whoami', {});
     assert.strictEqual(res.status, 403);
     assert.strictEqual(body.error.code, 403);
   });
 
-  it('should set a cookie on login over HTTP, restore the session by the cookie, and kill it on logout', async () => {
-    const { cookie } = await login(base, 'grace');
+  it(
+    'should set a cookie on login over HTTP, restore the session by the cookie, and kill it on logout',
+    caseOptions,
+    async () => {
+      const { cookie } = await login(base, 'grace');
 
-    const restored = await rpcPost(base, 'test/whoami', {}, { cookie });
-    assert.strictEqual(restored.res.status, 200);
-    assert.deepStrictEqual(restored.body.result, { user: 'grace' });
+      const restored = await rpcPost(base, 'test/whoami', {}, { cookie });
+      assert.strictEqual(restored.res.status, 200);
+      assert.deepStrictEqual(restored.body.result, { user: 'grace' });
 
-    const out = await rpcPost(base, 'auth/logout', {}, { cookie });
-    assert.strictEqual(out.res.status, 200);
-    assert.strictEqual(out.body.result, true);
+      const out = await rpcPost(base, 'auth/logout', {}, { cookie });
+      assert.strictEqual(out.res.status, 200);
+      assert.strictEqual(out.body.result, true);
 
-    const revoked = await rpcPost(base, 'test/whoami', {}, { cookie });
-    assert.strictEqual(revoked.res.status, 403);
-    assert.strictEqual(revoked.body.error.code, 403);
-  });
+      const revoked = await rpcPost(base, 'test/whoami', {}, { cookie });
+      assert.strictEqual(revoked.res.status, 403);
+      assert.strictEqual(revoked.body.error.code, 403);
+    },
+  );
 
-  it('should give a cross-site GET no ambient session (CSRF gate)', async () => {
+  it('should give a cross-site GET no ambient session (CSRF gate)', caseOptions, async () => {
     const { cookie } = await login(base, 'ada');
     const url = `${base}/test/whoami`;
 
@@ -480,7 +493,7 @@ const runAdapterSpec = (entry) => {
     assert.deepStrictEqual(bare.body.result, { user: 'ada' });
   });
 
-  it('should answer gzip to a gzip-accepting request past the http.compression threshold', async (t) => {
+  it('should answer gzip to a gzip-accepting request past the http.compression threshold', caseOptions, async (t) => {
     // Every host hands the encoded Buffer through unchanged — fastify
     // derives its own Content-Length from it, uws from end(), express
     // writes it as is.
@@ -508,7 +521,7 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(plain.res.headers['content-encoding'], undefined, 'off by default');
   });
 
-  it('should answer 404 to a path outside basePath', async () => {
+  it('should answer 404 to a path outside basePath', caseOptions, async () => {
     const res = await fetch(`${origin}/nowhere`);
     const text = await res.text();
     assert.strictEqual(res.status, 404);
@@ -520,7 +533,7 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(packet.error.code, 404);
   });
 
-  it('should echo an allowed CORS origin with Vary, and not a disallowed one', async (t) => {
+  it('should echo an allowed CORS origin with Vary, and not a disallowed one', caseOptions, async (t) => {
     const cors = { origins: ['https://allowed.example'], credentials: true };
     const server = await boot(t, { cors });
     const corsBase = `http://127.0.0.1:${server.port}/api`;
@@ -548,7 +561,7 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(preflight.headers.get('access-control-allow-methods'), 'POST, GET, OPTIONS');
   });
 
-  it('should move both endpoints together with basePath', async (t) => {
+  it('should move both endpoints together with basePath', caseOptions, async (t) => {
     const server = await boot(t, { basePath: '/rpc' });
     const moved = `http://127.0.0.1:${server.port}/rpc`;
 
@@ -569,7 +582,7 @@ const runAdapterSpec = (entry) => {
     assert.strictEqual(old.status, 404, 'the default base path no longer answers');
   });
 
-  it('should let no host drop the request url or headers from client.meta', async (t) => {
+  it('should let no host drop the request url or headers from client.meta', caseOptions, async (t) => {
     // The packet endpoint: a per-request client still sees url + headers —
     // including a client-declared one carried as a REAL request header.
     const { res, body } = await rpcPost(base, 'test/peekMeta', {}, { 'x-app-version': '9.9' });
@@ -605,7 +618,7 @@ const runAdapterSpec = (entry) => {
     }
   });
 
-  it('should carry load, call, event and streams over one WebSocket connection', async (t) => {
+  it('should carry load, call, event and streams over one WebSocket connection', caseOptions, async (t) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`);
     t.after(() => void client.close());
 
@@ -645,7 +658,7 @@ const runAdapterSpec = (entry) => {
   // one that cannot (uWebSockets.js) has nothing to hold it with, so the
   // stream FAILS at `maxStreamBuffer` — the handler and the sender both told.
   // What no boot may do is what uws did: read 75 of 100 MiB and never answer.
-  it('should give a sink that stalls every byte or a failed stream, never a hole', async (t) => {
+  it('should give a sink that stalls every byte or a failed stream, never a hole', caseOptions, async (t) => {
     if (!entry.streams) return;
     const MIB = 1024 * 1024;
     const small = await boot(t, { maxStreamBuffer: MIB });
@@ -687,27 +700,31 @@ const runAdapterSpec = (entry) => {
     }
   });
 
-  it('should tell an open socket the host is going away (1001) on close, not an abnormal close', async (t) => {
-    const instance = await entry.boot({ router });
-    let closed = false;
-    const close = async () => {
-      if (closed) return;
-      closed = true;
-      await instance.close();
-    };
-    t.after(close);
-    const socket = new WebSocket(`ws://127.0.0.1:${instance.port}/api`);
-    await new Promise((resolve, reject) => {
-      socket.addEventListener('open', resolve);
-      socket.addEventListener('error', reject);
-    });
-    const ended = new Promise((resolve) => socket.addEventListener('close', (event) => resolve(event.code)));
-    await close();
-    // Whatever the host: a peer can tell a deploy from a crash.
-    assert.strictEqual(await ended, 1001);
-  });
+  it(
+    'should tell an open socket the host is going away (1001) on close, not an abnormal close',
+    caseOptions,
+    async (t) => {
+      const instance = await entry.boot({ router });
+      let closed = false;
+      const close = async () => {
+        if (closed) return;
+        closed = true;
+        await instance.close();
+      };
+      t.after(close);
+      const socket = new WebSocket(`ws://127.0.0.1:${instance.port}/api`);
+      await new Promise((resolve, reject) => {
+        socket.addEventListener('open', resolve);
+        socket.addEventListener('error', reject);
+      });
+      const ended = new Promise((resolve) => socket.addEventListener('close', (event) => resolve(event.code)));
+      await close();
+      // Whatever the host: a peer can tell a deploy from a crash.
+      assert.strictEqual(await ended, 1001);
+    },
+  );
 
-  it('should carry rooms and inbound events over two connections', async (t) => {
+  it('should carry rooms and inbound events over two connections', caseOptions, async (t) => {
     const url = `ws://127.0.0.1:${main.port}/api`;
     const [ada, grace] = await Promise.all([WrpcClient.connect(url), WrpcClient.connect(url)]);
     t.after(() => {
@@ -761,7 +778,7 @@ const runAdapterSpec = (entry) => {
     await waitFor(() => main.rpc.rooms.has('lobby') === false, 'the last member disconnecting must drop the room');
   });
 
-  it('should carry subscriptions, resume and cancellation over one connection', async (t) => {
+  it('should carry subscriptions, resume and cancellation over one connection', caseOptions, async (t) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`);
     t.after(() => void client.close());
     await client.load('chat');

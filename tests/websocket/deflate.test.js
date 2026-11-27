@@ -29,6 +29,7 @@ const sharedMessage = (text, deflated = true) => ({ text, frames: null, compress
 // --- Context takeover and async deflate (phase 1c) ------------------------
 
 const { DeflateContext } = require('../../src/websocket/deflateContext.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const TAKEOVER = { ...DEFLATE, serverTakeover: true, clientTakeover: true, async: null };
 const ASYNC = { ...DEFLATE, serverTakeover: false, clientTakeover: false, async: { threshold: 64 } };
@@ -46,13 +47,7 @@ const tickUntil = async (check, tries = 200) => {
 // For a condition the clock bounds — an inflate on a zlib stream or the
 // threadpool — a deadline in milliseconds; a tick budget runs out under
 // load with nothing wrong.
-const waitUntil = async (check, ms) => {
-  const deadline = Date.now() + ms;
-  while (!check()) {
-    if (Date.now() > deadline) throw new Error(`condition never met within ${ms} ms`);
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
-};
+const waitUntil = (check, ms) => waitFor(check, { timeout: ms, interval: 2 });
 
 // A peer-side inflater with its own live window: what a takeover client does.
 const liveInflater = () => {

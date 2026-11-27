@@ -2,6 +2,7 @@
   "name": "@alexify/wrpc",
   "version": "2.2.0",
   "description": "wRPC (Web RPC): a fast, zero-dependency RPC protocol for Node.js and browsers - one router over WebSocket, HTTP, SSE, REST, WebTransport and WebRTC, plus message brokers - typed client, subscriptions, rooms, cluster, binary streams, compression and encryption",
+  "type": "commonjs",
   "main": "index.js",
   "browser": {
     "./index.js": "./src/index.browser.js",
@@ -182,6 +183,7 @@
     "test:coverage": "c8 --all --include 'src/**' --check-coverage --lines 95 --statements 95 --branches 90 --functions 95 --reporter text --reporter lcov node --test",
     "test:ci": "c8 --all --include 'src/**' --check-coverage --lines 95 --statements 95 --branches 90 --functions 95 --reporter text --reporter lcov node --test --test-timeout=300000 --test-force-exit",
     "test:coverage:floors": "node scripts/coverage-floors.js",
+    "check:dts": "tsc -p tsconfig.dts.json",
     "test:types": "tsd",
     "test:perf": "node tests/perf/stream-memory.perf.js",
     "bench": "node bench/run-all.js",
@@ -190,15 +192,15 @@
     "redis:down": "docker compose down",
     "brokers:up": "docker compose up -d",
     "brokers:down": "docker compose down",
-    "lint": "oxlint --report-unused-disable-directives-severity=error src tests scripts bench bin examples",
-    "format": "oxfmt src tests scripts bench bin examples",
-    "format:check": "oxfmt --check src tests scripts bench bin examples",
+    "lint": "oxlint --report-unused-disable-directives-severity=error index.js src tests scripts bench bin examples",
+    "format": "oxfmt index.js src tests scripts bench bin examples",
+    "format:check": "oxfmt --check index.js src tests scripts bench bin examples",
     "size": "node scripts/size.js",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "prepare": "alexiskills claude",
-    "prepublishOnly": "pnpm run lint && pnpm run format:check && pnpm run test:ci && pnpm run test:coverage:floors && pnpm run test:types && pnpm run size && pnpm run docs:build"
+    "prepublishOnly": "pnpm run lint && pnpm run format:check && pnpm run test:ci && pnpm run test:coverage:floors && pnpm run test:types && pnpm run check:dts && pnpm run size && pnpm run docs:build"
   },
   "tsd": {
     "directory": "tests"

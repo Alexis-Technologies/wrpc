@@ -334,7 +334,8 @@
         "unicorn/no-array-reduce": "error",
         "unicorn/no-useless-spread": "error",
         "unicorn/prefer-set-has": "error",
-        "unicorn/require-post-message-target-origin": "off"
+        "unicorn/require-post-message-target-origin": "off",
+        "unicorn/prefer-node-protocol": "error"
       }
     },
     {

@@ -191,8 +191,8 @@ describe('reconnect', () => {
     assert.strictEqual(client.api.test.legacy, undefined, 'a method the server dropped stops being callable');
 
     await client.api.test.notify();
-    await timers.setTimeout(20);
-    assert.deepStrictEqual(events, [{ ping: true }], 'listeners registered before the drop still fire');
+    await waitFor(() => events.length === 1, 'listeners registered before the drop still fire');
+    assert.deepStrictEqual(events, [{ ping: true }]);
   });
 
   it('should not take an explicit close for a reconnect', async (t) => {
@@ -269,8 +269,7 @@ describe('heartbeat', () => {
     after(() => void client?.close());
 
     it('should keep the connection open while the heartbeat is answered', async () => {
-      await timers.setTimeout(80);
-      assert.ok(pings.length >= 2, `expected repeated pings, got ${pings.length}`);
+      await waitFor(() => pings.length >= 2, `expected repeated pings, got ${pings.length}`);
       assert.strictEqual(client.active, true);
     });
 

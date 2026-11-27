@@ -20,6 +20,9 @@ const report = (name, count, elapsedMs, extra = '') =>
 
 const time = (label, fn, iterations, extra = '') => {
   let sink = 0;
+  // Warmed first, an eighth of the run: the first calls are the
+  // interpreter's and the JIT's, not the steady state the row reports.
+  for (let i = 0; i < Math.ceil(iterations / 8); i++) sink += fn() ? 1 : 0;
   const started = performance.now();
   for (let i = 0; i < iterations; i++) sink += fn() ? 1 : 0;
   const elapsed = performance.now() - started;

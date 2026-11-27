@@ -5,7 +5,7 @@
 // RpcServers sharing one MemoryBackplane behave like three processes sharing
 // a Redis — which is exactly what makes this testable without a broker.
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const timers = require('node:timers/promises');
@@ -14,6 +14,7 @@ const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { MemoryBackplane } = require('../../src/scaling/index.js');
 const { recorder } = require('../helpers/recorder.js');
+const { keepAlive } = require('../helpers/wait.js');
 const { createMetrics, point } = require('../helpers/metrics.js');
 
 // Node 22 aborts a still-pending test the moment the event loop goes idle
@@ -25,9 +26,7 @@ const { createMetrics, point } = require('../helpers/metrics.js');
 // for the file's lifetime keeps the runner from calling that a failure.
 // Without it, the first such wait aborts and every later test in the file
 // cascades as cancelledByParent.
-let loopHold = null;
-before(() => void (loopHold = setInterval(() => {}, 1000)));
-after(() => clearInterval(loopHold));
+keepAlive();
 const { Cluster, instanceOfClientId } = require('../../src/rpc/cluster.js');
 const { encodeAttachments, decodeAttachments } = require('../../src/attachments.js');
 

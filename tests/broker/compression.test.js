@@ -255,7 +255,7 @@ describe('broker compression', () => {
     assert.strictEqual(handle.sessions, 1);
     // A frame the server cannot inflate under its cap: 200 KB of one byte.
     const closed = new Promise((resolve) => client.once('close', resolve));
-    await assert.rejects(client.api.calc.echo({ text: 'z'.repeat(200_000) }));
+    await assert.rejects(client.api.calc.echo({ text: 'z'.repeat(200_000) }), { name: 'WrpcError', code: 503 });
     await closed;
     await waitFor(() => handle.sessions === 0);
     assert.ok(rpc);

@@ -262,7 +262,7 @@ describe('silent paths', () => {
       // out — someone reading a topic from an offset they invented. It used to
       // be indistinguishable from a garbled one, and silent.
       const iterator = feed(context, {}, { lastEventId: 'forged!deadbeef' });
-      await assert.rejects(() => iterator.next());
+      await assert.rejects(() => iterator.next(), { name: 'WrpcError', code: 400, message: 'Invalid event id' });
       const entry = find('broker.feed.resume');
       assert.ok(entry, 'a forged resume token was refused silently');
       assert.strictEqual(entry.reason, 'signature');

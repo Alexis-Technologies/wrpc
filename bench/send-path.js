@@ -49,6 +49,9 @@ const benchSendText = (label, payload, options = {}) => {
   const socket = new SinkSocket();
   const conn = new Connection(socket, Buffer.alloc(0), { maxBackpressure: 0, ...options });
   const iterations = 200_000;
+  // Warmed first, an eighth of the run: the first calls are the
+  // interpreter's and the JIT's, not the steady state the row reports.
+  for (let i = 0; i < iterations / 8; i++) conn.sendText(payload);
   const started = performance.now();
   for (let i = 0; i < iterations; i++) conn.sendText(payload);
   const elapsed = performance.now() - started;

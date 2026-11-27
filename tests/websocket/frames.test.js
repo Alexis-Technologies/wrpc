@@ -7,7 +7,9 @@ const http = require('node:http');
 const { WebsocketServer, CLOSE_CODES, OPCODES } = require('#ws');
 const { ProtocolClient } = require('./protocolClient.js');
 
-const startServer = async (onConn) => {
+// Teardown is registered here, the moment the server listens: a closing
+// line at the end of a test never ran when an assertion failed first.
+const startServer = async (t, onConn) => {
   const httpServer = http.createServer();
   const tinyWsServer = new WebsocketServer({
     server: httpServer,
@@ -20,6 +22,7 @@ const startServer = async (onConn) => {
   });
   if (onConn) tinyWsServer.on('connection', onConn);
   await new Promise((resolve) => httpServer.listen(0, resolve));
+  t.after(() => new Promise((resolve) => httpServer.close(resolve)));
   const port = httpServer.address().port;
   return { httpServer, port };
 };
@@ -28,8 +31,8 @@ const startServer = async (onConn) => {
 const delay = () => new Promise((resolve) => process.nextTick(resolve));
 
 describe('frames', () => {
-  it('should close 1002 on an unmasked data frame from the client', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on an unmasked data frame from the client', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -41,12 +44,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
     assert.ok(String(result.reason).toLowerCase().includes('unmasked'), `unexpected reason: ${result.reason}`);
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 with the RSV reason when RSV bits are set', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 with the RSV reason when RSV bits are set', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -67,12 +68,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
     assert.ok(String(result.reason).toLowerCase().includes('rsv'), `unexpected reason: ${result.reason}`);
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on a control frame too long (ping >125)', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on a control frame too long (ping >125)', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -84,12 +83,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
     assert.ok(String(result.reason).toLowerCase().includes('too long'), `unexpected reason: ${result.reason}`);
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on a fragmented control frame (ping with FIN=0)', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on a fragmented control frame (ping with FIN=0)', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -104,12 +101,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
     assert.ok(String(result.reason).toLowerCase().includes('protocol error'), `unexpected reason: ${result.reason}`);
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on an unknown data opcode (0x3)', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on an unknown data opcode (0x3)', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -120,11 +115,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1007 on invalid UTF-8 in a single text frame', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1007 on invalid UTF-8 in a single text frame', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -138,12 +132,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, CLOSE_CODES.INVALID_PAYLOAD);
     assert.ok(String(result.reason).toLowerCase().includes('invalid payload'), `unexpected reason: ${result.reason}`);
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on a CLOSE with a 1 byte payload', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on a CLOSE with a 1 byte payload', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -154,11 +146,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on a CLOSE with invalid code 999', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on a CLOSE with invalid code 999', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -171,11 +162,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1007 on a CLOSE with invalid UTF-8 in the reason', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1007 on a CLOSE with invalid UTF-8 in the reason', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -190,11 +180,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.INVALID_PAYLOAD);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should let the client see 1005 on a CLOSE with an empty payload', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should let the client see 1005 on a CLOSE with an empty payload', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -205,11 +194,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, 1005);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1007 on bad UTF-8 in the continuation of a fragmented text', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1007 on bad UTF-8 in the continuation of a fragmented text', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -229,11 +217,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.INVALID_PAYLOAD);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on BINARY during TEXT fragmentation', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on BINARY during TEXT fragmentation', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -251,11 +238,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on reserved control opcode 0xB', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on reserved control opcode 0xB', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -267,11 +253,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should complete a normal close handshake (1000 "bye")', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should complete a normal close handshake (1000 "bye")', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -287,11 +272,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, 1000);
     assert.strictEqual(result.reason, 'bye');
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1002 on a CONTINUATION without a started message', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1002 on a CONTINUATION without a started message', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -306,12 +290,11 @@ describe('frames', () => {
     });
 
     assert.strictEqual(result.code, CLOSE_CODES.PROTOCOL_ERROR);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should answer a ping during TEXT fragmentation with a pong, then the message', async () => {
+  it('should answer a ping during TEXT fragmentation with a pong, then the message', async (t) => {
     // Echo server to verify assembled message
-    const { httpServer, port } = await startServer((conn) => {
+    const { port } = await startServer(t, (conn) => {
       conn.on('error', () => {});
       conn.on('message', (msg, isBinary) => {
         conn.send(isBinary ? msg : String(msg));
@@ -348,11 +331,10 @@ describe('frames', () => {
 
     assert.strictEqual(outcome.gotPong, true);
     assert.strictEqual(outcome.msg, 'Hello world');
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should accept and echo TEXT of length 125 and 126', async () => {
-    const { httpServer, port } = await startServer((conn) => {
+  it('should accept and echo TEXT of length 125 and 126', async (t) => {
+    const { port } = await startServer(t, (conn) => {
       conn.on('error', () => {});
       conn.on('message', (msg) => conn.send(String(msg)));
     });
@@ -375,11 +357,10 @@ describe('frames', () => {
     assert.strictEqual(r126.length, 126);
 
     client.close();
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close 1009 on a 64-bit length with unsafe high bits', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should close 1009 on a 64-bit length with unsafe high bits', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -401,12 +382,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, CLOSE_CODES.MESSAGE_TOO_BIG);
     assert.ok(String(result.reason).toLowerCase().includes('too big'), `unexpected reason: ${result.reason}`);
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should echo back a user close (3001 "user")', async () => {
-    const { httpServer, port } = await startServer((conn) => conn.on('error', () => {}));
+  it('should echo back a user close (3001 "user")', async (t) => {
+    const { port } = await startServer(t, (conn) => conn.on('error', () => {}));
     const client = new ProtocolClient(`ws://localhost:${port}`);
 
     const result = await new Promise((resolve) => {
@@ -422,11 +401,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, 3001);
     assert.strictEqual(result.reason, 'user');
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should echo a TEXT split between header and payload over chunked TCP', async () => {
-    const { httpServer, port } = await startServer((conn) => {
+  it('should echo a TEXT split between header and payload over chunked TCP', async (t) => {
+    const { port } = await startServer(t, (conn) => {
       conn.on('error', () => {});
       conn.on('message', (msg) => conn.send(String(msg)));
     });
@@ -470,11 +448,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(received, payload.toString());
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should accept a 16-bit length 126 with a split header over chunked TCP', async () => {
-    const { httpServer, port } = await startServer((conn) => {
+  it('should accept a 16-bit length 126 with a split header over chunked TCP', async (t) => {
+    const { port } = await startServer(t, (conn) => {
       conn.on('error', () => {});
       conn.on('message', (msg) => conn.send(String(msg)));
     });
@@ -524,11 +501,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(received, str);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should not mask server responses (pong)', async () => {
-    const { httpServer, port } = await startServer((conn) => {
+  it('should not mask server responses (pong)', async (t) => {
+    const { port } = await startServer(t, (conn) => {
       conn.on('error', () => {});
     });
     const client = new ProtocolClient(`ws://localhost:${port}`);
@@ -546,11 +522,10 @@ describe('frames', () => {
     });
 
     assert.strictEqual(ok, true);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should close from the server side (1000 "srv")', async () => {
-    const { httpServer, port } = await startServer((conn) => {
+  it('should close from the server side (1000 "srv")', async (t) => {
+    const { port } = await startServer(t, (conn) => {
       conn.on('error', () => {});
       conn.sendClose(1000, 'srv');
     });
@@ -563,11 +538,10 @@ describe('frames', () => {
 
     assert.strictEqual(result.code, 1000);
     assert.strictEqual(result.reason, 'srv');
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it("should receive the client's pong to a server ping", async () => {
-    const { httpServer, port } = await startServer((conn) => {
+  it("should receive the client's pong to a server ping", async (t) => {
+    const { port } = await startServer(t, (conn) => {
       conn.on('error', () => {});
       conn.on('pong', (buf) => {
         if (buf && buf.toString() === 'ok') conn.sendClose(1000, 'done');
@@ -589,6 +563,5 @@ describe('frames', () => {
     });
 
     assert.strictEqual(ok, true);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 });

@@ -18,6 +18,7 @@
 const { performance } = require('node:perf_hooks');
 const crypto = require('node:crypto');
 const { applyMask } = require('../src/websocket/frame.js');
+const { isolate, selected, isLeader } = require('./support/isolate.js');
 
 const KIB = 1024;
 const MIB = 1024 * 1024;
@@ -109,23 +110,27 @@ const formatOps = (ops) => {
 };
 
 const main = () => {
-  console.log(`XOR unmask benchmark — Node ${process.version}`);
+  if (isLeader) console.log(`XOR unmask benchmark — Node ${process.version}`);
   if (!verifyStrategies()) {
     process.exitCode = 1;
     return;
   }
-  console.log();
   for (const { label, size, iterations } of SIZES) {
     const payload = crypto.randomFillSync(Buffer.allocUnsafe(size));
     const mask = crypto.randomBytes(4);
-    console.log(`Payload ${label} — ${formatNumber(iterations)} iterations`);
-    console.log(`  ${'strategy'.padEnd(18)}${'ops/sec'.padStart(12)}${'MB/s'.padStart(14)}`);
-    for (const { name, fn } of STRATEGIES) {
+    for (let i = 0; i < STRATEGIES.length; i++) {
+      // One strategy per process (bench/support/isolate.js); the heading of a
+      // payload size goes with its first one.
+      if (!selected()) continue;
+      if (i === 0) {
+        console.log(`\nPayload ${label} — ${formatNumber(iterations)} iterations`);
+        console.log(`  ${'strategy'.padEnd(18)}${'ops/sec'.padStart(12)}${'MB/s'.padStart(14)}`);
+      }
+      const { name, fn } = STRATEGIES[i];
       const { opsPerSec, mbPerSec } = bench(fn, payload, mask, iterations);
       console.log(`  ${name.padEnd(18)}${formatOps(opsPerSec).padStart(12)}${formatNumber(mbPerSec).padStart(14)}`);
     }
-    console.log();
   }
 };
 
-main();
+if (!isolate(__filename)) main();

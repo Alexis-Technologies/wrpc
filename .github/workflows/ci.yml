@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same ref makes the run in progress moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -24,6 +29,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
+      # Every hand-written d.ts through the repo's own TypeScript (7.x); tsd
+      # checks the tests against 5.9.
+      - run: pnpm check:dts
       # Smoke: keeps the bundle-size script working and its numbers visible in CI logs.
       - run: pnpm size
 
@@ -34,6 +42,8 @@ jobs:
     # rather than let a hang burn the six-hour default.
     timeout-minutes: 20
     strategy:
+      # One Node line failing says nothing about the others: let them finish.
+      fail-fast: false
       matrix:
         # The floor of `engines` written exactly (`>=22` admits 22.0.0, and
         # `22` alone is the newest 22.x, which proves nothing about it), then

@@ -19,6 +19,7 @@
 'use strict';
 
 const { bench } = require('./support/harness.js');
+const { isolate, isLeader } = require('./support/isolate.js');
 const { Emitter } = require('../src/utils.js');
 
 const BATCH = 1000;
@@ -29,7 +30,7 @@ const sync = (value) => {
 };
 
 const main = async () => {
-  console.log(`Emitter benchmark — Node ${process.version}\n`);
+  if (isLeader) console.log(`Emitter benchmark — Node ${process.version}\n`);
 
   {
     const emitter = new Emitter();
@@ -99,4 +100,5 @@ const main = async () => {
   if (sink === Number.MIN_SAFE_INTEGER) console.log('unreachable', sink);
 };
 
-void main();
+// One case per process (bench/support/isolate.js).
+if (!isolate(__filename)) void main();

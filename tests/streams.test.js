@@ -2,10 +2,18 @@
 
 const { Readable } = require('node:stream');
 const { randomUUID } = require('node:crypto');
-const { describe, it } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 
-const random = (max) => Math.floor(Math.random() * (max + 1));
+// Seeded (mulberry32): a case that fails comes back the same on the next run,
+// where Math.random made every run a different one.
+let seed = 0x2f6b7c1d;
+const random = (max) => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let mixed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+  return Math.floor((((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296) * (max + 1));
+};
 const { WrpcReadable, WrpcWritable } = require('../src/streams.js');
 const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 
@@ -16,6 +24,10 @@ process.emitWarning = (warning, type, ...args) => {
   if (type === 'ExperimentalWarning') return;
   emitWarning(warning, type, ...args);
 };
+// Put back for whatever runs after this file in the same process.
+after(() => {
+  process.emitWarning = emitWarning;
+});
 
 const generatePacket = () => ({
   id: randomUUID(),

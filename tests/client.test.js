@@ -17,6 +17,10 @@ process.emitWarning = (warning, type, ...args) => {
   if (type === 'ExperimentalWarning') return;
   emitWarning(warning, type, ...args);
 };
+// Put back for whatever runs after this file in the same process.
+after(() => {
+  process.emitWarning = emitWarning;
+});
 
 const createWsServer = () => {
   const httpServer = http.createServer();

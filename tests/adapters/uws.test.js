@@ -21,8 +21,12 @@ describe('createUwsEngine', () => {
     assert.throws(() => createUwsEngine({ app: {} }), /does not look like a uWebSockets\.js TemplatedApp/);
   });
 
-  it('should have the expected shape and capabilities', { skip: !uws && 'uWebSockets.js unavailable' }, () => {
+  it('should have the expected shape and capabilities', { skip: !uws && 'uWebSockets.js unavailable' }, (t) => {
+    // Each engine is closed by t.after the moment it exists: a closing line
+    // at the end never ran when an assertion failed, and a native engine left
+    // open wedges the whole run (tests/CLAUDE.md).
     const engine = createUwsEngine({ uws });
+    t.after(() => engine.close());
     assert.strictEqual(engine.name, 'uws');
     assert.strictEqual(engine.standalone, true);
     assert.strictEqual(isEngine(engine), true);
@@ -32,18 +36,22 @@ describe('createUwsEngine', () => {
     assert.strictEqual(engine.capabilities.backpressure, true);
     assert.strictEqual(engine.capabilities.deflate, false);
     const compressed = createUwsEngine({ uws, compression: 1 });
+    t.after(() => compressed.close());
     assert.strictEqual(compressed.capabilities.deflate, true);
     // uws.DISABLED is 0, so a falsy compressor must not read as deflate support
-    assert.strictEqual(createUwsEngine({ uws, compression: 0 }).capabilities.deflate, false);
-    engine.close();
-    compressed.close();
+    const plain = createUwsEngine({ uws, compression: 0 });
+    t.after(() => plain.close());
+    assert.strictEqual(plain.capabilities.deflate, false);
   });
 
-  it('should refuse attaching twice', { skip: !uws && 'uWebSockets.js unavailable' }, () => {
+  it('should refuse attaching twice', { skip: !uws && 'uWebSockets.js unavailable' }, (t) => {
     const engine = createUwsEngine({ uws });
+    t.after(() => engine.close());
     engine.attach({});
-    assert.throws(() => engine.attach({}), /already attached/);
-    engine.close();
+    assert.throws(
+      () => engine.attach({}),
+      (error) => error.code === 'ALX_ERR_CONFIG' && /already attached/.test(error.message),
+    );
   });
 
   it(
@@ -101,8 +109,11 @@ describe('createUwsEngine', () => {
 });
 
 describe('uws engine', () => {
-  describe('the WrpcSocket engine contract', { skip: !uws && 'uWebSockets.js unavailable' }, () => {
-    runEngineContract(standaloneHarness(() => createUwsEngine({ uws })));
+  describe('the WrpcSocket engine contract', () => {
+    runEngineContract(
+      standaloneHarness(() => createUwsEngine({ uws })),
+      { skip: !uws && 'uWebSockets.js unavailable' },
+    );
   });
 
   it(

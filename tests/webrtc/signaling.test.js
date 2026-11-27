@@ -4,7 +4,7 @@
 // real WS clients over bootServer with wrpcSignaler as the client half, plus
 // two RpcServers over one MemoryBackplane for the cross-instance relay.
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
@@ -18,6 +18,7 @@ const {
   hasRoster,
 } = require('../../src/webrtc/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
+const { keepAlive } = require('../helpers/wait.js');
 const { generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
 const { createAssertionVerifier, parseJws } = require('../../src/webrtc/assertions.js');
 
@@ -679,9 +680,7 @@ describe('signaling', () => {
   // cluster leg; the roster is cluster.fetchClients; join/leave notifications
   // ride Broadcast over the backplane.
 
-  let loopHold = null;
-  before(() => void (loopHold = setInterval(() => {}, 1000)));
-  after(() => clearInterval(loopHold));
+  keepAlive();
 
   const fakeSocket = () => {
     const listeners = new Map();

@@ -989,6 +989,31 @@ describe('the CHANGELOG', () => {
 });
 
 describe('the source', () => {
+  // src/ has unicorn's prefer-node-protocol; the rest of the lint targets have
+  // no unicorn plugin (its other rules would fail the suites), so this holds
+  // them: three test helpers required 'events', 'net' and 'crypto' bare.
+  it('should require every Node.js builtin by its node: name, in every lint target', () => {
+    const { builtinModules } = require('node:module');
+    const bare = new Set(builtinModules.filter((name) => !name.startsWith('node:') && !name.startsWith('_')));
+    const { readdirSync, readFileSync } = require('node:fs');
+    const found = [];
+    const walk = (dir) => {
+      for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+        const relative = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) {
+          if (entry.name !== 'node_modules' && entry.name !== 'public') walk(relative);
+        } else if (entry.name.endsWith('.js')) {
+          const text = readFileSync(path.join(ROOT, relative), 'utf8');
+          for (const match of text.matchAll(/require\('([^':]+?)(?:\/[^']*)?'\)/g)) {
+            if (bare.has(match[1])) found.push(`${relative}: require('${match[1]}')`);
+          }
+        }
+      }
+    };
+    for (const dir of ['src', 'tests', 'scripts', 'bench', 'bin', 'examples']) walk(dir);
+    assert.deepStrictEqual(found, []);
+  });
+
   it('should match RPC_OPTION_KEYS to the RpcServer constructor destructure', () => {
     const core = read('src/rpc/core.js');
     const keysStart = core.indexOf('const RPC_OPTION_KEYS = [');

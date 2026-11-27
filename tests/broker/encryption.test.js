@@ -659,7 +659,11 @@ describe('broker encryption', () => {
     assert.deepStrictEqual(await client.api.calc.echo({ n: 1 }), { n: 1 });
     // The provider fails for one frame: that call is lost, and says so.
     down = true;
-    await assert.rejects(async () => client.api.calc.echo({ n: 2 }));
+    await assert.rejects(async () => client.api.calc.echo({ n: 2 }), {
+      name: 'WrpcError',
+      code: 503,
+      message: 'vault unreachable',
+    });
     down = false;
     // It used to leave a gap in the numbering: the service dropped the session
     // on the next frame, and write() answered "not drained" for good.

@@ -18,11 +18,19 @@ const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
 
 // Optional peer dependencies: present in devDependencies, but a machine
-// without a working uws binary should skip rather than fail.
+// without a working uws binary should skip rather than fail. In CI the
+// environment IS complete (WRPC_INTEGRATION_STRICT, as tests/broker/support.js
+// reads it): a skip there is a broken install of uws, fastify or express
+// passing green, so it fails instead.
 const optional = (name) => {
   try {
     return require(name);
-  } catch {
+  } catch (error) {
+    if (process.env.WRPC_INTEGRATION_STRICT) {
+      throw new Error(`${name} did not load (WRPC_INTEGRATION_STRICT is set: a skip would hide a broken environment)`, {
+        cause: error,
+      });
+    }
     return null;
   }
 };

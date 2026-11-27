@@ -16,7 +16,7 @@ const parseStatusCode = (statusLine) => {
 };
 
 describe('handshake', () => {
-  it('should upgrade successfully', async () => {
+  it('should upgrade successfully', async (t) => {
     const httpServer = http.createServer();
     const tinyWsServer = new WebsocketServer({ server: httpServer });
     tinyWsServer.on('connection', () => {
@@ -24,6 +24,7 @@ describe('handshake', () => {
     });
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    t.after(() => new Promise((resolve) => httpServer.close(resolve)));
     const port = httpServer.address().port;
 
     const client = new ProtocolClient(`ws://localhost:${port}`);
@@ -40,17 +41,16 @@ describe('handshake', () => {
       client.on('close', () => resolve());
       client.close();
     });
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
   describe('an invalid upgrade request', () => {
-    it('should not upgrade without an Upgrade header', async () => {
+    it('should not upgrade without an Upgrade header', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -69,16 +69,15 @@ describe('handshake', () => {
       // socket close without headers
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade without a Connection header', async () => {
+    it('should not upgrade without a Connection header', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -94,16 +93,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade with a bad Sec-WebSocket-Version', async () => {
+    it('should not upgrade with a bad Sec-WebSocket-Version', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -120,16 +118,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade with a Sec-WebSocket-Key that is not base64', async () => {
+    it('should not upgrade with a Sec-WebSocket-Key that is not base64', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -146,16 +143,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade with a Sec-WebSocket-Key too short', async () => {
+    it('should not upgrade with a Sec-WebSocket-Key too short', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -173,16 +169,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade with a wrong Upgrade token value', async () => {
+    it('should not upgrade with a wrong Upgrade token value', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -199,16 +194,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade on Connection without an Upgrade token', async () => {
+    it('should not upgrade on Connection without an Upgrade token', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -225,16 +219,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade without a Host header', async () => {
+    it('should not upgrade without a Host header', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -252,16 +245,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade on a wrong HTTP method (POST)', async () => {
+    it('should not upgrade on a wrong HTTP method (POST)', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -279,16 +271,15 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
 
-    it('should not upgrade an HTTP/1.0 request', async () => {
+    it('should not upgrade an HTTP/1.0 request', async (t) => {
       const httpServer = http.createServer();
       const tinyWsServer = new WebsocketServer({ server: httpServer });
       tinyWsServer.on('connection', () => {});
 
       await new Promise((resolve) => httpServer.listen(0, resolve));
+      t.after(() => new Promise((resolve) => httpServer.close(resolve)));
       const port = httpServer.address().port;
 
       const res = await ProtocolClient.attemptHandshake({
@@ -306,18 +297,17 @@ describe('handshake', () => {
 
       const code = parseStatusCode(res.statusLine);
       assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
-
-      await new Promise((resolve) => httpServer.close(resolve));
     });
   });
 
-  it('should send a correct Sec-WebSocket-Accept and no subprotocol', async () => {
+  it('should send a correct Sec-WebSocket-Accept and no subprotocol', async (t) => {
     const httpServer = http.createServer();
     const tinyWsServer = new WebsocketServer({ server: httpServer });
     // Terminate immediately to avoid waiting for heartbeat timeouts
     tinyWsServer.on('connection', (ws) => ws.terminate());
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    t.after(() => new Promise((resolve) => httpServer.close(resolve)));
     const port = httpServer.address().port;
 
     // Do a raw handshake to inspect headers
@@ -342,17 +332,16 @@ describe('handshake', () => {
     assert.strictEqual(res.headers['sec-websocket-accept'], expected);
     // No subprotocol unless negotiated
     assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should match the Connection token case-insensitively', async () => {
+  it('should match the Connection token case-insensitively', async (t) => {
     const httpServer = http.createServer();
     const tinyWsServer = new WebsocketServer({ server: httpServer });
     // Terminate immediately to avoid waiting for heartbeat timeouts
     tinyWsServer.on('connection', (ws) => ws.terminate());
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    t.after(() => new Promise((resolve) => httpServer.close(resolve)));
     const port = httpServer.address().port;
 
     const res = await ProtocolClient.attemptHandshake({
@@ -370,10 +359,9 @@ describe('handshake', () => {
 
     const code = parseStatusCode(res.statusLine);
     assert.strictEqual(code, 101);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should reject the upgrade when the path does not match', async () => {
+  it('should reject the upgrade when the path does not match', async (t) => {
     const httpServer = http.createServer();
     const tinyWsServer = new WebsocketServer({
       server: httpServer,
@@ -382,6 +370,7 @@ describe('handshake', () => {
     tinyWsServer.on('connection', () => {});
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    t.after(() => new Promise((resolve) => httpServer.close(resolve)));
     const port = httpServer.address().port;
 
     const res = await ProtocolClient.attemptHandshake({
@@ -398,10 +387,9 @@ describe('handshake', () => {
     });
 
     assert.strictEqual(parseStatusCode(res.statusLine), 404);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should let verifyClient reject the upgrade', async () => {
+  it('should let verifyClient reject the upgrade', async (t) => {
     const httpServer = http.createServer();
     const tinyWsServer = new WebsocketServer({
       server: httpServer,
@@ -410,6 +398,7 @@ describe('handshake', () => {
     tinyWsServer.on('connection', () => {});
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    t.after(() => new Promise((resolve) => httpServer.close(resolve)));
     const port = httpServer.address().port;
 
     const res = await ProtocolClient.attemptHandshake({
@@ -425,6 +414,5 @@ describe('handshake', () => {
     });
 
     assert.strictEqual(parseStatusCode(res.statusLine), 403);
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 });

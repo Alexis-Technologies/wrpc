@@ -426,7 +426,7 @@ describe('http encryption', () => {
       headers: { 'x-app': 'x'.repeat(17 * 1024) },
     });
     t.after(() => void client.close());
-    await assert.rejects(client.load('data'));
+    await assert.rejects(client.load('data'), { name: 'WrpcError', code: 400 });
     assert.deepStrictEqual(
       warnings.filter((w) => w.event === 'encryption.refused').map((w) => w.reason),
       ['format'],
@@ -461,7 +461,7 @@ describe('http encryption', () => {
       fetch: spy.fetch,
     });
     t.after(() => void client.close());
-    await assert.rejects(client.load('data'));
+    await assert.rejects(client.load('data'), { name: 'WrpcError', code: 503 });
     assert.strictEqual(spy.seen.at(-1).status, 503, 'refused, not served unvouched');
     assert.ok(!isSealedType(spy.seen.at(-1).type));
     assert.deepStrictEqual(

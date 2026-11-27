@@ -21,6 +21,7 @@ pnpm test:coverage     # c8 over src/ — thresholds 95 lines / 95 statements / 
 pnpm test:ci           # test:coverage as CI runs it: a 5 min per-test timeout and a forced exit, so a leak fails instead of hanging
 pnpm test:coverage:floors  # per-file floors, a directory at a time — run right after test:coverage, it reads what that left
 pnpm test:types        # tsd against the .d.ts files
+pnpm check:dts         # every hand-written .d.ts through the repo's own tsc (7.x)
 pnpm test:perf         # the 1 GiB stream memory guard
 pnpm lint              # oxlint
 pnpm format            # oxfmt (format:check in CI)
@@ -110,7 +111,7 @@ a change in; cover the new branch instead.
 
 Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
 
-- **lint** (Node 22) — `lint`, `format:check`, `size`
+- **lint** (Node 22) — `lint`, `format:check`, `check:dts`, `size`
 - **test** (Node 22.0.0 — the floor of `engines` exactly — 22, 24 and 26,
   installed without build scripts) —
   `test:ci` (`test:coverage` with
@@ -212,7 +213,7 @@ publishes.
    ```bash
    pnpm run prepublishOnly
    ```
-   (`pnpm lint && pnpm format:check && pnpm test:ci && pnpm test:coverage:floors && pnpm test:types && pnpm size && pnpm docs:build`).
+   (`pnpm lint && pnpm format:check && pnpm test:ci && pnpm test:coverage:floors && pnpm test:types && pnpm check:dts && pnpm size && pnpm docs:build`).
    `test:coverage:floors` reads what `test:ci` left in `coverage/tmp`, so it
    runs right after it. CI's `test` job is a matrix of Node 22.0.0 (the floor
    of `engines`, exactly), 22, 24 and 26, and they differ (Node 22's runner cancels a file whose event loop goes empty):

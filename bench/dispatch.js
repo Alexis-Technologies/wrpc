@@ -19,6 +19,8 @@
 
 'use strict';
 
+const { isolate, selected, isLeader } = require('./support/isolate.js');
+
 const MEASURE_MS = 400;
 
 let sink = 0;
@@ -26,7 +28,24 @@ const handler = (n) => (value) => {
   sink += value + n;
 };
 
+// One case per process (bench/support/isolate.js): a section's heading goes
+// with the process of its first case.
+let heading = '';
+let sectionFirst = 0;
+let cases = 0;
+const section = (text) => {
+  heading = text;
+  sectionFirst = cases;
+};
+const isMine = () => {
+  const index = cases++;
+  if (!selected()) return false;
+  if (index === sectionFirst) console.log(heading);
+  return true;
+};
+
 const measure = (name, fn, pick) => {
+  if (!isMine()) return;
   for (let i = 0; i < 200_000; i++) fn(pick(i), i);
   let iterations = 0;
   const start = process.hrtime.bigint();
@@ -142,25 +161,37 @@ const last = () => PACKETS[PACKETS.length - 1];
 const mixed = (i) => PACKETS[i % PACKETS.length];
 const clusterMix = (i) => CLUSTER[i % CLUSTER.length];
 
-console.log(`Dispatch benchmark — Node ${process.version}\n`);
+// The parent ran every case in a child of its own: nothing is left for it.
+if (isolate(__filename)) process.exit();
 
-console.log('6 cluster envelope types, uniform mix (src/rpc/cluster.js #receive)');
+if (isLeader) {
+  console.log(`Dispatch benchmark — Node ${process.version}\n`);
+  // A table keyed on a peer-controlled string answers inherited names unless
+  // the prototype is severed — the reason PACKET_TABLE above is `__proto__: null`.
+  const NAIVE = { call: P[0] };
+  console.log(
+    `naive table: typeof TABLE['toString'] === '${typeof NAIVE.toString}' ` +
+      `| null-proto table: '${typeof PACKET_TABLE.toString}'\n`,
+  );
+}
+
+section('6 cluster envelope types, uniform mix (src/rpc/cluster.js #receive)');
 measure('switch', clusterSwitch, clusterMix);
 measure('object table (__proto__: null)', clusterTable, clusterMix);
 measure('frozen object table', clusterFrozen, clusterMix);
 measure('Map table', clusterMap, clusterMix);
 
-console.log('\n9 packet types, ALWAYS FIRST branch (chain best case)');
+section('\n9 packet types, ALWAYS FIRST branch (chain best case)');
 measure('if/else if chain', packetChain, first);
 measure('switch', packetSwitch, first);
 measure('object table', packetTable, first);
 
-console.log('\n9 packet types, ALWAYS LAST branch (chain worst case)');
+section('\n9 packet types, ALWAYS LAST branch (chain worst case)');
 measure('if/else if chain', packetChain, last);
 measure('switch', packetSwitch, last);
 measure('object table', packetTable, last);
 
-console.log('\n9 packet types, uniform mix (src/rpc/dispatcher.js handlePacket)');
+section('\n9 packet types, uniform mix (src/rpc/dispatcher.js handlePacket)');
 measure('if/else if chain', packetChain, mixed);
 measure('switch', packetSwitch, mixed);
 measure('object table', packetTable, mixed);
@@ -220,6 +251,7 @@ const tableOnly = (t) => {
 // `pick` reads through an array so the discriminant is not a foldable literal —
 // with a constant, V8 elides the whole chain and reports a fantasy number.
 const measureOnly = (name, fn, pick) => {
+  if (!isMine()) return;
   for (let i = 0; i < 2_000_000; i++) sink += fn(pick(i));
   const iterations = 20_000_000;
   const start = process.hrtime.bigint();
@@ -231,27 +263,19 @@ const measureOnly = (name, fn, pick) => {
 const firstOnly = (i) => PACKETS[i & 0];
 const lastOnly = (i) => PACKETS[8 - (i & 0)];
 
-console.log('\ndispatch only, no handler call — FIRST branch');
+section('\ndispatch only, no handler call — FIRST branch');
 measureOnly('if/else if chain', chainOnly, firstOnly);
 measureOnly('switch', switchOnly, firstOnly);
 measureOnly('object table', tableOnly, firstOnly);
 
-console.log('\ndispatch only, no handler call — LAST branch');
+section('\ndispatch only, no handler call — LAST branch');
 measureOnly('if/else if chain', chainOnly, lastOnly);
 measureOnly('switch', switchOnly, lastOnly);
 measureOnly('object table', tableOnly, lastOnly);
 
-console.log('\ndispatch only, no handler call — uniform mix');
+section('\ndispatch only, no handler call — uniform mix');
 measureOnly('if/else if chain', chainOnly, mixed);
 measureOnly('switch', switchOnly, mixed);
 measureOnly('object table', tableOnly, mixed);
-
-// A table keyed on a peer-controlled string answers inherited names unless the
-// prototype is severed — the reason PACKET_TABLE above is `__proto__: null`.
-const NAIVE = { call: P[0] };
-console.log(
-  `\nnaive table: typeof TABLE['toString'] === '${typeof NAIVE.toString}' ` +
-    `| null-proto table: '${typeof PACKET_TABLE.toString}'`,
-);
 
 if (sink === Number.MIN_SAFE_INTEGER) console.log('unreachable', sink);

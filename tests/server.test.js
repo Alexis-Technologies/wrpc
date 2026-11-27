@@ -2,7 +2,7 @@
 
 const timers = require('node:timers/promises');
 const { randomUUID } = require('node:crypto');
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { Server, defineRouter, procedure } = require('../index.js');
@@ -20,6 +20,10 @@ process.emitWarning = (warning, type, ...args) => {
   if (type === 'ExperimentalWarning') return;
   emitWarning(warning, type, ...args);
 };
+// Put back for whatever runs after this file in the same process.
+after(() => {
+  process.emitWarning = emitWarning;
+});
 
 const router = defineRouter({
   test: {
@@ -37,17 +41,21 @@ describe('Server / calls', () => {
   const options = {
     router,
     host: 'localhost',
-    port: 8003,
+    // Port 0: a fixed port collides with whatever else listens there; the
+    // bound one is read back after listen().
+    port: 0,
     protocol: 'http',
     logger: false,
     timeouts: { bind: 100 },
   };
 
-  let server;
+  let server = null;
+  let port = 0;
 
   beforeEach(async () => {
     server = new Server(options);
     await server.listen();
+    port = server.address().port;
   });
 
   afterEach(async () => {
@@ -58,7 +66,7 @@ describe('Server / calls', () => {
     const id = randomUUID();
     const args = { name: 'Max' };
     const packet = { type: 'call', id, method: 'test/hello', args };
-    const res = await fetch(`http://${options.host}:${options.port}/api`, {
+    const res = await fetch(`http://${options.host}:${port}/api`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(packet),
@@ -74,7 +82,7 @@ describe('Server / calls', () => {
     const id = randomUUID();
     const args = { name: 'Max' };
     const packet = { type: 'call', id, method: 'test/hello', args };
-    const socket = new ProtocolClient(`ws://${options.host}:${options.port}`);
+    const socket = new ProtocolClient(`ws://${options.host}:${port}`);
     await new Promise((resolve) => socket.once('open', resolve));
     socket.send(JSON.stringify(packet));
     const resPacket = await new Promise((resolve) => socket.once('message', resolve));
@@ -89,7 +97,7 @@ describe('Server / calls', () => {
     const id = randomUUID();
     const args = { name: 'Max' };
     const packet = { type: 'call', id, method: 'test/hello', args };
-    const socket = new ProtocolClient(`ws://${options.host}:${options.port}/api`);
+    const socket = new ProtocolClient(`ws://${options.host}:${port}/api`);
     await new Promise((resolve) => socket.once('open', resolve));
     socket.send(JSON.stringify(packet));
     const resPacket = await new Promise((resolve) => socket.once('message', resolve));
@@ -101,31 +109,32 @@ describe('Server / calls', () => {
   });
 
   it('should respond 404 on a non-/api HTTP path instead of hanging', async () => {
-    const res = await fetch(`http://${options.host}:${options.port}/health`);
+    const res = await fetch(`http://${options.host}:${port}/health`);
     assert.strictEqual(res.status, 404);
     const packet = await res.json();
     assert.strictEqual(packet.type, 'callback');
     assert.strictEqual(packet.error.code, 404);
   });
 
-  it('should listen() without the timeouts option', async () => {
+  it('should listen() without the timeouts option', async (t) => {
     const extra = new Server({ router, host: 'localhost', port: 0, protocol: 'http', logger: false });
     await extra.listen();
-    await extra.close();
+    t.after(() => extra.close());
   });
 
-  it('should take the listen() retry path without the timeouts option', async () => {
+  it('should take the listen() retry path without the timeouts option', async (t) => {
     // The bind-retry handler used to dereference options.timeouts.bind, so a
     // server without `timeouts` crashed with a TypeError on EADDRINUSE.
     const blocker = new Server({ router, host: 'localhost', port: 0, protocol: 'http', logger: false });
     await blocker.listen();
-    const { port } = blocker.address();
-    const extra = new Server({ router, host: 'localhost', port, protocol: 'http', logger: false });
+    t.after(() => blocker.close());
+    const { port: taken } = blocker.address();
+    const extra = new Server({ router, host: 'localhost', port: taken, protocol: 'http', logger: false });
+    t.after(() => extra.close());
     const listening = extra.listen();
     await timers.setTimeout(50); // first bind fails with EADDRINUSE, a retry is scheduled
     await blocker.close(); // free the port so the scheduled retry succeeds
     await listening;
-    await extra.close();
   });
 
   it('should reject a websocket upgrade on an invalid path', async () => {
@@ -133,7 +142,7 @@ describe('Server / calls', () => {
     // so the engine aborts the upgrade with 403 Forbidden.
     const res = await ProtocolClient.attemptHandshake({
       host: options.host,
-      port: options.port,
+      port,
       path: '/invalid',
       headers: {
         Upgrade: 'websocket',
@@ -146,7 +155,7 @@ describe('Server / calls', () => {
     assert.strictEqual(parseStatusCode(res.statusLine), 403);
   });
 
-  it('should relocate the websocket endpoint with ws.path (regression: default gate 403ed it)', async () => {
+  it('should relocate the websocket endpoint with ws.path (regression: default gate 403ed it)', async (t) => {
     const custom = new Server({
       router,
       host: 'localhost',
@@ -156,9 +165,10 @@ describe('Server / calls', () => {
       ws: { path: '/socket' },
     });
     await custom.listen();
-    const { port } = custom.address();
+    t.after(() => custom.close());
+    const { port: customPort } = custom.address();
 
-    const socket = new ProtocolClient(`ws://localhost:${port}/socket`);
+    const socket = new ProtocolClient(`ws://localhost:${customPort}/socket`);
     const opened = await new Promise((resolve) => {
       socket.on('open', () => resolve(true));
       socket.on('close', () => resolve(false));
@@ -174,7 +184,7 @@ describe('Server / calls', () => {
     // the engine's own path filter still rejects everything else
     const res = await ProtocolClient.attemptHandshake({
       host: 'localhost',
-      port,
+      port: customPort,
       path: '/api',
       headers: {
         Upgrade: 'websocket',
@@ -185,7 +195,6 @@ describe('Server / calls', () => {
       timeoutMs: 600,
     });
     assert.strictEqual(parseStatusCode(res.statusLine), 404);
-    await custom.close();
   });
 });
 

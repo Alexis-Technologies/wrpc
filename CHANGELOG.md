@@ -313,6 +313,25 @@ narrower promise — see
 - **CI** runs the test job on the exact `engines` floor, Node 22.0.0,
   besides 22, 24 and 26, and a `ci-success` job fails when any other job
   failed, was cancelled or was skipped.
+- **`pnpm check:dts`** runs the repo's own TypeScript (7.x) over every
+  hand-written `.d.ts` (`tsconfig.dts.json`, strict, node types), in CI's
+  lint job and in `prepublishOnly`; `tsd` checks the tests with 5.9.
+- **`package.json` says `"type": "commonjs"`**, and the lint and format
+  targets include the root `index.js`.
+- **CI** cancels a run a newer push to the same ref made moot, and lets
+  every Node line of the test matrix finish when one fails.
+- **The suites close what they open the moment they open it** (`t.after`
+  right after a server listens: the ws frames, handshake and server suites,
+  `Server`'s, the uws engines, the rooms binders), wait on events rather
+  than sleeps before a positive assertion, share one `waitFor` and one
+  `keepAlive`, require every builtin as `node:` (a guard holds it), and
+  hand an adapter suite's `skip` to every case. Under
+  `WRPC_INTEGRATION_STRICT` a uws, fastify or express that does not load
+  fails the adapter suites instead of skipping them.
+- **The benchmarks** report the median of five windows with its spread,
+  keep each case's result, await only promises, warm every hand-written
+  timer, and run each case of the four that `src/` cites in a process of
+  its own (`bench/support/isolate.js`); `bench/semaphore.js` is new.
 - **`prepublishOnly`** chains every gate CI's always-on jobs run.
 - **The CHANGELOG** has a link block for every version, and the 2.0
   "Migrating from 1.0" block is the section `Upgrading from 1.0`.

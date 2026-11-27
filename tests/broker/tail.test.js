@@ -296,7 +296,7 @@ describe('TopicTails', () => {
       assert.strictEqual(tails.size, 0, 'return() before next() let go');
       const thrown = tails.read('t');
       await thrown.ready;
-      await assert.rejects(thrown[Symbol.asyncIterator]().throw(new Error('gone')));
+      await assert.rejects(thrown[Symbol.asyncIterator]().throw(new Error('gone')), /^Error: gone$/);
       assert.strictEqual(tails.size, 0, 'throw() before next() let go');
       // A read whose iterator was taken but never advanced still lets go
       // through its signal.

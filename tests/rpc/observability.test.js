@@ -58,7 +58,7 @@ describe('logger', () => {
       const client = await WrpcClient.connect(url, { reconnect: false });
       await client.load('probe');
       await client.api.probe.echo({ ok: 1 });
-      await assert.rejects(client.api.probe.boom());
+      await assert.rejects(client.api.probe.boom(), (error) => error.name === 'WrpcError' && error.code === 500);
       await client.close();
     });
 
@@ -116,7 +116,7 @@ describe('logger', () => {
       const client = await WrpcClient.connect(url, { reconnect: false });
       await client.load('probe');
       await client.api.probe.echo({ ok: 1 });
-      await assert.rejects(client.api.probe.boom());
+      await assert.rejects(client.api.probe.boom(), (error) => error.name === 'WrpcError' && error.code === 500);
       await client.close();
     } finally {
       globalThis.console = original;
@@ -158,7 +158,7 @@ describe('logger', () => {
       try {
         const client = await WrpcClient.connect(url, { reconnect: false });
         await client.load('probe');
-        await assert.rejects(client.api.probe.boom());
+        await assert.rejects(client.api.probe.boom(), (error) => error.name === 'WrpcError' && error.code === 500);
         await client.close();
       } finally {
         globalThis.console = original;

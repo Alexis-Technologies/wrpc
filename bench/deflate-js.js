@@ -64,6 +64,9 @@ const report = (name, count, elapsedMs, extra = '') =>
   );
 
 const timeSync = (label, fn, iterations, size) => {
+  // Warmed first, an eighth of the run: the first calls are the
+  // interpreter's and the JIT's, not the steady state the row reports.
+  for (let i = 0; i < Math.ceil(iterations / 8); i++) fn();
   let out = 0;
   const started = performance.now();
   for (let i = 0; i < iterations; i++) out += fn().length;
@@ -72,6 +75,7 @@ const timeSync = (label, fn, iterations, size) => {
 };
 
 const timeAsync = async (label, fn, iterations, size) => {
+  for (let i = 0; i < Math.ceil(iterations / 8); i++) await fn();
   let out = 0;
   const started = performance.now();
   for (let i = 0; i < iterations; i++) out += (await fn()).length;

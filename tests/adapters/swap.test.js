@@ -10,7 +10,7 @@ const { runAdapterSpec } = require('./spec.js');
 // is missing reports as skipped rather than failing the run.
 describe('adapter swap', () => {
   for (const entry of buildBoots()) {
-    describe(entry.name, { skip: entry.skip ?? false }, () => {
+    describe(entry.name, () => {
       runAdapterSpec(entry);
     });
   }

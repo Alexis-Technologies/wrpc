@@ -50,6 +50,16 @@ const rawUpgrade = (port, frames) => {
   return { socket, closed };
 };
 
+// The teardown of a server a test boots by hand, registered the moment it
+// listens: a closing line at the end of the test never ran when an
+// assertion failed first.
+const closeOnEnd = (t, httpServer, wsServer = null) =>
+  t.after(async () => {
+    wsServer?.close();
+    httpServer.closeAllConnections();
+    await new Promise((resolve) => httpServer.close(resolve));
+  });
+
 // What every shell does: an engine bound to an http server, and no 'error'
 // listener on the WebsocketServer.
 const bootBound = async (t, options = {}) => {
@@ -144,14 +154,15 @@ describe('WebsocketServer', () => {
     peer.close();
   });
 
-  it('should accept a new connection after a socket error', async () => {
+  it('should accept a new connection after a socket error', async (t) => {
     const httpServer = http.createServer();
-    void new WebsocketServer({
+    const wsServer = new WebsocketServer({
       server: httpServer,
       pingInterval: 50,
     });
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    closeOnEnd(t, httpServer, wsServer);
     const port = httpServer.address().port;
 
     const first = new ProtocolClient(`ws://localhost:${port}`);
@@ -168,14 +179,14 @@ describe('WebsocketServer', () => {
 
     assert.strictEqual(opened, true);
     second.close();
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should terminate a dead peer on heartbeat and keep pinging others', async () => {
+  it('should terminate a dead peer on heartbeat and keep pinging others', async (t) => {
     const httpServer = http.createServer();
-    void new WebsocketServer({ server: httpServer, pingInterval: 50 });
+    const wsServer = new WebsocketServer({ server: httpServer, pingInterval: 50 });
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    closeOnEnd(t, httpServer, wsServer);
     const port = httpServer.address().port;
 
     // ProtocolClient never answers pings, so the server must terminate it
@@ -191,7 +202,6 @@ describe('WebsocketServer', () => {
     await new Promise((resolve) => live.on('ping', resolve));
 
     live.close();
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
   it('should survive a heartbeat tick on a peer with no close event', (t) => {
@@ -269,7 +279,7 @@ describe('WebsocketServer', () => {
     assert.throws(() => new WebsocketServer({ server: null }), /options\.server must be an http\.Server/);
   });
 
-  it('should drive upgrades by handleUpgrade without a server', async () => {
+  it('should drive upgrades by handleUpgrade without a server', async (t) => {
     // Middleware adapters (express) own the 'upgrade' listener themselves.
     const wsServer = new WebsocketServer({ pingInterval: 50 });
     const httpServer = http.createServer();
@@ -277,6 +287,7 @@ describe('WebsocketServer', () => {
       wsServer.handleUpgrade(req, socket, head);
     });
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    closeOnEnd(t, httpServer, wsServer);
     const { port } = httpServer.address();
 
     const connected = new Promise((resolve) => wsServer.once('connection', resolve));
@@ -289,13 +300,12 @@ describe('WebsocketServer', () => {
     assert.strictEqual((await echoed).toString(), 'manual upgrade');
 
     peer.close();
-    wsServer.close();
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should answer 500 from handleUpgrade when the handshake throws — with no error listener too', async () => {
+  it('should answer 500 from handleUpgrade when the handshake throws — with no error listener too', async (t) => {
     const { writer, find } = recorder();
     const quiet = new WebsocketServer({ pingInterval: 50, logger: writer });
+    t.after(() => quiet.close());
     const answered = [];
     const throwing = {
       get httpVersion() {
@@ -314,9 +324,9 @@ describe('WebsocketServer', () => {
     assert.match(answered.join(''), /^HTTP\/1\.1 500 Internal Server Error/);
     assert.strictEqual(find('ws.upgrade').level, 'error');
     assert.strictEqual(find('ws.upgrade').err.message, 'boom');
-    quiet.close();
 
     const wsServer = new WebsocketServer({ pingInterval: 50 });
+    t.after(() => wsServer.close());
     wsServer.on('error', () => {}); // a listener still hears it
     const written = [];
     const socket = {
@@ -334,34 +344,31 @@ describe('WebsocketServer', () => {
     };
     wsServer.handleUpgrade(req, socket, Buffer.alloc(0));
     assert.match(written.join(''), /^HTTP\/1\.1 500 Internal Server Error/);
-    wsServer.close();
   });
 
-  it('should forward http server errors when it has its own listeners', async () => {
+  it('should forward http server errors when it has its own listeners', async (t) => {
     const httpServer = http.createServer();
     const wsServer = new WebsocketServer({ server: httpServer, pingInterval: 50 });
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    closeOnEnd(t, httpServer, wsServer);
 
     const forwarded = new Promise((resolve) => wsServer.once('error', resolve));
     httpServer.emit('error', new Error('boom'));
     const error = await forwarded;
     assert.strictEqual(error.message, 'boom');
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  it('should not forward http server errors already handled elsewhere', async () => {
+  it('should not forward http server errors already handled elsewhere', async (t) => {
     const httpServer = http.createServer();
     httpServer.on('error', () => {}); // an external listener: httpHasOtherListeners = true
-    void new WebsocketServer({ server: httpServer, pingInterval: 50 });
+    const wsServer = new WebsocketServer({ server: httpServer, pingInterval: 50 });
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    closeOnEnd(t, httpServer, wsServer);
 
     // wsServer has no 'error' listeners of its own. Node's EventEmitter throws
     // synchronously on an 'error' emit with zero listeners, so if the guard in
     // #init forwarded here anyway, this call would throw.
     assert.doesNotThrow(() => httpServer.emit('error', new Error('already handled')));
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 
   it('should hand one connection a bounded number of messages a turn by default', async (t) => {

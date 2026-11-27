@@ -50,12 +50,17 @@ globalThis.WebSocket = MockWebSocket;
 const { WrpcClient, WrpcClientProxy } = require('../src/client.js');
 const { encodeAttachments, decodeAttachments } = require('../src/attachments.js');
 const { chunkEncode, chunkDecode } = require('../src/chunks.js');
+const { waitFor } = require('./helpers/wait.js');
 
 const { emitWarning } = process;
 process.emitWarning = (warning, type, ...args) => {
   if (type === 'ExperimentalWarning') return;
   emitWarning(warning, type, ...args);
 };
+// Put back for whatever runs after this file in the same process.
+after(() => {
+  process.emitWarning = emitWarning;
+});
 
 const createSwEnv = () => {
   const listeners = [];
@@ -77,10 +82,7 @@ const createSwEnv = () => {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 // A port hop is a macrotask or two: poll for what should arrive.
-const until = async (predicate) => {
-  for (let i = 0; i < 200 && !predicate(); i++) await tick();
-  assert.ok(predicate(), 'never arrived');
-};
+const until = (predicate) => waitFor(predicate, 'never arrived');
 
 describe('WrpcClientProxy', () => {
   let savedSelf;
@@ -654,11 +656,13 @@ describe('WrpcClientProxy', () => {
     const pages = [new MessageChannel(), new MessageChannel(), new MessageChannel()];
     const received = pages.map(() => []);
     try {
-      pages.forEach(({ port1, port2 }, i) => {
+      // A loop, not forEach: each page's handler writes into the shared list.
+      for (let i = 0; i < pages.length; i++) {
+        const { port1, port2 } = pages[i];
         globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-        port1.onmessage = (e) => received[i].push(JSON.parse(e.data));
+        port1.onmessage = (event) => received[i].push(JSON.parse(event.data));
         port1.start();
-      });
+      }
       // Three tabs, three first calls in one turn: three upstream sockets before.
       pages.forEach(({ port1 }, i) => {
         port1.postMessage(JSON.stringify({ type: 'call', id: `c${i}`, method: 'x/y', args: {} }));
@@ -699,11 +703,13 @@ describe('WrpcClientProxy', () => {
     const pages = [new MessageChannel(), new MessageChannel()];
     const got = pages.map(() => []);
     try {
-      pages.forEach(({ port1, port2 }, i) => {
+      // A loop, not forEach: each page's handler writes into the shared list.
+      for (let i = 0; i < pages.length; i++) {
+        const { port1, port2 } = pages[i];
         globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-        port1.onmessage = (e) => got[i].push(e.data);
+        port1.onmessage = (event) => got[i].push(event.data);
         port1.start();
-      });
+      }
       await proxy.open();
       const upstream = MockWebSocket.last;
       // The download's call, and its answer naming the stream.
@@ -866,11 +872,13 @@ describe('WrpcClientProxy', () => {
     const pages = [new MessageChannel(), new MessageChannel()];
     const got = pages.map(() => []);
     try {
-      pages.forEach(({ port1, port2 }, i) => {
+      // A loop, not forEach: each page's handler writes into the shared list.
+      for (let i = 0; i < pages.length; i++) {
+        const { port1, port2 } = pages[i];
         globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-        port1.onmessage = (e) => got[i].push(e.data);
+        port1.onmessage = (event) => got[i].push(event.data);
         port1.start();
-      });
+      }
       await proxy.open();
       const upstream = MockWebSocket.last;
       upstream.dispatchMessage(
@@ -914,11 +922,13 @@ describe('WrpcClientProxy', () => {
     const pages = [new MessageChannel(), new MessageChannel()];
     const got = pages.map(() => []);
     try {
-      pages.forEach(({ port1, port2 }, i) => {
+      // A loop, not forEach: each page's handler writes into the shared list.
+      for (let i = 0; i < pages.length; i++) {
+        const { port1, port2 } = pages[i];
         globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-        port1.onmessage = (e) => got[i].push(e.data);
+        port1.onmessage = (event) => got[i].push(event.data);
         port1.start();
-      });
+      }
       await proxy.open();
       const upstream = MockWebSocket.last;
       const sentUp = () => (upstream.sentData ?? []).filter((data) => typeof data === 'string').map(JSON.parse);
@@ -1202,11 +1212,13 @@ describe('WrpcClientProxy', () => {
     const pages = [new MessageChannel(), new MessageChannel()];
     const got = pages.map(() => []);
     try {
-      pages.forEach(({ port1, port2 }, i) => {
+      // A loop, not forEach: each page's handler writes into the shared list.
+      for (let i = 0; i < pages.length; i++) {
+        const { port1, port2 } = pages[i];
         globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-        port1.onmessage = (e) => got[i].push(e.data);
+        port1.onmessage = (event) => got[i].push(event.data);
         port1.start();
-      });
+      }
       await proxy.open();
       const upstream = MockWebSocket.last;
       upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's-9', name: 'live.bin', size: 1024 }));

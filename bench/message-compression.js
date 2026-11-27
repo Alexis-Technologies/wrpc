@@ -45,6 +45,9 @@ const encoder = new TextEncoder();
 
 const syncRound = (label, codec, text, iterations) => {
   const bytes = encoder.encode(text);
+  // Warmed first, an eighth of the run: the first calls are the
+  // interpreter's and the JIT's, not the steady state the row reports.
+  for (let i = 0; i < Math.ceil(iterations / 8); i++) codec.decode(codec.encode(bytes), bytes.length);
   let out = 0;
   let started = performance.now();
   for (let i = 0; i < iterations; i++) out += codec.encode(bytes).length;
@@ -60,6 +63,7 @@ const syncRound = (label, codec, text, iterations) => {
 
 const asyncRound = async (label, codec, text, iterations) => {
   const bytes = encoder.encode(text);
+  for (let i = 0; i < Math.ceil(iterations / 8); i++) await codec.decode(await codec.encode(bytes), bytes.length);
   let started = performance.now();
   let out = 0;
   for (let i = 0; i < iterations; i++) out += (await codec.encode(bytes)).length;

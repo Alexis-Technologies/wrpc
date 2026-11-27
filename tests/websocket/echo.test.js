@@ -8,7 +8,7 @@ const { WebsocketServer } = require('#ws');
 const { ProtocolClient } = require('./protocolClient.js');
 
 describe('WebsocketServer echo', () => {
-  it('should echo messages', async () => {
+  it('should echo messages', async (t) => {
     const httpServer = http.createServer();
     const tinyWsServer = new WebsocketServer({ server: httpServer });
 
@@ -17,6 +17,7 @@ describe('WebsocketServer echo', () => {
     });
 
     await new Promise((resolve) => httpServer.listen(0, resolve));
+    t.after(() => new Promise((resolve) => httpServer.close(resolve)));
     const port = httpServer.address().port;
 
     const client = new ProtocolClient(`ws://localhost:${port}`);
@@ -30,7 +31,5 @@ describe('WebsocketServer echo', () => {
     });
 
     assert.strictEqual(received, 'Echo: Hello tinyWS');
-
-    await new Promise((resolve) => httpServer.close(resolve));
   });
 });

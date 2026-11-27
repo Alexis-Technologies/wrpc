@@ -61,6 +61,7 @@ describe('RoomsBackplane', () => {
       binder.start();
       await settle();
     });
+    after(() => binder.close());
 
     it('should hold the broadcast channel from the start', () => {
       assert.deepStrictEqual(backplane.state.subscribed, [BROADCAST_CHANNEL]);
@@ -253,6 +254,7 @@ describe('RoomsBackplane', () => {
       binder.start();
       await settle();
     });
+    after(() => binder.close());
     const feed = (envelope) => backplane.state.handlers.get(BROADCAST_CHANNEL)(JSON.stringify(envelope));
 
     it('should deliver a foreign envelope locally', () => {
@@ -506,7 +508,10 @@ describe('RoomsBackplane', () => {
     });
   });
 
-  it('should disarm a subscribe retry on close(), and subscribe nothing after it', async () => {
+  it('should disarm a subscribe retry on close(), and subscribe nothing after it', async (t) => {
+    // The retry window is up to half a second of jittered backoff: waited out
+    // on mocked timers, where it cost 700 ms of real time.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     let attempts = 0;
     const backplane = createBackplane({
       subscribe() {
@@ -524,7 +529,8 @@ describe('RoomsBackplane', () => {
     // The retry was armed for up to half a second after the failure. It used
     // to fire after close: a subscribe on a backplane already shut, and its
     // outcome logged into a finished shutdown.
-    await timers.setTimeout(700);
+    t.mock.timers.tick(700);
+    await settle();
     assert.strictEqual(attempts, 1, 'no retry after close');
     assert.strictEqual(errors.length, said, 'and nothing more is logged');
     assert.strictEqual(binder.healthy, true, 'nothing is left pending');

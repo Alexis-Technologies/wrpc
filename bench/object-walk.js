@@ -34,6 +34,7 @@
 'use strict';
 
 const { bench } = require('./support/harness.js');
+const { isolate, isLeader } = require('./support/isolate.js');
 
 const HEADERS = {
   'Content-Type': 'application/json',
@@ -115,7 +116,7 @@ const snapshotKeys = (rooms) => {
 };
 
 const main = async () => {
-  console.log(`Object walk benchmark — Node ${process.version}\n`);
+  if (isLeader) console.log(`Object walk benchmark — Node ${process.version}\n`);
   await bench('headers (7 keys) — for...in', () => headersForIn(HEADERS));
   await bench('headers (7 keys) — Object.entries', () => headersEntries(HEADERS));
   await bench('headers (7 keys) — Object.keys + index', () => headersKeys(HEADERS));
@@ -133,7 +134,10 @@ const main = async () => {
   if (sink < 0) console.log(sink);
 };
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+// One case per process (bench/support/isolate.js).
+if (!isolate(__filename)) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

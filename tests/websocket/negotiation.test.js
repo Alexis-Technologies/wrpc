@@ -1,11 +1,12 @@
 'use strict';
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { WebsocketServer } = require('#ws');
 const { ProtocolClient } = require('./protocolClient.js');
+const { keepAlive } = require('../helpers/wait.js');
 
 const KEY = Buffer.from('0123456789abcdef').toString('base64');
 
@@ -25,9 +26,7 @@ const parseStatusCode = (statusLine) => parseInt(statusLine.split(' ')[1], 10);
 // while `httpServer.close()` is still pending. One ref'd handle for the
 // file's lifetime keeps the runner from calling that a failure — without it
 // the first test aborts and the other nine cascade as cancelledByParent.
-let loopHold = null;
-before(() => void (loopHold = setInterval(() => {}, 1000)));
-after(() => clearInterval(loopHold));
+keepAlive();
 
 const withServer = async (options, run) => {
   const httpServer = http.createServer();
