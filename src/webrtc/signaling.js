@@ -53,6 +53,24 @@ const DEFAULT_PREFIX = 'rtc:';
 const MAX_ROOM_LENGTH = 256;
 const DUPLICATE = ['replace', 'refuse'];
 
+// Ids and instances become Map keys, session tokens, log fields and URLs
+// on every peer: bounded the same way (ids.js — one number for both halves).
+const isId = isPeerId;
+
+// What a peer says about itself at join lands beside `peer`, `room` and
+// `claims` in every other peer's session data (PeerHost.attach writes those
+// over it): the three names are not a peer's to say.
+const RESERVED_JOIN_DATA = ['peer', 'room', 'claims'];
+
+// Ceilings on what one connection can make the relay hold or do, on by
+// default (the unit is new): rooms joined at once, the bytes of a join's
+// `data` (replicated to every instance), the bytes of a relayed signal,
+// and the room lookups in flight for signals to peers this instance does
+// not hold. `false` switches one off.
+const DEFAULT_LIMITS = { maxRooms: 32, maxDataBytes: 4096, maxSignalBytes: 65536, maxResolves: 4 };
+// The room lookups one unit may have in flight, whoever started them.
+const MAX_LOOKUPS = 256;
+
 // Rooms are peer-named. Bounded, non-empty, and never a string that could
 // address a prototype when used as an object key downstream.
 const checkRoom = (room) => {
@@ -61,10 +79,6 @@ const checkRoom = (room) => {
   }
   return room;
 };
-
-// Ids and instances become Map keys, session tokens, log fields and URLs
-// on every peer: bounded the same way (ids.js — one number for both halves).
-const isId = isPeerId;
 
 const checkId = (value, what) => {
   if (!isId(value)) {
@@ -96,11 +110,6 @@ const inputRoom = (args) => {
   return { room: checkRoom(args.room) };
 };
 
-// What a peer says about itself at join lands beside `peer`, `room` and
-// `claims` in every other peer's session data (PeerHost.attach writes those
-// over it): the three names are not a peer's to say.
-const RESERVED_JOIN_DATA = ['peer', 'room', 'claims'];
-
 const inputJoin = (args) => {
   const { room } = inputRoom(args);
   const data = args.data === undefined ? null : args.data;
@@ -125,15 +134,6 @@ const inputAssert = (args) => {
   if (fingerprint === null) throw new ArgumentError("fingerprint must look like 'sha-256 AB:CD:...'");
   return { fingerprint };
 };
-
-// Ceilings on what one connection can make the relay hold or do, on by
-// default (the unit is new): rooms joined at once, the bytes of a join's
-// `data` (replicated to every instance), the bytes of a relayed signal,
-// and the room lookups in flight for signals to peers this instance does
-// not hold. `false` switches one off.
-const DEFAULT_LIMITS = { maxRooms: 32, maxDataBytes: 4096, maxSignalBytes: 65536, maxResolves: 4 };
-// The room lookups one unit may have in flight, whoever started them.
-const MAX_LOOKUPS = 256;
 
 const normalizeLimits = (limits) => {
   if (limits === null || limits === undefined) return { ...DEFAULT_LIMITS };
@@ -660,9 +660,9 @@ const createSignalingHooks = (options = {}) => {
 };
 
 module.exports = {
-  createSignalingUnit,
-  createSignalingHooks,
+  MAX_ID_LENGTH,
   DEFAULT_SIGNALING_NAME: DEFAULT_NAME,
   DEFAULT_SIGNALING_PREFIX: DEFAULT_PREFIX,
-  MAX_ID_LENGTH,
+  createSignalingUnit,
+  createSignalingHooks,
 };

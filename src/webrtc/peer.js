@@ -27,6 +27,12 @@ const { isRtcAdapter, createW3cAdapter } = require('./port.js');
 const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
 const { normalizeWaterMarks, normalizeBackpressure } = require('./transport.js');
 const { PeerLink, normalizeRedial, REDIAL } = require('./peerLink.js');
+const { PeerHost } = require('./host.js');
+const { isSignaler, isSignalMessage } = require('./signaler.js');
+const { isPeerId } = require('./ids.js');
+const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError, outcomeOf } = require('./assertions.js');
+const { normalizeCompression } = require('../compression/index.js');
+const { ConfigError, ArgumentError, ClosedError } = require('../errors.js');
 
 // Signals held for a peer whose accept() has not answered yet; past it
 // they are dropped, said once.
@@ -37,12 +43,6 @@ const MAX_PENDING_SIGNALS = 64;
 // redial that starts meanwhile would re-open what the application ended.
 // A goodbye is one signaling hop; this is many.
 const GOODBYE_HOLD = 5000;
-const { PeerHost } = require('./host.js');
-const { isSignaler, isSignalMessage } = require('./signaler.js');
-const { isPeerId } = require('./ids.js');
-const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError, outcomeOf } = require('./assertions.js');
-const { normalizeCompression } = require('../compression/index.js');
-const { ConfigError, ArgumentError, ClosedError } = require('../errors.js');
 
 class WrpcPeer extends Emitter {
   #signaler;
@@ -636,4 +636,4 @@ class WrpcPeer extends Emitter {
   }
 }
 
-module.exports = { WrpcPeer, PeerLink, normalizeRedial, REDIAL };
+module.exports = { PeerLink, normalizeRedial, REDIAL, WrpcPeer };

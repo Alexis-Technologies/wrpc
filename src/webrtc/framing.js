@@ -56,6 +56,11 @@ const MIN_NEGOTIABLE_SIZE = 1024;
 // under 1024.
 const DEFAULT_MAX_REASSEMBLY = 16 * 1024 * 1024;
 const MIN_MAX_FRAGMENTS = 1024;
+
+const TEXT_ENCODER = new TextEncoder();
+// fatal: an invalid byte sequence in a text frame is a protocol error, not
+// a U+FFFD the JSON parser then trips over one layer up.
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 const defaultMaxFragments = (maxReassembly) => Math.max(MIN_MAX_FRAGMENTS, Math.ceil(maxReassembly / 1024));
 
 /**
@@ -93,11 +98,6 @@ const checkMessageSize = (value, label) => {
     );
   }
 };
-
-const TEXT_ENCODER = new TextEncoder();
-// fatal: an invalid byte sequence in a text frame is a protocol error, not
-// a U+FFFD the JSON parser then trips over one layer up.
-const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 const toBytes = (input) => {
   if (input instanceof Uint8Array) return input;
@@ -322,6 +322,7 @@ class FrameDecoder {
 }
 
 module.exports = {
+  FramingError,
   KIND_TEXT,
   KIND_BINARY,
   FLAG_FIN,
@@ -330,12 +331,11 @@ module.exports = {
   MIN_MESSAGE_SIZE,
   MAX_MESSAGE_SIZE,
   MIN_NEGOTIABLE_SIZE,
-  checkMessageSize,
   DEFAULT_MAX_REASSEMBLY,
-  FramingError,
   negotiateMessageSize,
+  checkMessageSize,
   decodeText,
   FrameEncoder,
-  FrameDecoder,
   SharedFrames,
+  FrameDecoder,
 };

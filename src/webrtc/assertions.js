@@ -34,15 +34,24 @@ const SKEW_MS = 60_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
-// Why a token was refused: `options.code` is `ALX_ERR_ASSERTION_*`, and its
-// last word, lowercased, is the `wrpc.rtc.outcome` it counts as (`outcomeOf`).
-class AssertionError extends Error {
-  constructor(message, options = {}) {
-    super(message, options);
-    this.name = 'AssertionError';
-    this.code = options.code;
-  }
-}
+const BASE64URL = /^[A-Za-z0-9_-]*$/;
+
+const FINGERPRINT = /^([A-Za-z0-9-]+) ((?:[0-9A-Fa-f]{2}:)+[0-9A-Fa-f]{2})$/;
+
+const FINGERPRINT_LINE = /^a=fingerprint:([A-Za-z0-9-]+)[ \t]+((?:[0-9A-Fa-f]{2}:)+[0-9A-Fa-f]{2})[ \t]*$/gm;
+
+// How often a keys() function is asked again for a kid the set does not
+// know: once per interval, however many tokens name unknown kids — a flood
+// of them used to be a flood on the keys endpoint. 0 asks every time.
+const DEFAULT_REFRESH_INTERVAL = 30_000;
+// How long a set a keys() function answered is trusted before it is asked
+// again, whatever the kids: a key the endpoint stopped publishing — revoked
+// — used to be accepted for the life of the verifier.
+const DEFAULT_MAX_AGE = 600_000;
+// How long a keys() that failed is left alone: every verify meanwhile meets
+// the same failure, where a burst of them used to be a burst of asks.
+// Capped by refreshInterval, so 0 still asks every time.
+const FAILED_BACKOFF = 1000;
 
 const refuse = (message, options) => {
   throw new AssertionError(message, options);
@@ -61,8 +70,6 @@ const base64urlEncode = (bytes) => {
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 };
-
-const BASE64URL = /^[A-Za-z0-9_-]*$/;
 
 const base64urlDecode = (text) => {
   if (typeof text !== 'string' || !BASE64URL.test(text)) {
@@ -108,8 +115,6 @@ const parseJws = (token) => {
   return { header, payload, signed: encoder.encode(token.slice(0, second)), signature };
 };
 
-const FINGERPRINT = /^([A-Za-z0-9-]+) ((?:[0-9A-Fa-f]{2}:)+[0-9A-Fa-f]{2})$/;
-
 /** `'sha-256 ab:cd'` -> `'sha-256 AB:CD'`, or null when it is not a fingerprint. */
 const normalizeFingerprint = (value) => {
   if (typeof value !== 'string' || value.length > 512) return null;
@@ -117,8 +122,6 @@ const normalizeFingerprint = (value) => {
   if (!match) return null;
   return `${match[1].toLowerCase()} ${match[2].toUpperCase()}`;
 };
-
-const FINGERPRINT_LINE = /^a=fingerprint:([A-Za-z0-9-]+)[ \t]+((?:[0-9A-Fa-f]{2}:)+[0-9A-Fa-f]{2})[ \t]*$/gm;
 
 /**
  * The ONE certificate fingerprint an SDP declares, normalized like
@@ -154,19 +157,6 @@ const publicJwk = (jwk) => {
   const { d: _d, key_ops: _ops, ...rest } = jwk;
   return rest;
 };
-
-// How often a keys() function is asked again for a kid the set does not
-// know: once per interval, however many tokens name unknown kids — a flood
-// of them used to be a flood on the keys endpoint. 0 asks every time.
-const DEFAULT_REFRESH_INTERVAL = 30_000;
-// How long a set a keys() function answered is trusted before it is asked
-// again, whatever the kids: a key the endpoint stopped publishing — revoked
-// — used to be accepted for the life of the verifier.
-const DEFAULT_MAX_AGE = 600_000;
-// How long a keys() that failed is left alone: every verify meanwhile meets
-// the same failure, where a burst of them used to be a burst of asks.
-// Capped by refreshInterval, so 0 still asks every time.
-const FAILED_BACKOFF = 1000;
 const noop = () => {};
 
 /**
@@ -336,15 +326,25 @@ const createAssertionVerifier = ({
   return { verify };
 };
 
+// Why a token was refused: `options.code` is `ALX_ERR_ASSERTION_*`, and its
+// last word, lowercased, is the `wrpc.rtc.outcome` it counts as (`outcomeOf`).
+class AssertionError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'AssertionError';
+    this.code = options.code;
+  }
+}
+
 module.exports = {
-  AssertionError,
-  outcomeOf,
   ASSERTION_TYP: TYP,
   ASSERTION_ALG: ALG,
   ES256,
   ES256_SIGN,
   MAX_TOKEN_LENGTH,
   SKEW_MS,
+  DEFAULT_REFRESH_INTERVAL,
+  outcomeOf,
   base64urlEncode,
   base64urlDecode,
   isAssertion,
@@ -354,5 +354,5 @@ module.exports = {
   isJwk,
   publicJwk,
   createAssertionVerifier,
-  DEFAULT_REFRESH_INTERVAL,
+  AssertionError,
 };

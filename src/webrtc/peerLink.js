@@ -505,4 +505,4 @@ class PeerLink extends Emitter {
   }
 }
 
-module.exports = { PeerLink, normalizeRedial, REDIAL };
+module.exports = { REDIAL, normalizeRedial, PeerLink };

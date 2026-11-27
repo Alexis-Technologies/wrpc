@@ -87,6 +87,9 @@ const checkRoom = (room) => {
 
 const optionalId = (value) => (isId(value) ? value : null);
 
+/** The client half of createSignalingUnit, over an open or opening WrpcClient. */
+const wrpcSignaler = (client, options) => new WrpcSignaler(client, options);
+
 class WrpcSignaler extends Emitter {
   #client;
   #unit;
@@ -369,15 +372,12 @@ class WrpcSignaler extends Emitter {
   }
 }
 
-/** The client half of createSignalingUnit, over an open or opening WrpcClient. */
-const wrpcSignaler = (client, options) => new WrpcSignaler(client, options);
-
 module.exports = {
-  WrpcSignaler,
-  wrpcSignaler,
+  SIGNAL_MESSAGE_TYPES,
+  isSignalMessage,
   isSignaler,
   hasRoster,
   hasAssertions,
-  isSignalMessage,
-  SIGNAL_MESSAGE_TYPES,
+  wrpcSignaler,
+  WrpcSignaler,
 };

@@ -742,11 +742,11 @@ class RtcLink extends Emitter {
 }
 
 module.exports = {
-  RtcLink,
-  normalizeChannels,
   DEFAULT_CHANNELS,
-  DEFAULT_CONNECT_TIMEOUT,
   MAX_CHANNEL_ID,
+  DEFAULT_CONNECT_TIMEOUT,
   STATES,
   CLOSE_REASONS,
+  normalizeChannels,
+  RtcLink,
 };

@@ -54,8 +54,6 @@ const TEXT_ENCODER = new TextEncoder();
 const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
 const DEFAULT_LOW_WATER_MARK = 256 * 1024;
 
-const positiveInteger = (value) => Number.isInteger(value) && value > 0;
-
 // The cap behind the high-water mark: a message that would put the channel
 // past it — its own buffer, the codec's pending bytes and the message
 // together — is refused and the CHANNEL is closed, locally: over a link
@@ -63,6 +61,10 @@ const positiveInteger = (value) => Number.isInteger(value) && value > 0;
 // channel itself somewhere past 16 MiB of bufferedAmount, with an exception
 // out of send(); this is the same outcome, announced. 0 switches it off.
 const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
+
+const CLOSED_CHANNEL = 'The data channel is closed; pass a factory as `channel` to reconnect';
+
+const positiveInteger = (value) => Number.isInteger(value) && value > 0;
 
 const normalizeBackpressure = (value, label) => {
   if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
@@ -94,8 +96,6 @@ const toBytes = (data) => {
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   throw new ArgumentError('write() takes a string or bytes');
 };
-
-const CLOSED_CHANNEL = 'The data channel is closed; pass a factory as `channel` to reconnect';
 
 const closeChannelQuietly = (channel) => {
   try {
@@ -146,6 +146,11 @@ const activeCompression = (compression, link) => {
 // used to send each other frames the other refused unread. A raw channel has
 // no handshake: there the two applications agree, as on compression.
 const peerReads = (link, bit) => link === null || ((link.peerCaps?.f ?? 0) & bit) !== 0;
+
+// An inflate failure is the peer's protocol violation, reported in the
+// decoder's own shape so both transports treat it as they treat a bad frame.
+const inflateError = (error) =>
+  new FramingError(`inflate failed: ${error?.message ?? error}`, { code: 'ALX_ERR_FRAMING_INFLATE', cause: error });
 
 // One place for what both halves do with a channel: encode outbound frames
 // into it and decode inbound ones from it. `sink` is bound once so the hot
@@ -433,11 +438,6 @@ class ChannelCodec {
     );
   }
 }
-
-// An inflate failure is the peer's protocol violation, reported in the
-// decoder's own shape so both transports treat it as they treat a bad frame.
-const inflateError = (error) =>
-  new FramingError(`inflate failed: ${error?.message ?? error}`, { code: 'ALX_ERR_FRAMING_INFLATE', cause: error });
 
 class ClientRtcTransport extends ClientTransport {
   // A data channel can die silently exactly like a socket (ICE stalls, the
@@ -882,11 +882,11 @@ WrpcClient.transport.webrtc = ClientRtcTransport;
 WrpcClient.initialize();
 
 module.exports = {
-  ClientRtcTransport,
-  RtcPeerTransport,
-  normalizeWaterMarks,
-  normalizeBackpressure,
   DEFAULT_HIGH_WATER_MARK,
   DEFAULT_LOW_WATER_MARK,
   DEFAULT_MAX_BACKPRESSURE,
+  normalizeBackpressure,
+  normalizeWaterMarks,
+  ClientRtcTransport,
+  RtcPeerTransport,
 };

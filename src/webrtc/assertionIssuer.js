@@ -132,4 +132,4 @@ const createAssertionIssuer = ({
   return { sign, publicKeys, kid: keyId, ttl };
 };
 
-module.exports = { createAssertionIssuer, generateAssertionKeys, RESERVED_CLAIMS: Object.freeze(RESERVED) };
+module.exports = { generateAssertionKeys, createAssertionIssuer, RESERVED_CLAIMS: Object.freeze(RESERVED) };

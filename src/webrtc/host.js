@@ -309,4 +309,4 @@ class PeerHost extends Emitter {
   }
 }
 
-module.exports = { PeerHost, isInboundTransport };
+module.exports = { isInboundTransport, PeerHost };
