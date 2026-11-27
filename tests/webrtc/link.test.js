@@ -6,8 +6,8 @@ const timers = require('node:timers/promises');
 
 const { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID } = require('../../src/webrtc/link.js');
 const { MIN_MESSAGE_SIZE } = require('../../src/webrtc/framing.js');
-const { createFakeRtc } = require('./fakeRtc.js');
-const { waitFor, within, once } = require('./portContract.js');
+const { createFakeRtc } = require('./fake-rtc.js');
+const { waitFor, within, once } = require('./port-contract.js');
 
 // Structured (child() marks it so): entries arrive as objects, not strings.
 const quiet = {

@@ -7,8 +7,8 @@
 const { WrpcClient, ClientTransport, WRPC_V1, WRPC_V2, META_MAX, metaHeaders, refusedStatus } = require('./core.js');
 const { jsonParse } = require('../utils.js');
 const { decodeAttachments } = require('../attachments.js');
-const { createWsCompression } = require('./wsCompression.js');
-const { openSocket } = require('./wsHandshake.js');
+const { createWsCompression } = require('./ws-compression.js');
+const { openSocket } = require('./ws-handshake.js');
 const { ConfigError, ClosedError } = require('../errors.js');
 
 const { WebSocket } = globalThis;
@@ -51,7 +51,7 @@ class ClientWsTransport extends ClientTransport {
 
   #socket = null;
   #opening = null;
-  // Per-message compression of what THIS side sends (wsCompression.js —
+  // Per-message compression of what THIS side sends (ws-compression.js —
   // a stub in a browser): the offer goes out in a ping on open, and frames
   // change only once the server's pong agreed. Re-negotiated per open.
   #compression = null;
@@ -93,7 +93,7 @@ class ClientWsTransport extends ClientTransport {
       // mangles the header. The selected protocol lands on `this.protocol`.
       // The declared headers/meta leave with the handshake: real request
       // headers from Node, subprotocol carrier tokens from a browser, the
-      // connect-URL query only by `carrier: 'query'` — see wsHandshake.js
+      // connect-URL query only by `carrier: 'query'` — see ws-handshake.js
       // and its browser half.
       const { encryption = null } = options;
       // Announced in the URL: the server may be the first to send, so it

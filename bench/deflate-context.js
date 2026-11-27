@@ -9,8 +9,8 @@
 
 const { monitorEventLoopDelay } = require('node:perf_hooks');
 
-const { compress, compressAsync } = require('../src/websocket/permessageDeflate.js');
-const { DeflateContext } = require('../src/websocket/deflateContext.js');
+const { compress, compressAsync } = require('../src/websocket/permessage-deflate.js');
+const { DeflateContext } = require('../src/websocket/deflate-context.js');
 
 const event = (i) =>
   JSON.stringify({

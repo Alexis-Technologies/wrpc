@@ -20,7 +20,7 @@ const {
   KIND_BINARY_COMPRESSED,
 } = require('../../src/webtransport/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
-const { createFakeWt } = require('./fakeWebTransport.js');
+const { createFakeWt } = require('./fake-web-transport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const DEFLATE = 'deflate-raw';

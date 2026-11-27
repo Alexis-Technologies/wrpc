@@ -19,8 +19,8 @@ const { RtcPeerTransport } = require('../../src/webrtc/transport.js');
 const { FLAG_COMPRESSED, SharedFrames } = require('../../src/webrtc/framing.js');
 const { PreparedFrames } = require('../../src/websocket/prepared.js');
 const { decodeAttachments } = require('../../src/attachments.js');
-const { rawChannelPair } = require('./rawChannel.js');
-const { waitFor, within } = require('./portContract.js');
+const { rawChannelPair } = require('./raw-channel.js');
+const { waitFor, within } = require('./port-contract.js');
 
 const router = defineRouter({ noop: { ping: procedure({ access: 'public', handler: async () => null }) } });
 

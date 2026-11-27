@@ -28,7 +28,7 @@ const { spawnSync } = require('node:child_process');
 // Measured 2026-10-01 (weakest file per directory, lines / branches / functions):
 //   broker        96.9 / 82.2 / 86.7   (rpc/client.js)
 //   webtransport  96.4 / 90.8 / 88.9   (index.js, socket.js)
-//   encryption    97.4 / 89.9 / 85.2   (httpServer.js, http.js, server.js)
+//   encryption    97.4 / 89.9 / 85.2   (http-server.js, http.js, server.js)
 //   webrtc        96.7 / 89.2 / 94.4   (host.js, mesh.js)
 //   compression   99.0 / 94.7 / 100    (index.js, dictionary.js)
 //   deflate       98.8 / 91.0 / 94.1   (inflate.js, deflate.js)
@@ -37,7 +37,7 @@ const { spawnSync } = require('node:child_process');
 //   sse           94.9 / 88.9 / 95.8   (server.js, constants.js, client.js)
 //   client        97.6 / 89.7 / 95.5   (transports.js, proxy.js, webtransport.js)
 //   rpc           92.6 / 87.8 / 84.6   (subscriptions.js, client.js)
-//   websocket     98.2 / 86.4 / 92.9   (connection.js, prepared.js, deflateContext.js)
+//   websocket     98.2 / 86.4 / 92.9   (connection.js, prepared.js, deflate-context.js)
 //   adapters      96.3 / 78.6 / 90.5   (fastify.js, express.js)
 const FLOORS = [
   { include: 'src/sse/**', lines: 94, branches: 88, functions: 95 },

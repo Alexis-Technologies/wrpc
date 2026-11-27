@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { WebsocketServer, CLOSE_CODES, OPCODES } = require('#ws');
-const { ProtocolClient } = require('./protocolClient.js');
+const { ProtocolClient } = require('./protocol-client.js');
 
 // Teardown is registered here, the moment the server listens: a closing
 // line at the end of a test never ran when an assertion failed first.

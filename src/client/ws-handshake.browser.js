@@ -7,7 +7,7 @@
 // as `wrpc.h.<base64url>` / `wrpc.m.<base64url>` next to the revision, and
 // the connect URL — which lands in proxy access logs — stays clean. The
 // query carrier remains for `carrier: 'query'` (an intermediary that mangles
-// Sec-WebSocket-Protocol) and for an empty offer. wsHandshake.js is the Node
+// Sec-WebSocket-Protocol) and for an empty offer. ws-handshake.js is the Node
 // half, which sends real headers and falls back to this one.
 
 const { connectUrl, META_MAX } = require('./core.js');

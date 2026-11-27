@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const ws = require('#ws');
 const { Connection, Frame, FrameParser } = ws;
 const { OPCODES, CLOSE_CODES } = ws;
-const { MockSocket } = require('./mockSocket.js');
+const { MockSocket } = require('./mock-socket.js');
 
 // --- Write coalescing -----------------------------------------------------
 

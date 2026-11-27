@@ -1,6 +1,6 @@
 'use strict';
 
-// The AMQP broker over the in-process fake (tests/broker/fakeAmqp.js): the
+// The AMQP broker over the in-process fake (tests/broker/fake-amqp.js): the
 // same contract suites a real RabbitMQ runs in
 // tests/broker/amqp.integration.test.js.
 
@@ -10,11 +10,11 @@ const timers = require('node:timers/promises');
 
 const { createAmqpBroker } = require('../../src/broker/amqp/index.js');
 const { isBroker } = require('../../src/broker/index.js');
-const { createFakeAmqp } = require('./fakeAmqp.js');
-const { runBackplaneContract } = require('./backplaneContract.js');
-const { runLogContract } = require('./logContract.js');
-const { runQueueContract } = require('./queueContract.js');
-const { runDirectContract } = require('./directContract.js');
+const { createFakeAmqp } = require('./fake-amqp.js');
+const { runBackplaneContract } = require('./backplane-contract.js');
+const { runLogContract } = require('./log-contract.js');
+const { runQueueContract } = require('./queue-contract.js');
+const { runDirectContract } = require('./direct-contract.js');
 const { quiet, unique, waitFor, collect } = require('./support.js');
 
 const open = (connection, extra = {}) =>

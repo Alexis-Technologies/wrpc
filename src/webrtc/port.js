@@ -49,7 +49,7 @@ const { ConfigError } = require('../errors.js');
 // and hands over a view of it. A browser's and node-datachannel's send do
 // this; a wrapper that keeps the view, or sends `view.buffer` whole, turns
 // every multi-fragment message into the last fragment repeated. The shared
-// port contract (tests/webrtc/portContract.js) checks it.
+// port contract (tests/webrtc/port-contract.js) checks it.
 
 const PC_METHODS = [
   'createDataChannel',

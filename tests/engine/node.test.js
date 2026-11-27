@@ -4,7 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createNodeEngine, isEngine } = require('../../src/engine/index.js');
-const { runEngineContract } = require('./engineContract.js');
+const { runEngineContract } = require('./engine-contract.js');
 
 describe('isEngine', () => {
   it('should detect an engine structurally', () => {

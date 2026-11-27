@@ -8,8 +8,8 @@
 //
 // Not a *.test.js — a helper for tests/webrtc/*.test.js and tests/rpc/.
 
-const { FakeWorld, FakePeerConnection } = require('./fakeRtc.js');
-const { waitFor, within } = require('./portContract.js');
+const { FakeWorld, FakePeerConnection } = require('./fake-rtc.js');
+const { waitFor, within } = require('./port-contract.js');
 
 // Two peer connections in one world, a negotiated channel with the same id
 // on each, described to each other: resolves once both channels are open.

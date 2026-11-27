@@ -82,7 +82,7 @@ const bootWt = async (server) => {
 };
 
 // Trickle candidates from `from` to `to`, held until `to` has a remote
-// description — the helper tests/webrtc/portContract.js uses, for a pair
+// description — the helper tests/webrtc/port-contract.js uses, for a pair
 // whose signaling is two local variables.
 const trickle = (from, to) => {
   const queue = [];

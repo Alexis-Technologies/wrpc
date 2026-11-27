@@ -4,7 +4,7 @@
 // gzip of a packet/REST answer at the sizes RPC answers actually come in,
 // the SSE path — one gzip member per response, sync-flushed after every
 // event — against the same events sent plain, and the Accept-Encoding scan
-// that picks the coding (src/contentEncoding.js pickEncoding) against the
+// that picks the coding (src/content-encoding.js pickEncoding) against the
 // split-and-map it is written to avoid. Both options are off by default;
 // this is what turning them on costs and buys. Which coding, at which
 // level, is bench/algorithms.js.
@@ -12,7 +12,7 @@
 const zlib = require('node:zlib');
 const { performance } = require('node:perf_hooks');
 
-const { encodedWriter, normalizeCompression, pickEncoding } = require('../src/contentEncoding.js');
+const { encodedWriter, normalizeCompression, pickEncoding } = require('../src/content-encoding.js');
 
 const report = (name, count, elapsedMs, extra = '') =>
   console.log(

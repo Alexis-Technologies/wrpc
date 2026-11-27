@@ -82,7 +82,7 @@ const BARE_RANGE_ERRORS = {
   'src/encryption/hkdf.browser.js': 1,
   'src/encryption/hkdf.js': 1,
   'src/encryption/noise.js': 1,
-  'src/websocket/deflateContext.js': 1,
+  'src/websocket/deflate-context.js': 1,
   'src/websocket/segments.js': 1,
 };
 

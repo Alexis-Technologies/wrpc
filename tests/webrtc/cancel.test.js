@@ -14,7 +14,7 @@ const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { WrpcClient } = require('../../src/client/core.js');
 const { attachChannel } = require('../../src/webrtc/index.js');
-const { rawChannelPair } = require('./rawChannel.js');
+const { rawChannelPair } = require('./raw-channel.js');
 const { waitFor } = require('../helpers/wait.js');
 
 const routerFor = (state) =>

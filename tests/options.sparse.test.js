@@ -14,10 +14,10 @@ const { normalizeRetry, decide } = require('../src/broker/retry.js');
 const { normalizeServerEncryption } = require('../src/encryption/server.js');
 const { normalizeKeys, generateKey } = require('../src/encryption/keyring.js');
 const { normalizeDeclaredHeaders } = require('../src/rpc/handshake.js');
-const { normalizeCompression } = require('../src/contentEncoding.js');
+const { normalizeCompression } = require('../src/content-encoding.js');
 const { setupMirror } = require('../src/adapters/mirror.js');
 const { createAssertionVerifier } = require('../src/webrtc/assertions.js');
-const { createAssertionIssuer, generateAssertionKeys } = require('../src/webrtc/assertionIssuer.js');
+const { createAssertionIssuer, generateAssertionKeys } = require('../src/webrtc/assertion-issuer.js');
 
 // `sparse('a')` is `[, 'a']`: length 2, index 0 a hole.
 const sparse = (...entries) => {

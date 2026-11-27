@@ -4,8 +4,8 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { isRtcAdapter, isRtcPeerConnection, isRtcDataChannel, createW3cAdapter } = require('../../src/webrtc/port.js');
-const { createFakeRtc } = require('./fakeRtc.js');
-const { runRtcPortContract, connectPair, opened, waitFor, within, once } = require('./portContract.js');
+const { createFakeRtc } = require('./fake-rtc.js');
+const { runRtcPortContract, connectPair, opened, waitFor, within, once } = require('./port-contract.js');
 
 describe('webrtc port', () => {
   describe('the shared contract over the fake', () => {
@@ -37,7 +37,7 @@ describe('webrtc port', () => {
     assert.throws(() => createW3cAdapter({}), /RTCPeerConnection constructor is required/);
     assert.throws(() => createW3cAdapter(), TypeError); // globalThis has none in node
     const { world } = createFakeRtc();
-    const { FakePeerConnection } = require('./fakeRtc.js');
+    const { FakePeerConnection } = require('./fake-rtc.js');
     class RTCPeerConnection extends FakePeerConnection {
       constructor(configuration) {
         super(world, configuration);

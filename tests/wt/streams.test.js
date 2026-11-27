@@ -13,7 +13,7 @@ const { acceptSessions, StreamParser, frameCaps, KIND_CAPS, KIND_TEXT } = requir
 const { StreamMux, idHeader } = require('../../src/webtransport/streams.js');
 const { ClientWtTransport } = require('../../src/client/webtransport.js');
 const { chunkEncode, chunkDecode } = require('../../src/chunks.js');
-const { createFakeWt } = require('./fakeWebTransport.js');
+const { createFakeWt } = require('./fake-web-transport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const router = () =>

@@ -17,7 +17,7 @@ const {
 } = require('../../src/encryption/envelope.js');
 const { OpenError } = require('../../src/encryption/contracts.js');
 const { waitFor } = require('../helpers/server.js');
-const { FakeRedis } = require('./fakeRedis.js');
+const { FakeRedis } = require('./fake-redis.js');
 
 const router = defineRouter({ test: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
 

@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 
 const { defineRouter, procedure } = require('../../index.js');
 const { acceptSessions } = require('../../src/webtransport/index.js');
-const { createFakeWt } = require('./fakeWebTransport.js');
+const { createFakeWt } = require('./fake-web-transport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const routerFor = (state) =>

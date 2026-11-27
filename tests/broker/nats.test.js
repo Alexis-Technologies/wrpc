@@ -1,6 +1,6 @@
 'use strict';
 
-// The NATS broker over the in-process fake (tests/broker/fakeNats.js): the
+// The NATS broker over the in-process fake (tests/broker/fake-nats.js): the
 // same contract suites a real server runs in tests/broker/nats.integration.test.js.
 
 const { describe, it } = require('node:test');
@@ -9,11 +9,11 @@ const timers = require('node:timers/promises');
 
 const { createNatsBroker } = require('../../src/broker/nats/index.js');
 const { isBroker } = require('../../src/broker/index.js');
-const { createFakeNats } = require('./fakeNats.js');
-const { runBackplaneContract } = require('./backplaneContract.js');
-const { runLogContract } = require('./logContract.js');
-const { runQueueContract } = require('./queueContract.js');
-const { runDirectContract } = require('./directContract.js');
+const { createFakeNats } = require('./fake-nats.js');
+const { runBackplaneContract } = require('./backplane-contract.js');
+const { runLogContract } = require('./log-contract.js');
+const { runQueueContract } = require('./queue-contract.js');
+const { runDirectContract } = require('./direct-contract.js');
 const { quiet, unique, waitFor, collect } = require('./support.js');
 
 const open = (extra = {}) => {

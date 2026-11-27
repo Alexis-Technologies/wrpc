@@ -20,10 +20,10 @@ const {
   FLAG_COMPRESSED,
 } = require('../../src/webrtc/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
-const { createFakeRtc } = require('./fakeRtc.js');
-const { FakeSignalHub } = require('./fakeSignalHub.js');
-const { rawChannelPair } = require('./rawChannel.js');
-const { waitFor, within } = require('./portContract.js');
+const { createFakeRtc } = require('./fake-rtc.js');
+const { FakeSignalHub } = require('./fake-signal-hub.js');
+const { rawChannelPair } = require('./raw-channel.js');
+const { waitFor, within } = require('./port-contract.js');
 
 const DEFLATE = 'deflate-raw';
 const quiet = {

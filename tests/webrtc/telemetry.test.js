@@ -18,9 +18,9 @@ const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = requi
 const { defineRouter, procedure } = require('../../index.js');
 const { SCOPE_NAME } = require('../../src/telemetry/index.js');
 const { WrpcPeer, PeerHost } = require('../../src/webrtc/index.js');
-const { createFakeRtc } = require('./fakeRtc.js');
-const { FakeSignalHub } = require('./fakeSignalHub.js');
-const { within, waitFor } = require('./portContract.js');
+const { createFakeRtc } = require('./fake-rtc.js');
+const { FakeSignalHub } = require('./fake-signal-hub.js');
+const { within, waitFor } = require('./port-contract.js');
 const { createMetrics, point } = require('../helpers/metrics.js');
 
 const quiet = {
@@ -44,7 +44,7 @@ const onceEvent = (emitter, name) => new Promise((resolve) => emitter.once(name,
 
 describe('telemetry', () => {
   it('should count the verifier\'s outcome in wrpc.rtc.assertions — each refusal by its reason, never all as "invalid"', async (t) => {
-    const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
+    const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertion-issuer.js');
     const metrics = createMetrics();
     t.after(() => metrics.provider.shutdown());
     const telemetry = { meter: metrics.meter };

@@ -13,7 +13,7 @@ const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createW3cAdapter } = require('../../src/webrtc/port.js');
-const { runRtcPortContract } = require('./portContract.js');
+const { runRtcPortContract } = require('./port-contract.js');
 
 const MODULE =
   process.env.WRPC_RTC_MODULE ?? (process.env.WRPC_RTC === 'node-datachannel' ? 'node-datachannel/polyfill' : null);
@@ -67,7 +67,7 @@ describe('webrtc raw channel', () => {
     const { defineRouter, procedure } = require('../../src/rpc/router.js');
     const { WrpcClient } = require('../../src/client/core.js');
     const { attachChannel } = require('../../src/webrtc/index.js');
-    const { connectPair, opened, within } = require('./portContract.js');
+    const { connectPair, opened, within } = require('./port-contract.js');
     const adapter = createW3cAdapter(w3c);
     const a = adapter.createPeerConnection({ iceServers: [] });
     const b = adapter.createPeerConnection({ iceServers: [] });

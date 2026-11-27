@@ -19,8 +19,8 @@ const {
 const { isWtSession, isWtStream, isWtDatagrams } = require('../../src/webtransport/port.js');
 const { idHeader } = require('../../src/webtransport/streams.js');
 const { chunkDecode } = require('../../src/chunks.js');
-const { createFakeWt } = require('./fakeWebTransport.js');
-const { runChannelContract, peerEnd } = require('./channelContract.js');
+const { createFakeWt } = require('./fake-web-transport.js');
+const { runChannelContract, peerEnd } = require('./channel-contract.js');
 const { waitFor } = require('../helpers/server.js');
 const { recorder } = require('../helpers/recorder.js');
 const { keepAlive } = require('../helpers/wait.js');

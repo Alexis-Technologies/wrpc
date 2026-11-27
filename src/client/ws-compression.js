@@ -7,7 +7,7 @@
 // right at open, and once the server's pong names the first of them it
 // holds, every packet or chunk past the threshold leaves as a binary frame
 // under the 0x00 marker (src/wire.js) the server inflates. Only this side
-// compresses here, so the pong names ONE id: the one to send with. The browser half (wsCompression.browser.js, swapped through
+// compresses here, so the pong names ONE id: the one to send with. The browser half (ws-compression.browser.js, swapped through
 // package.json#browser) is a stub: a browser compresses both directions
 // itself under permessage-deflate, and its bundle carries none of this.
 

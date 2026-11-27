@@ -12,7 +12,7 @@ const { createUwsEngine } = require('../../src/adapters/uws.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
 const { MAX_QUEUED } = require('../../src/encryption/server.js');
 const { aead: browserAead } = require('../../src/encryption/aead.browser.js');
-const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { ProtocolClient } = require('../websocket/protocol-client.js');
 const { requireUws } = require('../adapters/boots.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 

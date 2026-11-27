@@ -4,7 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { Connection, FrameParser } = require('#ws');
-const { MockSocket } = require('./mockSocket.js');
+const { MockSocket } = require('./mock-socket.js');
 const { ServerTransport } = require('../../src/transport.js');
 const { WrpcWritable } = require('../../src/streams.js');
 

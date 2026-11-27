@@ -30,7 +30,7 @@
 const { bench } = require('./support/harness.js');
 const { encodeToken, tokenEncoder } = require('../src/broker/ids.js');
 const { createRedisBroker } = require('../src/broker/redis/index.js');
-const { createFakeRedis } = require('../tests/broker/fakeRedisServer.js');
+const { createFakeRedis } = require('../tests/broker/fake-redis-server.js');
 
 const NAMES = ['orders', 'room:general', 'wrpc:rooms:tenant-42:chat/general', 'користувач:42'];
 const OPTIONS = { maxLength: 200 };

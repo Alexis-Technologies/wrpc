@@ -2,13 +2,13 @@
 
 const { Emitter, jsonParse, isCodec, resolveGenerateId, checkLimit } = require('../utils.js');
 const { ServerTransport, buildHeaders, isOriginAllowed, readsFrames } = require('../transport.js');
-const { hasTransportShape, isInboundTransport } = require('./serverTransport.js');
+const { hasTransportShape, isInboundTransport } = require('./server-transport.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane, BROADCAST_CHANNEL } = require('./rooms.js');
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
-const { normalizeCompression, addVary } = require('../contentEncoding.js');
+const { normalizeCompression, addVary } = require('../content-encoding.js');
 const {
   maxMessageOf,
   normalizeSyncCompression,

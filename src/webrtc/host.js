@@ -41,7 +41,7 @@ const {
 } = require('../rpc/client.js');
 const { dispatchMessage, dispatchBinary } = require('../rpc/dispatcher.js');
 const { DEFAULT_META_MAX } = require('../rpc/meta.js');
-const { isInboundTransport } = require('../rpc/serverTransport.js');
+const { isInboundTransport } = require('../rpc/server-transport.js');
 const { ConfigError, ArgumentError } = require('../errors.js');
 
 const TRUST = ['link', 'assertion', 'none'];

@@ -9,7 +9,7 @@ const { bootServer } = require('../helpers/server.js');
 const { suiteScope } = require('../helpers/scope.js');
 const { recorder } = require('../helpers/recorder.js');
 const { createMetrics, point } = require('../helpers/metrics.js');
-const { normalizeCompression, pickEncoding, MAX_ACCEPT_ENCODING } = require('../../src/contentEncoding.js');
+const { normalizeCompression, pickEncoding, MAX_ACCEPT_ENCODING } = require('../../src/content-encoding.js');
 const { hasZstd } = require('../../src/compression/native.js');
 
 // A result comfortably past the 1 KiB default threshold, and one under it.

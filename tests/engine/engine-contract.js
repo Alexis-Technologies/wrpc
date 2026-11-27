@@ -17,7 +17,7 @@ const { it } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 
-const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { ProtocolClient } = require('../websocket/protocol-client.js');
 const { waitFor } = require('../helpers/wait.js');
 const { recorder } = require('../helpers/recorder.js');
 

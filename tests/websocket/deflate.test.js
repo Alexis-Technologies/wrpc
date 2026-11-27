@@ -5,8 +5,8 @@ const assert = require('node:assert/strict');
 const zlib = require('node:zlib');
 
 const { Connection, Frame, FrameParser, RSV1, OPCODES, CLOSE_CODES } = require('#ws');
-const { negotiate, parseExtensions, compress, decompress } = require('../../src/websocket/permessageDeflate.js');
-const { MockSocket } = require('./mockSocket.js');
+const { negotiate, parseExtensions, compress, decompress } = require('../../src/websocket/permessage-deflate.js');
+const { MockSocket } = require('./mock-socket.js');
 
 const DEFLATE = { response: '', threshold: 1, windowBits: 15 };
 
@@ -28,7 +28,7 @@ const sharedMessage = (text, deflated = true) => ({ text, frames: null, compress
 
 // --- Context takeover and async deflate (phase 1c) ------------------------
 
-const { DeflateContext } = require('../../src/websocket/deflateContext.js');
+const { DeflateContext } = require('../../src/websocket/deflate-context.js');
 const { waitFor } = require('../helpers/wait.js');
 
 const TAKEOVER = { ...DEFLATE, serverTakeover: true, clientTakeover: true, async: null };
@@ -401,7 +401,7 @@ describe('Connection', () => {
   });
 
   it('should log a deflate that fails on the way out as a ws.deflate line, then terminate', async (t) => {
-    const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+    const permessageDeflate = require('../../src/websocket/permessage-deflate.js');
     const { recorder } = require('../helpers/recorder.js');
     const real = permessageDeflate.compressAsync;
     permessageDeflate.compressAsync = (_payload, _windowBits, cb) =>
@@ -860,7 +860,7 @@ describe('the inflate mark', () => {
 
 describe('close with a queue', () => {
   it('should drop a close() queue that does not drain within closeTimeout, say so, and close', async (t) => {
-    const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+    const permessageDeflate = require('../../src/websocket/permessage-deflate.js');
     const { recorder } = require('../helpers/recorder.js');
     const real = permessageDeflate.compressAsync;
     permessageDeflate.compressAsync = () => {}; // a deflate that never lands
@@ -888,7 +888,7 @@ describe('close with a queue', () => {
   });
 
   it('should answer a peer that closes while our Close is still queued at once, and drop the queue', async (t) => {
-    const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+    const permessageDeflate = require('../../src/websocket/permessage-deflate.js');
     const real = permessageDeflate.compressAsync;
     permessageDeflate.compressAsync = () => {};
     t.after(() => {

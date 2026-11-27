@@ -111,7 +111,7 @@ jobs:
           WRPC_INTEGRATION_STRICT: 1
 
   # The NATS leg of the broker suites against a real server WITH JetStream;
-  # the in-repo fake in tests/broker/fakeNats.js is what `pnpm test` runs.
+  # the in-repo fake in tests/broker/fake-nats.js is what `pnpm test` runs.
   # Not a `services:` container: GitHub cannot pass a command to one, and a
   # nats without `-js` makes the log, queue and feed suites skip — green
   # and untested. compose.yaml is the one place the flags live.
@@ -135,7 +135,7 @@ jobs:
         if: always()
 
   # The RabbitMQ leg of the broker suites against a real server; the in-repo
-  # fake in tests/broker/fakeAmqp.js is what `pnpm test` runs.
+  # fake in tests/broker/fake-amqp.js is what `pnpm test` runs.
   rabbitmq:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -163,7 +163,7 @@ jobs:
 
   # The Kafka leg of the broker suites against a real broker (KRaft), on
   # whichever KafkaJS-shaped clients are installed; the in-repo fake in
-  # tests/broker/fakeKafka.js covers both shapes in `pnpm test`.
+  # tests/broker/fake-kafka.js covers both shapes in `pnpm test`.
   kafka:
     runs-on: ubuntu-latest
     timeout-minutes: 20

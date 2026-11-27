@@ -38,7 +38,7 @@ const crypto = require('node:crypto');
 
 const { Server, defineRouter, procedure } = require('../index.js');
 const { Connection, Frame, OPCODES, RSV1 } = require('../src/websocket/ws.js');
-const { compress } = require('../src/websocket/permessageDeflate.js');
+const { compress } = require('../src/websocket/permessage-deflate.js');
 
 const CALLS = 40_000;
 const BOMBS = 100;

@@ -6,7 +6,7 @@
 
 const { buildMeta } = require('../rpc/client.js');
 const { createSignalingUnit, createSignalingHooks } = require('./signaling.js');
-const { createAssertionIssuer, generateAssertionKeys } = require('./assertionIssuer.js');
+const { createAssertionIssuer, generateAssertionKeys } = require('./assertion-issuer.js');
 const { RtcPeerTransport } = require('./transport.js');
 const { ConfigError } = require('../errors.js');
 

@@ -6,7 +6,7 @@ const zlib = require('node:zlib');
 
 const { RpcServer, defineRouter, procedure, WrpcClient } = require('../../index.js');
 const { FRAME_MARK, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../../src/wire.js');
-const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { ProtocolClient } = require('../websocket/protocol-client.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 const { recorder } = require('../helpers/recorder.js');
 const { createMetrics, point } = require('../helpers/metrics.js');
@@ -269,7 +269,7 @@ describe('ws compression', () => {
   });
 
   it('should stub the browser half — a page compresses under permessage-deflate instead', () => {
-    const { createWsCompression } = require('../../src/client/wsCompression.browser.js');
+    const { createWsCompression } = require('../../src/client/ws-compression.browser.js');
     assert.strictEqual(createWsCompression(true), null);
     assert.strictEqual(createWsCompression({ threshold: 1 }), null);
   });
@@ -290,7 +290,7 @@ describe('ws compression', () => {
   });
 
   it('should have the Node half say what was agreed — nothing before the pong, the codec after', () => {
-    const { createWsCompression } = require('../../src/client/wsCompression.js');
+    const { createWsCompression } = require('../../src/client/ws-compression.js');
     assert.strictEqual(createWsCompression(false), null);
     const compression = createWsCompression({ threshold: 1 });
     assert.deepStrictEqual(JSON.parse(compression.offer), { type: 'ping', enc: ['deflate-raw'] });

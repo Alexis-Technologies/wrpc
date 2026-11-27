@@ -11,9 +11,9 @@ const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { createKafkaBroker, decodeVector, encodeVector } = require('../../src/broker/kafka/index.js');
-const { runBackplaneContract } = require('./backplaneContract.js');
-const { runLogContract } = require('./logContract.js');
-const { runQueueContract } = require('./queueContract.js');
+const { runBackplaneContract } = require('./backplane-contract.js');
+const { runLogContract } = require('./log-contract.js');
+const { runQueueContract } = require('./queue-contract.js');
 const { quiet, unique, collect } = require('./support.js');
 
 const brokers = (process.env.KAFKA_BROKERS ?? '').split(',').filter(Boolean);

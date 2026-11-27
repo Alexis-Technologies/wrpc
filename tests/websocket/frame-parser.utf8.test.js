@@ -3,7 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isValidUTF8 } = require('../../src/websocket/frameParser.js');
+const { isValidUTF8 } = require('../../src/websocket/frame-parser.js');
 
 describe('isValidUTF8', () => {
   it('should accept valid sequences of every length', () => {

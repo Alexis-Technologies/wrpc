@@ -145,7 +145,7 @@ binary; do the same if you hit it.
 ## Contract-tested
 
 The [engine contract suite](../../reference/engine#contract-testing)
-(`tests/engine/engineContract.js`) runs against this engine and the built-in
+(`tests/engine/engine-contract.js`) runs against this engine and the built-in
 one alike — handshake, echo, binary, backpressure booleans, drain ordering,
 close codes, ping/pong. Anywhere the two genuinely differ, the difference is
 asserted rather than papered over.

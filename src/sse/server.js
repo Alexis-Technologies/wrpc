@@ -5,7 +5,7 @@ const { ServerTransport } = require('../transport.js');
 const { resolveGenerateId } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
-const { normalizeCompression, chooseEncoding, markEncoded, encodedWriter } = require('../contentEncoding.js');
+const { normalizeCompression, chooseEncoding, markEncoded, encodedWriter } = require('../content-encoding.js');
 const { createFailureReporter } = require('../compression/sync.js');
 const { ArgumentError } = require('../errors.js');
 

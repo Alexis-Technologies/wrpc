@@ -12,10 +12,10 @@ const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { createNatsBroker } = require('../../src/broker/nats/index.js');
-const { runBackplaneContract } = require('./backplaneContract.js');
-const { runLogContract } = require('./logContract.js');
-const { runQueueContract } = require('./queueContract.js');
-const { runDirectContract } = require('./directContract.js');
+const { runBackplaneContract } = require('./backplane-contract.js');
+const { runLogContract } = require('./log-contract.js');
+const { runQueueContract } = require('./queue-contract.js');
+const { runDirectContract } = require('./direct-contract.js');
 const { quiet, unique, collect, waitFor } = require('./support.js');
 
 const url = process.env.NATS_URL;

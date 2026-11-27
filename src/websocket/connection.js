@@ -7,11 +7,11 @@ const crypto = require('node:crypto');
 
 const { OPCODES, CLOSE_CODES, RSV1 } = require('./constants.js');
 const { Frame, EMPTY_PING, EMPTY_PONG, encodeFrame, encodeFrameFrom } = require('./frame.js');
-const { FrameParser, isValidUTF8, PARSE_ERR_CODES, ParseError } = require('./frameParser.js');
+const { FrameParser, isValidUTF8, PARSE_ERR_CODES, ParseError } = require('./frame-parser.js');
 const { SegmentQueue } = require('./segments.js');
 const { PreparedFrames } = require('./prepared.js');
-const { DeflateContext } = require('./deflateContext.js');
-const permessageDeflate = require('./permessageDeflate.js');
+const { DeflateContext } = require('./deflate-context.js');
+const permessageDeflate = require('./permessage-deflate.js');
 const { Deque } = require('../deque.js');
 const { ConfigError, ArgumentError, TransportError } = require('../errors.js');
 

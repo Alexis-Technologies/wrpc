@@ -5,7 +5,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { EventEmitter } = require('node:events');
 
 const { Connection, turnBudgetOf } = require('./connection.js');
-const permessageDeflate = require('./permessageDeflate.js');
+const permessageDeflate = require('./permessage-deflate.js');
 
 // The protocol revision marker (see docs/reference/protocol.md#versioning).
 // A wrpc client OFFERS it; with no app-configured protocols the server

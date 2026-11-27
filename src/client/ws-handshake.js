@@ -9,7 +9,7 @@
 // is left with, and this half falls back to it.
 
 const { metaHeaders, META_MAX } = require('./core.js');
-const carriers = require('./wsHandshake.browser.js');
+const carriers = require('./ws-handshake.browser.js');
 
 // Names the handshake itself owns: declared, they would corrupt it.
 const UNSENDABLE = /^(?:host|connection|upgrade|content-length|transfer-encoding)$|^sec-websocket-/;

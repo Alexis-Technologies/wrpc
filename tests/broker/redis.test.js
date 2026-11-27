@@ -1,6 +1,6 @@
 'use strict';
 
-// The Redis broker over the in-process fake (tests/broker/fakeRedisServer.js):
+// The Redis broker over the in-process fake (tests/broker/fake-redis-server.js):
 // the same four contract suites a real server runs in
 // tests/broker/redis.integration.test.js.
 
@@ -10,12 +10,12 @@ const timers = require('node:timers/promises');
 
 const { createRedisBroker } = require('../../src/broker/redis/index.js');
 const { isBroker } = require('../../src/broker/index.js');
-const { createFakeRedis } = require('./fakeRedisServer.js');
-const { runBackplaneContract } = require('./backplaneContract.js');
-const { runLogContract } = require('./logContract.js');
-const { runFeedSpec } = require('./feedSpec.js');
-const { runQueueContract } = require('./queueContract.js');
-const { runDirectContract } = require('./directContract.js');
+const { createFakeRedis } = require('./fake-redis-server.js');
+const { runBackplaneContract } = require('./backplane-contract.js');
+const { runLogContract } = require('./log-contract.js');
+const { runFeedSpec } = require('./feed-spec.js');
+const { runQueueContract } = require('./queue-contract.js');
+const { runDirectContract } = require('./direct-contract.js');
 const { quiet, unique, waitFor, collect } = require('./support.js');
 
 const open = (extra = {}) => {

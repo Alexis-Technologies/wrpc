@@ -17,7 +17,7 @@
 // or silence past `idleTimeout` (a client whose process vanished never says
 // goodbye; its heartbeat is what keeps a live one inside the window).
 
-const { ServerTransport } = require('../../rpc/serverTransport.js');
+const { ServerTransport } = require('../../rpc/server-transport.js');
 const { createLoggerWriter } = require('../../logging.js');
 const { capabilityOf, brokerName } = require('../port.js');
 const { toBytes, fingerprint } = require('../ids.js');
@@ -43,7 +43,7 @@ const {
 } = require('./frames.js');
 const { createBrokerSealing, HEADER_SEALED } = require('../sealing.js');
 const { HEADER_LENGTH } = require('../../encryption/envelope.js');
-const { DEFAULT_MAX_SKEW } = require('../../encryption/httpServer.js');
+const { DEFAULT_MAX_SKEW } = require('../../encryption/http-server.js');
 const {
   normalizeSyncCompression,
   headerNegotiator,

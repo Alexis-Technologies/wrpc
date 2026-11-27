@@ -6,9 +6,9 @@ const http = require('node:http');
 
 const { createUwsEngine, UwsSocket, SUCCESS, DROPPED } = require('../../src/adapters/uws.js');
 const { isEngine } = require('../../src/engine/index.js');
-const { runEngineContract, standaloneHarness } = require('../engine/engineContract.js');
+const { runEngineContract, standaloneHarness } = require('../engine/engine-contract.js');
 const { Server, defineRouter, procedure } = require('../../index.js');
-const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { ProtocolClient } = require('../websocket/protocol-client.js');
 const { requireUws } = require('./boots.js');
 
 const uws = requireUws();
@@ -146,7 +146,7 @@ describe('uws engine', () => {
     'should actually compress outbound frames with a configured compressor',
     { skip: !uws && 'uWebSockets.js unavailable' },
     async (t) => {
-      const { decompress } = require('../../src/websocket/permessageDeflate.js');
+      const { decompress } = require('../../src/websocket/permessage-deflate.js');
       const big = 'compress me '.repeat(512);
       const server = new Server({
         router: defineRouter({ echo: { big: procedure({ access: 'public', handler: async () => big }) } }),

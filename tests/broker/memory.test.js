@@ -5,10 +5,10 @@ const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { MemoryBroker, createMemoryBroker, isBroker } = require('../../src/broker/index.js');
-const { runBackplaneContract } = require('./backplaneContract.js');
-const { runLogContract } = require('./logContract.js');
-const { runQueueContract } = require('./queueContract.js');
-const { runDirectContract } = require('./directContract.js');
+const { runBackplaneContract } = require('./backplane-contract.js');
+const { runLogContract } = require('./log-contract.js');
+const { runQueueContract } = require('./queue-contract.js');
+const { runDirectContract } = require('./direct-contract.js');
 const { quiet, collect, waitFor } = require('./support.js');
 
 // One broker per open(): the in-process world IS the broker, so "two

@@ -21,7 +21,7 @@
 // sender's clock) must be fresh and an `enc` is accepted once.
 //
 // This file is the client half and what the two share — bundled for a page.
-// The server half is httpServer.js, Node-only.
+// The server half is http-server.js, Node-only.
 
 const { concat, utf8, counterNonce, fromBase64, toBase64Url } = require('./bytes.js');
 const { OpenError } = require('./contracts.js');

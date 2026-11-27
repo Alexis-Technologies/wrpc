@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 
 const { WrpcReadable, heldBytes, CHUNK_COST } = require('../src/streams.js');
 const { defineRouter, procedure, RpcServer } = require('../index.js');
-const { ServerTransport } = require('../src/rpc/serverTransport.js');
+const { ServerTransport } = require('../src/rpc/server-transport.js');
 const { chunkEncode } = require('../src/chunks.js');
 const { bootServer, waitFor } = require('./helpers/server.js');
 const { KIB, MIB, rawPeer } = require('./helpers/streams.js');

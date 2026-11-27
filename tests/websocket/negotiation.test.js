@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { WebsocketServer } = require('#ws');
-const { ProtocolClient } = require('./protocolClient.js');
+const { ProtocolClient } = require('./protocol-client.js');
 const { keepAlive } = require('../helpers/wait.js');
 
 const KEY = Buffer.from('0123456789abcdef').toString('base64');

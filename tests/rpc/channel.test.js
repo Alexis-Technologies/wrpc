@@ -3,7 +3,7 @@
 // RpcServer.attach / attachChannel (@alexify/wrpc/webrtc) end to end: a WrpcClient over a raw
 // data channel (transport: 'webrtc', channel) against an ordinary
 // RpcServer — the attachPort of WebRTC. Fake channels from
-// tests/webrtc/rawChannel.js, negotiated by hand the way an application on
+// tests/webrtc/raw-channel.js, negotiated by hand the way an application on
 // this level does its own signaling; a factory-driven reconnect resumes a
 // subscription across channels.
 
@@ -19,8 +19,8 @@ const { WrpcClient } = require('../../src/client/core.js');
 const { ClientRtcTransport } = require('../../src/webrtc/transport.js');
 const { attachChannel } = require('../../src/webrtc/index.js');
 const { chunkEncode } = require('../../src/chunks.js');
-const { rawChannelPair } = require('../webrtc/rawChannel.js');
-const { waitFor, within } = require('../webrtc/portContract.js');
+const { rawChannelPair } = require('../webrtc/raw-channel.js');
+const { waitFor, within } = require('../webrtc/port-contract.js');
 
 const quiet = {
   log() {},

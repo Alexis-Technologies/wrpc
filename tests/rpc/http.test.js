@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 
 const { Server, defineRouter, procedure } = require('../../index.js');
-const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { ProtocolClient } = require('../websocket/protocol-client.js');
 const { suiteScope } = require('../helpers/scope.js');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

@@ -158,7 +158,7 @@ const assertDeflateOptions = (options) => {
 // never spans messages, one-shot zlib calls suffice, and the compressed
 // bytes are a function of (payload, window) alone (what lets a fan-out
 // share one frame). `contextTakeover` opts a direction into a live stream
-// per connection (deflateContext.js).
+// per connection (deflate-context.js).
 // Returns the accepted params, null to decline, or { malformed: true }
 // when the header violates the grammar — the handshake must then fail
 // with 400 (RFC 6455 4.2.1), not proceed without the extension.

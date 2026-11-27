@@ -6,7 +6,7 @@ const { describe, it, beforeEach, afterEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { Server, defineRouter, procedure } = require('../index.js');
-const { ProtocolClient } = require('./websocket/protocolClient.js');
+const { ProtocolClient } = require('./websocket/protocol-client.js');
 
 const parseStatusCode = (statusLine) => {
   if (!statusLine) return null;

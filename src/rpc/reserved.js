@@ -3,7 +3,7 @@
 // Header names a peer may not DECLARE for itself, because they say what the
 // connection — or a proxy in front of it — knows about the sender, and a
 // declaration is the sender's word. Require-free: handshake.js (the ws
-// carriers) and, through the core, src/encryption/httpServer.js (the
+// carriers) and, through the core, src/encryption/http-server.js (the
 // headers inside a sealed request) share it — src/encryption/ never
 // requires src/rpc/, so the core hands the list over.
 //

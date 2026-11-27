@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { FakeRedis } = require('./fakeRedis.js');
+const { FakeRedis } = require('./fake-redis.js');
 
 const { createRedisAdapter, isBackplane } = require('../../src/scaling/index.js');
 

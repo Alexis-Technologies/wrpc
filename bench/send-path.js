@@ -9,7 +9,7 @@
 const { EventEmitter } = require('node:events');
 
 const { Connection } = require('../src/websocket/ws.js');
-const { compress, decompress } = require('../src/websocket/permessageDeflate.js');
+const { compress, decompress } = require('../src/websocket/permessage-deflate.js');
 const { RpcServer } = require('../src/rpc/core.js');
 const { defineRouter, procedure } = require('../src/rpc/router.js');
 

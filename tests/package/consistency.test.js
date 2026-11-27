@@ -164,7 +164,7 @@ const HEAD_READS = {
     'outbox.shift();': 'a Deque',
     'this.#outbox.shift();': 'a Deque',
   },
-  'src/websocket/deflateContext.js': { 'ops.shift();': 'at most 33 operations wait on one context' },
+  'src/websocket/deflate-context.js': { 'ops.shift();': 'at most 33 operations wait on one context' },
 };
 
 const CALL_SPREADS = {
@@ -180,7 +180,7 @@ const CALL_SPREADS = {
     "await client.xadd(stream, '*', ...fields);": 'the same fields',
   },
   'src/client/core.js': { 'if (units.length > 0) await this.load(...units);': 'the units the application loaded' },
-  'src/client/wsHandshake.browser.js': {
+  'src/client/ws-handshake.browser.js': {
     'btoa(String.fromCharCode(...new TextEncoder().encode(text)))': 'the caller refuses a text past META_MAX first',
   },
   'src/encryption/noise.js': {
@@ -208,7 +208,7 @@ const CALL_SPREADS = {
     'return this.#target().to(...rooms);': 'its own rest parameter',
     'return this.#target().except(...clients);': 'its own rest parameter',
   },
-  'src/webrtc/peerLink.js': { 'return this.#remote.load(...units);': 'its own rest parameter' },
+  'src/webrtc/peer-link.js': { 'return this.#remote.load(...units);': 'its own rest parameter' },
 };
 
 // The CLAUDE.md files are binding instructions for an agent — the root one in

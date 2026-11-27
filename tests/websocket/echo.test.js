@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { WebsocketServer } = require('#ws');
-const { ProtocolClient } = require('./protocolClient.js');
+const { ProtocolClient } = require('./protocol-client.js');
 
 describe('WebsocketServer echo', () => {
   it('should echo messages', async (t) => {

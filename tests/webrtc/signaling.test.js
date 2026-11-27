@@ -19,7 +19,7 @@ const {
 } = require('../../src/webrtc/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 const { keepAlive } = require('../helpers/wait.js');
-const { generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
+const { generateAssertionKeys } = require('../../src/webrtc/assertion-issuer.js');
 const { createAssertionVerifier, parseJws } = require('../../src/webrtc/assertions.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };

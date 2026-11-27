@@ -9,10 +9,10 @@ const { ClientRtcTransport, RtcPeerTransport } = require('../../src/webrtc/trans
 const { RtcLink } = require('../../src/webrtc/link.js');
 const { KIND_BINARY, FLAG_FIN } = require('../../src/webrtc/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
-const { createFakeRtc } = require('./fakeRtc.js');
-const { rawChannelPair } = require('./rawChannel.js');
-const { waitFor, within } = require('./portContract.js');
-const { runTransportContract } = require('../client/transportContract.js');
+const { createFakeRtc } = require('./fake-rtc.js');
+const { rawChannelPair } = require('./raw-channel.js');
+const { waitFor, within } = require('./port-contract.js');
+const { runTransportContract } = require('../client/transport-contract.js');
 
 const quiet = {
   log() {},

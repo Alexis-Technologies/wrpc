@@ -248,7 +248,7 @@ An honest list is more useful than a feature grid.
   Deno, workers included; the **server** targets Node — `src/websocket/` is
   written against `node:net` — and `@alexify/wrpc/engine` is the documented
   seam for a `Bun.serve`/`Deno.serve` engine, with
-  `tests/engine/engineContract.js` as the conformance suite a contributor
+  `tests/engine/engine-contract.js` as the conformance suite a contributor
   would run. WebTransport and WebRTC have no Node implementation in the
   standard library: in Node, inject one — an HTTP/3 host such as
   `@fails-components/webtransport`, a WebRTC stack such as `node-datachannel`.

@@ -2,7 +2,7 @@
 
 const zlib = require('node:zlib');
 
-const { TRAILER } = require('./permessageDeflate.js');
+const { TRAILER } = require('./permessage-deflate.js');
 const { ClosedError } = require('../errors.js');
 
 // One write + Z_SYNC_FLUSH on a zlib stream, collecting the output. The

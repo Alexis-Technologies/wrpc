@@ -221,7 +221,7 @@ The option is strict: a bad generator is a `TypeError` at construction. See
 
 ## Writing an adapter
 
-The contracts are executable. `tests/broker/{backplane,log,queue,direct}Contract.js`
+The contracts are executable. `tests/broker/{backplane,log,queue,direct}-contract.js`
 in the repository run against the memory broker, every adapter's in-repo fake,
 and — in the broker CI jobs — a real server. A new adapter that passes them is
 a working adapter.

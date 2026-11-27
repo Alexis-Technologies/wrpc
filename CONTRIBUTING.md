@@ -81,8 +81,8 @@ with `node:assert/strict`.
 ### Tests
 
 Tests live in `tests/`, run by Node's built-in runner. Files that are **not**
-`*.test.js` are shared helpers, not tests: `tests/websocket/mockSocket.js`,
-`tests/websocket/protocolClient.js`, `tests/engine/engineContract.js` (the
+`*.test.js` are shared helpers, not tests: `tests/websocket/mock-socket.js`,
+`tests/websocket/protocol-client.js`, `tests/engine/engine-contract.js` (the
 engine port contract suite), and the swap-test pair `tests/adapters/boots.js` +
 `tests/adapters/spec.js` — one behavioural spec replayed against every way of
 standing wrpc up.
@@ -155,14 +155,14 @@ Checks deliberately **not** in CI — run them by hand:
 - `pnpm test:perf` — the 1 GiB stream memory guard.
 - `WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`
   — the WebRTC port contract against a real implementation (the fake in
-  `tests/webrtc/fakeRtc.js` is what `pnpm test` runs); needs the native
+  `tests/webrtc/fake-rtc.js` is what `pnpm test` runs); needs the native
   `node-datachannel` build.
 - `WRPC_WT=fails node --test tests/wt/fails.integration.test.js` and
   `WRPC_WT=quico node --test tests/wt/quico.integration.test.js` — the
   WebTransport server half against a real HTTP/3 stack
   (`@fails-components/webtransport` with its native `-transport-http3-quiche`
   binary, or the pure-JS `quico`). `pnpm test` covers the same code through
-  the in-memory fake (`tests/wt/fakeWebTransport.js`); both files skip
+  the in-memory fake (`tests/wt/fake-web-transport.js`); both files skip
   themselves without `WRPC_WT`. `node scripts/wt-cert.js` makes the
   short-lived ECDSA certificate they and a browser need.
 

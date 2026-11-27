@@ -6,9 +6,9 @@ const { toKebab } = require('./utils.js');
 const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('./rpc/rest.js');
 const { STATUS_CODES } = require('./status.js');
 const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/errors.js');
-const { ServerTransport } = require('./rpc/serverTransport.js');
+const { ServerTransport } = require('./rpc/server-transport.js');
 const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
-const { chooseEncoding, markEncoded } = require('./contentEncoding.js');
+const { chooseEncoding, markEncoded } = require('./content-encoding.js');
 const { isPromise } = require('./compression/ids.js');
 const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachments.js');
 const { ArgumentError } = require('./errors.js');
@@ -237,7 +237,7 @@ class ServerHttpTransport extends ServerTransport {
   #rest = null;
 
   #status = null;
-  // The normalized `http.compression` option (contentEncoding.js), or null:
+  // The normalized `http.compression` option (content-encoding.js), or null:
   // the core hands it to the transports it builds for real answers.
   #compression = null;
   #failed = null;

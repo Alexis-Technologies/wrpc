@@ -8,7 +8,7 @@ const { defineRouter, procedure } = require('../../index.js');
 const { acceptSessions } = require('../../src/webtransport/index.js');
 const { createEncryption, generateKey } = require('../../src/encryption/index.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
-const { createFakeWt } = require('./fakeWebTransport.js');
+const { createFakeWt } = require('./fake-web-transport.js');
 const { ClientWtTransport } = require('../../src/client/webtransport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 

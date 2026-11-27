@@ -11,10 +11,10 @@ const timers = require('node:timers/promises');
 
 const { defineRouter, procedure, tracked, createEventLog, createEventStream } = require('../../index.js');
 const { WrpcPeer, PeerLink, normalizeRedial, REDIAL } = require('../../src/webrtc/peer.js');
-const { createFakeRtc } = require('./fakeRtc.js');
-const { FakeSignalHub } = require('./fakeSignalHub.js');
-const { within, waitFor } = require('./portContract.js');
-const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
+const { createFakeRtc } = require('./fake-rtc.js');
+const { FakeSignalHub } = require('./fake-signal-hub.js');
+const { within, waitFor } = require('./port-contract.js');
+const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertion-issuer.js');
 const { sdpFingerprint } = require('../../src/webrtc/assertions.js');
 
 const quiet = {

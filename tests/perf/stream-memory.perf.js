@@ -16,7 +16,7 @@
 const { Connection } = require('../../src/websocket/ws.js');
 const { ServerTransport } = require('../../src/transport.js');
 const { WrpcReadable, WrpcWritable } = require('../../src/streams.js');
-const { MockSocket } = require('../websocket/mockSocket.js');
+const { MockSocket } = require('../websocket/mock-socket.js');
 
 const ServerWsTransport = ServerTransport.transport.ws;
 

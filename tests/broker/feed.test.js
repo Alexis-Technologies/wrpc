@@ -8,7 +8,7 @@ const { defineRouter, procedure } = require('../../index.js');
 const { MemoryBroker, brokerFeed } = require('../../src/broker/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 const { quiet } = require('./support.js');
-const { runFeedSpec } = require('./feedSpec.js');
+const { runFeedSpec } = require('./feed-spec.js');
 
 // Two instances on one broker — two processes behind a balancer, in
 // production. Each serves the same feed procedure.
@@ -193,7 +193,7 @@ describe('brokerFeed', () => {
   it('should resume a feed a slow reader outgrew through onGap mid-stream', async () => {
     // Driven directly against the reference broker's retention: it overtakes
     // a reader that stopped pulling (a broker with a live tail buffers what
-    // the reader has not pulled — see the note in feedSpec.js).
+    // the reader has not pulled — see the note in feed-spec.js).
     const broker = new MemoryBroker({ logger: quiet, retention: { maxEntries: 2 } });
     const gaps = [];
     const handler = brokerFeed(broker, 'orders', {

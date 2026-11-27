@@ -6,7 +6,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 
 const { MAGIC, WebsocketServer } = require('#ws');
-const { ProtocolClient } = require('./protocolClient.js');
+const { ProtocolClient } = require('./protocol-client.js');
 
 const parseStatusCode = (statusLine) => {
   if (!statusLine) return null;

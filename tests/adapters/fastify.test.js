@@ -7,7 +7,7 @@ const { EventEmitter } = require('node:events');
 
 const { WrpcClient, RpcServer, defineRouter, procedure } = require('../../index.js');
 const { wrpcFastify, findUwsApp } = require('../../src/adapters/fastify.js');
-const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { ProtocolClient } = require('../websocket/protocol-client.js');
 const { optional, quiet } = require('./boots.js');
 const { waitFor } = require('../helpers/wait.js');
 

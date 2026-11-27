@@ -16,10 +16,10 @@ const {
   createSignalingHooks,
   wrpcSignaler,
 } = require('../../src/webrtc/index.js');
-const { createFakeRtc } = require('./fakeRtc.js');
-const { FakeSignalHub } = require('./fakeSignalHub.js');
-const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
-const { within, waitFor } = require('./portContract.js');
+const { createFakeRtc } = require('./fake-rtc.js');
+const { FakeSignalHub } = require('./fake-signal-hub.js');
+const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertion-issuer.js');
+const { within, waitFor } = require('./port-contract.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
 
 const quiet = {

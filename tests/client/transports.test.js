@@ -8,7 +8,7 @@ const { defineRouter, procedure } = require('../../index.js');
 require('../../src/sse/index.js'); // registers the sse transport
 require('../../src/webrtc/index.js'); // registers the webrtc transport
 require('../../src/broker/index.js'); // registers the broker transport
-const { runTransportContract } = require('./transportContract.js');
+const { runTransportContract } = require('./transport-contract.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
 
 const echoRouter = () =>

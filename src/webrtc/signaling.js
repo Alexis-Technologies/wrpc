@@ -44,7 +44,7 @@
 const { procedure } = require('../rpc/router.js');
 const { isSignalMessage, SIGNAL_MESSAGE_TYPES } = require('./signaler.js');
 const { normalizeFingerprint } = require('./assertions.js');
-const { createAssertionIssuer } = require('./assertionIssuer.js');
+const { createAssertionIssuer } = require('./assertion-issuer.js');
 const { MAX_ID_LENGTH, isPeerId } = require('./ids.js');
 const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 

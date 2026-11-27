@@ -283,7 +283,7 @@ const ENTRIES = [
   // skeleton strings are most of it).
   // 51 -> 53 for binary attachments on both halves this entry bundles: the
   // client transport's frames and, through PeerHost, the server-side
-  // encoder in serverTransport.js and the dispatcher's frame routing
+  // encoder in server-transport.js and the dispatcher's frame routing
   // (+1.5 KB, measured 51.8 against 50.3). 53 -> 54 for the 2.0 security
   // review's fixes on the peer half: roster data written under
   // peer/room/claims, the fragment count cap and the 1 KiB message-size

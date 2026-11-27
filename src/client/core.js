@@ -306,7 +306,7 @@ const metaHeaders = (meta, prefixed) => {
 // — the WHATWG WebSocket by spec, a browser WebTransport too: connection-
 // phase headers and metadata ride as ONE query parameter each. WebTransport
 // has nothing else; ws uses it only by `carrier: 'query'` or under an empty
-// offer (wsHandshake.browser.js). The server reads observed request headers
+// offer (ws-handshake.browser.js). The server reads observed request headers
 // first and these parameters only for names they do not carry. Loud caveat: the connect URL lands in proxy access logs — a
 // device id belongs here, a secret does not.
 const connectUrl = (url, headers, meta, log) => {

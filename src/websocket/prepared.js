@@ -2,14 +2,14 @@
 
 const { OPCODES, RSV1 } = require('./constants.js');
 const { encodeFrame } = require('./frame.js');
-const { compress, compressAsync, MIN_WINDOW_BITS, MAX_WINDOW_BITS } = require('./permessageDeflate.js');
+const { compress, compressAsync, MIN_WINDOW_BITS, MAX_WINDOW_BITS } = require('./permessage-deflate.js');
 
 // The engine-owned half of a shared message (see Connection.sendPrepared):
 // one text, encoded to the wire ONCE for however many connections write it.
 //
 // The plain frame is header + utf8 payload in one buffer. The deflated
 // frames are keyed by the recipient's negotiated windowBits: with both
-// no-context-takeover params pinned (permessageDeflate.js) the compressed
+// no-context-takeover params pinned (permessage-deflate.js) the compressed
 // bytes are a pure function of (payload, windowBits), so two connections
 // that negotiated the same window get byte-identical frames — which is what
 // turns a room fan-out's N deflates into at most one per distinct window.

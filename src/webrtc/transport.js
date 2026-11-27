@@ -28,7 +28,7 @@
 // ws/http/event transports and the Service Worker proxy, none of which a
 // peer needs — and every byte here lands in the webrtc browser bundle.
 const { ClientTransport, WrpcClient } = require('../client/core.js');
-const { ServerTransport } = require('../rpc/serverTransport.js');
+const { ServerTransport } = require('../rpc/server-transport.js');
 const { isRtcDataChannel } = require('./port.js');
 const {
   FrameEncoder,

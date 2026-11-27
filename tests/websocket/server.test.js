@@ -7,8 +7,8 @@ const http = require('node:http');
 const net = require('node:net');
 
 const { WebsocketServer, Connection } = require('#ws');
-const { ProtocolClient } = require('./protocolClient.js');
-const { MockSocket } = require('./mockSocket.js');
+const { ProtocolClient } = require('./protocol-client.js');
+const { MockSocket } = require('./mock-socket.js');
 const { waitFor } = require('../helpers/wait.js');
 const { recorder } = require('../helpers/recorder.js');
 

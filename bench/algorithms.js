@@ -1,7 +1,7 @@
 'use strict';
 
 // Which algorithm, at which level — the measurement behind every default in
-// src/compression/native.js and src/contentEncoding.js. Three families
+// src/compression/native.js and src/content-encoding.js. Three families
 // node:zlib ships (deflate, Brotli, Zstandard where this Node has it), at
 // the levels a per-message codec can afford, over the sizes RPC messages
 // come in; then the persistent-stream shape an SSE response uses (one

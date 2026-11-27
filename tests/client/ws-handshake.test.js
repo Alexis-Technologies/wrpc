@@ -3,8 +3,8 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const node = require('../../src/client/wsHandshake.js');
-const browser = require('../../src/client/wsHandshake.browser.js');
+const node = require('../../src/client/ws-handshake.js');
+const browser = require('../../src/client/ws-handshake.browser.js');
 const { readHandshake } = require('../../index.js');
 
 // A constructor that records what it was handed. `strict` behaves like a

@@ -221,12 +221,12 @@ Implement `Engine`, yield sockets that satisfy `WrpcSocket`, and run the
 contract suite against it:
 
 ```js
-const { runEngineContract } = require('./tests/engine/engineContract.js');
+const { runEngineContract } = require('./tests/engine/engine-contract.js');
 
 test('my engine', (t) => runEngineContract(() => createMyEngine(), t));
 ```
 
-`tests/engine/engineContract.js` is a shared helper (not a `*.test.js`) that
+`tests/engine/engine-contract.js` is a shared helper (not a `*.test.js`) that
 checks the whole port: engine shape and capability types, `'connection'`
 delivering a socket and an upgrade request, text and binary echo, `send()`
 returning a boolean, drain ordering, close codes, ping/pong. Hosted engines

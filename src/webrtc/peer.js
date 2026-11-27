@@ -2,7 +2,7 @@
 
 // WrpcPeer: one wrpc peer — a router others can call, a signaler to find
 // them through, an RTC adapter to reach them with. It keeps the links (one
-// PeerLink per remote peer — peerLink.js), reads the signals, holds a peer
+// PeerLink per remote peer — peer-link.js), reads the signals, holds a peer
 // whose accept() has not answered, tracks incarnations, and owns the
 // assertion layer (stamping outbound descriptions, verifying inbound ones).
 //
@@ -26,7 +26,7 @@ const { createServerTelemetry } = require('../telemetry/server.js');
 const { isRtcAdapter, createW3cAdapter } = require('./port.js');
 const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
 const { normalizeWaterMarks, normalizeBackpressure } = require('./transport.js');
-const { PeerLink, normalizeRedial, REDIAL } = require('./peerLink.js');
+const { PeerLink, normalizeRedial, REDIAL } = require('./peer-link.js');
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
@@ -73,7 +73,7 @@ class WrpcPeer extends Emitter {
   #meshes = new Map();
   #started = null;
   #closed = false;
-  // What a PeerLink is given instead of this peer (peerLink.js), and a Mesh.
+  // What a PeerLink is given instead of this peer (peer-link.js), and a Mesh.
   #linkPort;
   #meshPort;
   // The signaler's listeners, one reference each so close() removes them.

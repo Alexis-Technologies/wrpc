@@ -11,7 +11,7 @@ const timers = require('node:timers/promises');
 const { WrpcClient, defineRouter, procedure, tracked, createEventLog } = require('../../index.js');
 const { bearerAuth, bearerTransport, memoryStore } = require('../../src/auth/index.js');
 const { attachSession, acceptSessions, fromFails, isWtSession } = require('../../src/webtransport/index.js');
-const { createFakeWt } = require('./fakeWebTransport.js');
+const { createFakeWt } = require('./fake-web-transport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const router = () => {

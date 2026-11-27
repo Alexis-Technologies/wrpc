@@ -1,6 +1,6 @@
 'use strict';
 
-// The Kafka broker over the in-process fake (tests/broker/fakeKafka.js), in
+// The Kafka broker over the in-process fake (tests/broker/fake-kafka.js), in
 // BOTH KafkaJS shapes — kafkajs and the confluent facade — so the
 // normalization in src/broker/kafka/shape.js is exercised both ways. The
 // same suites run against a real broker in tests/broker/kafka.integration.test.js.
@@ -11,10 +11,10 @@ const timers = require('node:timers/promises');
 
 const { createKafkaBroker, encodeVector, decodeVector } = require('../../src/broker/kafka/index.js');
 const { isBroker, isBrokerDirect } = require('../../src/broker/index.js');
-const { createFakeKafka } = require('./fakeKafka.js');
-const { runBackplaneContract } = require('./backplaneContract.js');
-const { runLogContract } = require('./logContract.js');
-const { runQueueContract } = require('./queueContract.js');
+const { createFakeKafka } = require('./fake-kafka.js');
+const { runBackplaneContract } = require('./backplane-contract.js');
+const { runLogContract } = require('./log-contract.js');
+const { runQueueContract } = require('./queue-contract.js');
 const { quiet, unique, waitFor, collect } = require('./support.js');
 
 const FLAVORS = ['kafkajs', 'confluent'];
