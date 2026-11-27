@@ -754,6 +754,13 @@ expectError(new wrpc.WrpcError({ message: 'x', code: 400 }));
 // Every class takes (message, options), as Error does
 expectType<'ALX_ERR_CONFIG'>(new wrpc.ConfigError('x', { cause: wrpcError }).code);
 expectType<'ALX_ERR_ARGUMENT'>(new wrpc.ArgumentError('x').code);
+// What is gone, what a peer broke, what a carrier gave up on
+expectType<wrpc.ClosedErrorCode>(new wrpc.ClosedError('x').code);
+expectAssignable<wrpc.ClosedError>(new wrpc.ClosedError('x', { code: 'ALX_ERR_ABORTED', cause: wrpcError }));
+expectError(new wrpc.ClosedError('x', { code: 'ALX_ERR_PROTOCOL' }));
+expectType<'ALX_ERR_PROTOCOL'>(new wrpc.ProtocolError('x').code);
+expectType<wrpc.TransportErrorCode>(new wrpc.TransportError('x', { code: 'ALX_ERR_TIMEOUT' }).code);
+expectAssignable<wrpc.ErrorCode>('ALX_ERR_QUEUE_FULL');
 
 // Declarative REST: http + fastify-shaped schema on a procedure
 const mapped = wrpc.procedure({

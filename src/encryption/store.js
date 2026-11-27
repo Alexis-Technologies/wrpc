@@ -24,7 +24,7 @@
 
 const crypto = require('node:crypto');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('./envelope.js');
-const { isKeyProvider, OpenError } = require('./contracts.js');
+const { isKeyProvider, OpenError, EncryptionError } = require('./contracts.js');
 const { createLoggerWriter } = require('../logging.js');
 const { ConfigError } = require('../errors.js');
 
@@ -118,7 +118,11 @@ const sealedStore = (store, options = {}) => {
     }
     const kid = keys.current;
     const key = slot(kid, token);
-    if (key === null) throw new Error(`sealedStore: the keyring does not hold its current key ${JSON.stringify(kid)}`);
+    if (key === null) {
+      throw new EncryptionError(`sealedStore: the keyring does not hold its current key ${JSON.stringify(kid)}`, {
+        code: 'ALX_ERR_ENCRYPTION_KEY',
+      });
+    }
     const { sealed } = sealer.seal(Buffer.from(JSON.stringify(data)), key);
     let mode = create ? CREATE : UPDATE;
     if (!create) {

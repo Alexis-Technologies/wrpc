@@ -22,6 +22,26 @@ export declare class OpenError extends Error {
   constructor(message?: string, options?: ErrorOptions & { reason?: string });
 }
 
+/** What went wrong in the encryption layer, besides a message that does not open. */
+export type EncryptionErrorCode =
+  | 'ALX_ERR_ENCRYPTION_HANDSHAKE'
+  | 'ALX_ERR_ENCRYPTION_KEY'
+  | 'ALX_ERR_ENCRYPTION_FRAME'
+  | 'ALX_ERR_ENCRYPTION_STATE';
+
+/**
+ * A handshake that broke or ran out of order (`ALX_ERR_ENCRYPTION_HANDSHAKE`),
+ * a key that is missing, not the pinned one or not accepted
+ * (`ALX_ERR_ENCRYPTION_KEY`), a sealed frame that is none
+ * (`ALX_ERR_ENCRYPTION_FRAME`), a session used out of its state — not
+ * established, its message counter spent (`ALX_ERR_ENCRYPTION_STATE`).
+ */
+export declare class EncryptionError extends Error {
+  readonly name: 'EncryptionError';
+  readonly code: EncryptionErrorCode;
+  constructor(message: string, options: ErrorOptions & { code: EncryptionErrorCode });
+}
+
 /**
  * A sealed request (http, sse) the server answered in plaintext — a client
  * that encrypts reads none. `statusCode` is the outer, unauthenticated status;

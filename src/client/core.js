@@ -17,7 +17,7 @@ const {
   resolveGenerateId,
   checkLimit,
 } = require('../utils.js');
-const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError, ClosedError, ProtocolError } = require('../errors.js');
 
 // A timeout as a timer takes it: a number of milliseconds, up to 2^31 - 1.
 // `callTimeout: '300'` — a value straight out of an environment variable —
@@ -1671,7 +1671,7 @@ class WrpcClient extends Emitter {
     const packet = this.#decodePacket(data);
     if (!packet) {
       if (this.#proxyPacket) return void this.#proxyPacket(data, null);
-      throw new Error('Invalid JSON packet');
+      throw new ProtocolError('Invalid JSON packet');
     }
     return this.#handleParsed(data, packet);
   }
@@ -1729,7 +1729,7 @@ class WrpcClient extends Emitter {
       else await this.#handleEvent(name, packet.data);
       return;
     }
-    if (!id) throw new Error('Packet structure error');
+    if (!id) throw new ProtocolError('Packet structure error');
     if (type === 'callback') return void this.#settle(packet);
     if (type === 'data' || type === 'end') return void this.#handleSubscriptionPacket(packet);
     if (type === 'stream') await this.#handleStream(packet);
@@ -1749,7 +1749,7 @@ class WrpcClient extends Emitter {
     // The 499 acknowledging a cancel this client sent: the caller was
     // rejected the moment it aborted, so the ack is expected, not an error.
     if (this.#cancelled.delete(id)) return;
-    if (!error) throw new Error(`Callback ${shown(id)} not found`);
+    if (!error) throw new ProtocolError(`Callback ${shown(id)} not found`);
     // An error on an id that is no call's is the server's word on a STREAM
     // this client sends — the announcement refused (429), a chunk past the
     // announced size (400) or past what the server holds unread (413), a
@@ -1913,7 +1913,7 @@ class WrpcClient extends Emitter {
     const stream = this.#streams.get(id);
     if (status === undefined) {
       if (stream) {
-        throw new Error(`Stream ${shown(name)} is already initialized`);
+        throw new ProtocolError(`Stream ${shown(name)} is already initialized`);
       }
       // Capped, as a server caps a client's: an announced stream holds its
       // readable — and what is sent into it — until somebody reads it, and
@@ -1954,7 +1954,7 @@ class WrpcClient extends Emitter {
     // hold is not an error: its announcement was refused here, or the stream
     // is long over. It is what a sender told to stop sends back.
     if (!stream && status === 'terminate') return;
-    if (!stream) throw new Error(`Stream ${shown(id)} is not initialized`);
+    if (!stream) throw new ProtocolError(`Stream ${shown(id)} is not initialized`);
     if (status !== 'end' && status !== 'terminate') return;
     // Its sender ended it: nothing is left to stop.
     stream.onCancel = null;
@@ -2015,7 +2015,7 @@ class WrpcClient extends Emitter {
     const { id, payload } = chunkDecode(view);
     const stream = this.#streams.get(id);
     if (!stream) {
-      throw new Error(`Stream ${shown(id)} is not initialized`);
+      throw new ProtocolError(`Stream ${shown(id)} is not initialized`);
     }
     // Nothing here can hold the sender back — a browser's WebSocket has no
     // pause, and no transport waits for this push — so what the streams
@@ -2031,7 +2031,7 @@ class WrpcClient extends Emitter {
   }
 
   async load(...units) {
-    if (!this.active) throw new Error('Not connected');
+    if (!this.active) throw new ClosedError('Not connected');
     const introspection = await this.#call('system/introspect', units);
     for (const unit of units) {
       const instance = introspection[unit];

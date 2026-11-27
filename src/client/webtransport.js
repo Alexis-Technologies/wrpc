@@ -24,7 +24,7 @@
 const { WrpcClient, ClientTransport, connectUrl } = require('./core.js');
 const { normalizeCompression } = require('../compression/index.js');
 const { WtChannel, closeQuietly, normalizeBackpressure } = require('../webtransport/channel.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, ClosedError } = require('../errors.js');
 
 // The `WebTransportOptions` handed to the constructor as-is.
 const INIT_KEYS = ['serverCertificateHashes', 'congestionControl', 'allowPooling', 'requireUnreliable', 'protocols'];
@@ -144,11 +144,11 @@ class ClientWtTransport extends ClientTransport {
     );
     try {
       await session.ready;
-      if (attempt !== this.#attempt) throw new Error('Connection terminated');
+      if (attempt !== this.#attempt) throw new ClosedError('Connection terminated');
       const stream = await session.createBidirectionalStream();
-      if (attempt !== this.#attempt) throw new Error('Connection terminated');
+      if (attempt !== this.#attempt) throw new ClosedError('Connection terminated');
       await this.#attach(session, stream, wt, compression, encryption);
-      if (attempt !== this.#attempt) throw new Error('Connection terminated');
+      if (attempt !== this.#attempt) throw new ClosedError('Connection terminated');
     } catch (error) {
       if (this.#session === session) {
         this.#session = null;
@@ -236,7 +236,7 @@ class ClientWtTransport extends ClientTransport {
     });
     this.#secure = secure;
     return secure.ready.then((info) => {
-      if (this.#session !== session) throw new Error('Connection terminated');
+      if (this.#session !== session) throw new ClosedError('Connection terminated');
       this.encryption = info;
       established();
     });
@@ -270,7 +270,7 @@ class ClientWtTransport extends ClientTransport {
    * the high-water mark, after which 'drain' follows.
    */
   write(data, options = null) {
-    if (!this.active) throw new Error('Not connected');
+    if (!this.active) throw new ClosedError('Not connected');
     const channel = this.#channel;
     if (this.#secure === null) return channel.send(data, options);
     if (channel.exceedsBackpressure()) return false;

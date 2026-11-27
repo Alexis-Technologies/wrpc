@@ -79,6 +79,10 @@ expectType<number>(refusal.status);
 expectType<'ALX_ERR_OPEN'>(failure.code);
 expectType<string | undefined>(failure.reason);
 expectAssignable<encryption.OpenError>(new encryption.OpenError(undefined, { reason: 'replay' }));
+expectType<encryption.EncryptionErrorCode>(
+  new encryption.EncryptionError('x', { code: 'ALX_ERR_ENCRYPTION_KEY' }).code,
+);
+expectError(new encryption.EncryptionError('x', { code: 'ALX_ERR_OPEN' }));
 expectAssignable<encryption.EncryptionRefusedError>(
   new encryption.EncryptionRefusedError('refused', { statusCode: 426 }),
 );

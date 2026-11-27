@@ -10,7 +10,7 @@ const { WrpcClient, CALL_TIMEOUT, normalizeReconnect, viewOf } = require('./core
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 const { chunkDecode } = require('../chunks.js');
 const { MAX_STREAMS } = require('../streams.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, ClosedError, ProtocolError } = require('../errors.js');
 
 // The page's packet: JSON text, or an attachments frame carrying one (a
 // call with bytes in its args). Anything else — bytes that are no frame,
@@ -227,12 +227,12 @@ class WrpcClientProxy extends Emitter {
     }
     if (type === 'wrpc:online') WrpcClient.online();
     else if (type === 'wrpc:offline') WrpcClient.offline();
-    else throw new Error(`Unknown event: ${type}`);
+    else throw new ProtocolError(`Unknown event: ${type}`);
   }
 
   async #handleMessage(event, port) {
     const { data } = event;
-    if (data === undefined) throw new Error('Message data is undefined');
+    if (data === undefined) throw new ProtocolError('Message data is undefined');
     const packet = parsePacket(data);
     if (!packet) return this.#upload(data, port);
     // The worker is the page's peer: it answers the page's heartbeat itself
@@ -260,7 +260,7 @@ class WrpcClientProxy extends Emitter {
       await this.#upstream();
       return void this.#forward(data, packet);
     }
-    if (!packet.id) throw new Error('Invalid JSON packet');
+    if (!packet.id) throw new ProtocolError('Invalid JSON packet');
     // An upload is this page's from its announcement to its end — said
     // before the await, so a chunk posted right behind it finds it.
     if (packet.type === 'stream') {
@@ -299,7 +299,7 @@ class WrpcClientProxy extends Emitter {
   async #upstream() {
     await this.open();
     if (!this.#connection || !this.#connection.active) {
-      throw new Error('Not connected to server');
+      throw new ClosedError('Not connected to server');
     }
   }
 
@@ -307,7 +307,9 @@ class WrpcClientProxy extends Emitter {
   // the same await as the packets around it; anything else is nobody's.
   async #upload(data, port) {
     const view = viewOf(data);
-    if (view === null || this.#uploads.get(chunkDecode(view).id) !== port) throw new Error('Invalid JSON packet');
+    if (view === null || this.#uploads.get(chunkDecode(view).id) !== port) {
+      throw new ProtocolError('Invalid JSON packet');
+    }
     await this.#upstream();
     this.#connection.write(view);
   }

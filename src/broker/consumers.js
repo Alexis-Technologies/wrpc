@@ -33,13 +33,13 @@ const { rpcOf } = require('./host.js');
 const { toText, reasonText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
 const { DEFAULT_PREFETCH } = require('./adapter.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 
 // The binding's own refusals: fixed text, safe on a dead letter's outer
 // header under sealing — unlike a handler's message (settle).
 const OWN_REFUSALS = new WeakSet();
-const refusal = (message) => {
-  const error = new Error(message);
+const refusal = (message, code) => {
+  const error = new WrpcError(message, { code });
   OWN_REFUSALS.add(error);
   return error;
 };
@@ -583,10 +583,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
             draining: rpc.draining,
           });
           const why = opened.refused === 'kid' ? 'unknown key id' : 'the key provider failed';
-          await settle(delivery, decision, 503, refusal(`Sealed delivery refused: ${why}`));
+          await settle(delivery, decision, 503, refusal(`Sealed delivery refused: ${why}`, 503));
           return;
         }
-        await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Sealed delivery refused'));
+        await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Sealed delivery refused', 400));
         return;
       }
       if (opened.sealed) {
@@ -598,7 +598,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
         // stricter than the rollout's, and a plaintext delivery is not
         // served — parity with `unsealed`.
         log.warn({ event: 'broker.refused', queue: policy.queue, reason: 'plaintext' });
-        await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Plaintext delivery refused'));
+        await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Plaintext delivery refused', 400));
         return;
       }
     }

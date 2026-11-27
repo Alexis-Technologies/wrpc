@@ -44,7 +44,7 @@ const {
   checkMessageSize,
 } = require('./framing.js');
 const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
-const { ConfigError, ArgumentError, TransportError } = require('../errors.js');
+const { ConfigError, ArgumentError, TransportError, ClosedError } = require('../errors.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -111,7 +111,7 @@ const closeChannelQuietly = (channel) => {
 const waitChannelOpen = (channel) =>
   new Promise((resolve, reject) => {
     if (channel.readyState === 'open') return void resolve();
-    if (channel.readyState !== 'connecting') return void reject(new Error(CLOSED_CHANNEL));
+    if (channel.readyState !== 'connecting') return void reject(new ClosedError(CLOSED_CHANNEL));
     const settle = (fn, value) => {
       channel.removeEventListener('open', onOpen);
       channel.removeEventListener('close', onClose);
@@ -119,8 +119,9 @@ const waitChannelOpen = (channel) =>
       fn(value);
     };
     const onOpen = () => settle(resolve);
-    const onClose = () => settle(reject, new Error(CLOSED_CHANNEL));
-    const onError = (event) => settle(reject, event?.error ?? new Error('data channel error'));
+    const onClose = () => settle(reject, new ClosedError(CLOSED_CHANNEL));
+    const onError = (event) =>
+      settle(reject, event?.error ?? new TransportError('data channel error', { code: 'ALX_ERR_CHANNEL_ERROR' }));
     channel.addEventListener('open', onOpen);
     channel.addEventListener('close', onClose);
     channel.addEventListener('error', onError);
@@ -555,9 +556,9 @@ class ClientRtcTransport extends ClientTransport {
   async #openLink(link) {
     const attempt = ++this.#attempt;
     await link.waitOpen();
-    if (attempt !== this.#attempt) throw new Error('Connection terminated');
+    if (attempt !== this.#attempt) throw new ClosedError('Connection terminated');
     const channel = link.clientChannel;
-    if (!channel || channel.readyState !== 'open') throw new Error('The link has no open client channel');
+    if (!channel || channel.readyState !== 'open') throw new ClosedError('The link has no open client channel');
     this.revision = this.attachments !== false && !this.codec && peerReads(link, 1) ? 2 : 1;
     this.#attach(channel, link.maxMessageSize, activeCompression(this.#compression, link));
   }
@@ -569,14 +570,14 @@ class ClientRtcTransport extends ClientTransport {
       // terminate() won while the factory was working: what it made is
       // closed, not left open for nobody.
       if (isRtcDataChannel(channel)) closeChannelQuietly(channel);
-      throw new Error('Connection terminated');
+      throw new ClosedError('Connection terminated');
     }
     if (!isRtcDataChannel(channel)) {
       throw new ConfigError('WebRTC transport: channel must be a data channel, or a factory returning one');
     }
     this.#channel = channel;
     await waitChannelOpen(channel);
-    if (attempt !== this.#attempt) throw new Error('Connection terminated');
+    if (attempt !== this.#attempt) throw new ClosedError('Connection terminated');
     // A browser's default is 'blob'; the framing reads bytes.
     channel.binaryType = 'arraybuffer';
     this.#attach(channel, this.#maxMessageSize, activeCompression(this.#compression, null));
@@ -605,7 +606,8 @@ class ClientRtcTransport extends ClientTransport {
     const onMessage = ({ data }) => this.#receive(data);
     const onClose = () => this.#down();
     const onDrain = () => codec.drained();
-    const onError = (event) => this.#escalate(event?.error ?? new Error('data channel error'));
+    const onError = (event) =>
+      this.#escalate(event?.error ?? new TransportError('data channel error', { code: 'ALX_ERR_CHANNEL_ERROR' }));
     channel.addEventListener('message', onMessage);
     channel.addEventListener('close', onClose);
     channel.addEventListener('bufferedamountlow', onDrain);
@@ -628,7 +630,7 @@ class ClientRtcTransport extends ClientTransport {
    * the high-water mark, after which 'drain' follows.
    */
   write(data) {
-    if (!this.active) throw new Error('Not connected');
+    if (!this.active) throw new ClosedError('Not connected');
     return this.#codec.send(data);
   }
 
@@ -783,7 +785,8 @@ class RtcPeerTransport extends ServerTransport {
     const onMessage = ({ data }) => this.#receive(data);
     const onClose = () => this.#down();
     const onDrain = () => codec.drained();
-    const onChannelError = (event) => this.#error(event?.error ?? new Error('data channel error'));
+    const onChannelError = (event) =>
+      this.#error(event?.error ?? new TransportError('data channel error', { code: 'ALX_ERR_CHANNEL_ERROR' }));
     channel.addEventListener('message', onMessage);
     channel.addEventListener('close', onClose);
     channel.addEventListener('bufferedamountlow', onDrain);

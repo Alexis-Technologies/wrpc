@@ -12,7 +12,7 @@ const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
 const { publicErrorMessage, publicErrorDetails, wireError, clip, lineLevels } = require('./errors.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
-const { WrpcError } = require('../errors.js');
+const { WrpcError, ClosedError } = require('../errors.js');
 
 const DEFAULT_VERSION = '*';
 
@@ -211,7 +211,7 @@ const handleRpc = async (client, packet, router) => {
   if (client.calls.has(id)) {
     // Two calls with one id: a generateId that repeats, or a client that
     // retried without minting a fresh one. Either is a bug worth seeing.
-    const error = new Error(`Call ${clip(id)} is already in flight`);
+    const error = new WrpcError(`Call ${clip(id)} is already in flight`, { code: 400 });
     client.log.warn({ event: 'call.duplicate', code: 400, id: clip(id), method: clip(method), err: error });
     client.otel.recordCall(method, 'error', 400);
     return void client.error(400, { id, error, level: 'debug' });
@@ -373,8 +373,8 @@ const handleCancel = (client, packet) => {
   const controller = client.calls.get(id);
   if (!controller) return; // unknown or already settled: nothing to cancel
   client.calls.delete(id);
-  controller.abort(new Error('Cancelled by the caller'));
-  client.error(CANCELLED, { id, error: new Error('Cancelled by the caller') });
+  controller.abort(new ClosedError('Cancelled by the caller', { code: 'ALX_ERR_ABORTED' }));
+  client.error(CANCELLED, { id, error: new WrpcError('Cancelled by the caller', { code: CANCELLED }) });
 };
 
 // A subscription's terminal packet is `end`, refusals included: answering
@@ -406,7 +406,7 @@ const handleSubscribe = async (client, packet, router) => {
   const previous = client.subscriptions.get(id);
   if (previous) {
     client.subscriptions.delete(id);
-    previous.abort(new Error('Replaced by a re-subscribe'));
+    previous.abort(new ClosedError('Replaced by a re-subscribe', { code: 'ALX_ERR_ABORTED' }));
   }
   if (client.subscriptions.size >= client.maxSubscriptions) {
     return void refuse(client, id, 429, 'Too many subscriptions', method);
@@ -496,7 +496,7 @@ const handleUnsubscribe = (client, packet) => {
   if (!controller) return; // already finished, or never existed
   client.subscriptions.delete(id);
   // The pump notices the abort, stops pulling, and answers with `end`.
-  controller.abort(new Error('Unsubscribed by the client'));
+  controller.abort(new ClosedError('Unsubscribed by the client', { code: 'ALX_ERR_ABORTED' }));
 };
 
 // What the sender of a stream is told, once, when the stream is over on
@@ -554,8 +554,8 @@ const handleStream = async (client, packet) => {
   try {
     // Request/response transports cannot carry streams; without this the
     // call would register a stream and never answer, hanging the request
-    if (!client.persistent) throw new Error('Streams require a persistent connection');
-    if (!client.binary) throw new Error('Streams require a binary transport');
+    if (!client.persistent) throw new WrpcError('Streams require a persistent connection', { code: 400 });
+    if (!client.binary) throw new WrpcError('Streams require a binary transport', { code: 400 });
     const stream = client.streams.get(id);
     if (status) {
       // A terminate promises nothing, so one for a stream this end does not
@@ -564,11 +564,13 @@ const handleStream = async (client, packet) => {
       // is not wanted sends back (WrpcWritable.cancel) — answered, the
       // refusal of one stream came back as two errors.
       if (!stream && status === 'terminate') return;
-      if (!stream) throw new Error(`Stream ${tagOf(id, name)} is not initialized`);
+      if (!stream) throw new WrpcError(`Stream ${tagOf(id, name)} is not initialized`, { code: 400 });
       // A status the protocol does not have used to fall through to the
       // delete below: the stream forgotten, its reader left waiting where
       // not even the connection's close could reach it.
-      if (status !== 'end' && status !== 'terminate') throw new Error('Stream packet structure error');
+      if (status !== 'end' && status !== 'terminate') {
+        throw new WrpcError('Stream packet structure error', { code: 400 });
+      }
       if (status === 'terminate') {
         // The sender's own end: nobody to tell. Forgotten before anything
         // else — an announcement right behind this packet is dispatched in
@@ -597,14 +599,18 @@ const handleStream = async (client, packet) => {
     }
     // A size is a count of bytes: zero is a stream, minus one is not.
     const valid = typeof name === 'string' && Number.isSafeInteger(size) && size >= 0;
-    if (!valid) throw new Error('Stream packet structure error');
-    if (stream) throw new Error(`Stream ${tagOf(id, name)} is already initialized`);
+    if (!valid) throw new WrpcError('Stream packet structure error', { code: 400 });
+    if (stream) throw new WrpcError(`Stream ${tagOf(id, name)} is already initialized`, { code: 400 });
     // Capped like calls and subscriptions: an announced stream holds its
     // readable until a handler reads it, and the peer decides how many.
     if (client.streams.size >= client.maxStreams) {
       client.otel.recordStream('receive', 'refused', 429);
       client.log.debug({ event: 'stream.capacity', code: 429, max: client.maxStreams });
-      return void client.error(429, { id, error: new Error('Too many open streams'), level: 'debug' });
+      return void client.error(429, {
+        id,
+        error: new WrpcError('Too many open streams', { code: 429 }),
+        level: 'debug',
+      });
     }
     {
       const readable = new WrpcReadable(id, name, size);
@@ -632,11 +638,13 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
   if (data.length > 1 && data[0] === FRAME_MARK) {
     if (router !== null && isAttachmentsFrame(data)) return void handleMessage(client, data, router, options);
     client.log[levelFor(client, 'frame.refused')]({ event: 'frame.refused', kind: data[1] });
-    return void client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
+    return void client.error(400, { error: new WrpcError('Unexpected framed message', { code: 400 }), level: 'debug' });
   }
   const { id, payload } = chunkDecode(data);
   const upstream = client.streams.get(id);
-  if (!upstream) return void violation(client, id, new Error(`Stream ${clip(id)} is not initialized`));
+  if (!upstream) {
+    return void violation(client, id, new WrpcError(`Stream ${clip(id)} is not initialized`, { code: 400 }));
+  }
   // What arrived for a stream this end holds, counted as it arrives — kept,
   // refused by a cap, or dropped into a stream that is over: it used to be
   // counted after the push, so the chunk a cap refused was the one chunk
@@ -688,7 +696,7 @@ const handleEvent = async (client, packet, router) => {
   // socket and its server-side Client open for as long as the peer keeps
   // the connection. `handleStream` guards the same hazard.
   if (!client.persistent) {
-    return void client.error(400, { error: new Error('Events require a persistent connection') });
+    return void client.error(400, { error: new WrpcError('Events require a persistent connection', { code: 400 }) });
   }
   const { unit, version, name } = parseTarget(target);
   const handler = router.getEventHandler(unit, version, name);
@@ -747,7 +755,7 @@ const contain = (client, label) => (error) => {
 // these have to be refused, or the request is never answered.
 const needsConnection = (client, id, what) => {
   if (client.persistent) return false;
-  client.error(400, { id, error: new Error(`${what} requires a persistent connection`) });
+  client.error(400, { id, error: new WrpcError(`${what} requires a persistent connection`, { code: 400 }) });
   return true;
 };
 
@@ -841,7 +849,7 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   // version skew, a proxy rewriting bodies, or somebody else's client
   // pointed at this port. `handleMessage` already logs frames that do not
   // parse; this is the other half of the same funnel, and was silent.
-  const error = new Error('Packet structure error');
+  const error = new WrpcError('Packet structure error', { code: 500 });
   const level = levelFor(client, 'packet.unknown');
   client.log[level]({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? clip(type) : null });
   client.error(500, { id: hasId && typeof id === 'string' ? id : '', error, level: 'debug' });
@@ -885,13 +893,13 @@ const handleParsed = (client, parsed, data, router, options = {}) => {
   // error-level answer. The answer is the same id-less 500.
   if (parsed === null) {
     client.log[levelFor(client, 'packet.malformed')]({ event: 'packet.malformed', bytes: data?.length ?? 0 });
-    return void client.error(500, { error: new Error('Packet structure error'), level: 'debug' });
+    return void client.error(500, { error: new WrpcError('Packet structure error', { code: 500 }), level: 'debug' });
   }
   const packet = parsed || {};
   if (!Array.isArray(packet)) return void handlePacket(client, packet, router, options);
   const { maxBatch = DEFAULT_MAX_BATCH } = options;
   if (packet.length === 0 || packet.length > maxBatch) {
-    const error = new Error(`Batch size must be between 1 and ${maxBatch}`);
+    const error = new WrpcError(`Batch size must be between 1 and ${maxBatch}`, { code: 400 });
     // Debug for the same reason as the 429 above: any peer can send an
     // oversize batch in a loop, and a warn per attempt would make the log
     // the thing that falls over.

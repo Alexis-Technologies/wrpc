@@ -51,7 +51,7 @@ const {
   joinWatcher,
   healthWatcher,
 } = require('./shape.js');
-const { ConfigError, ArgumentError, WrpcError } = require('../../errors.js');
+const { ConfigError, ArgumentError, WrpcError, ClosedError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PARTITIONS = 3;
@@ -446,9 +446,9 @@ const createKafkaBroker = (options = {}) => {
       unwatch = healthWatcher(flavor, consumer, {
         onDown: (error) => {
           unwatch();
-          report('broker.kafka.tail', error ?? new Error('consumer crashed'), { topic });
+          report('broker.kafka.tail', error ?? new ClosedError('consumer crashed'), { topic });
           void closeConsumer(consumer);
-          onEnd(error ?? new Error('consumer crashed'));
+          onEnd(error ?? new ClosedError('consumer crashed'));
         },
         onUp: () => {},
       });
@@ -695,7 +695,10 @@ const createKafkaBroker = (options = {}) => {
     const unwatch = healthWatcher(flavor, consumer, {
       onDown: (error, restart) => {
         state.healthy = false;
-        report('broker.kafka.crash', error ?? new Error('consumer crashed'), { queue, restart: restart === true });
+        report('broker.kafka.crash', error ?? new ClosedError('consumer crashed'), {
+          queue,
+          restart: restart === true,
+        });
       },
       onUp: () => {
         if (state.running) state.healthy = true;

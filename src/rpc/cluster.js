@@ -8,7 +8,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 const { hasBytes, encodeAttachments, ENVELOPE_DEPTH } = require('../attachments.js');
 const { ReplayWindow, DEFAULT_REPLAY_WINDOW } = require('../encryption/envelope.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, ProtocolError } = require('../errors.js');
 
 // Cluster: presence, introspection and node-to-node messaging across every
 // wrpc instance sharing a backplane. Built ON TOP of the pub/sub contract
@@ -879,7 +879,7 @@ class Cluster extends Emitter {
     const apply = (sel) => {
       // `op` here is a literal from join()/leave()/disconnect()/send(), never
       // user input, so an unknown one is a bug in this file and should be loud.
-      if (!this.#applyOp(op, sel, args)) throw new Error(`Unknown cluster command op '${op}'`);
+      if (!this.#applyOp(op, sel, args)) throw new ProtocolError(`Unknown cluster command op '${op}'`);
     };
     // An addressed command rides the target instance's own channel — one
     // publish, one receiver — instead of asking every node to filter.
@@ -1022,7 +1022,7 @@ class Cluster extends Emitter {
         const { rooms, name, data, timeout } = args;
         return this.#local.ask(rooms ?? null, name, data, timeout, (count) => reply({ count }, false));
       }
-      throw new Error(`Unknown cluster op '${op}'`);
+      throw new ProtocolError(`Unknown cluster op '${op}'`);
     };
     // A CONSUMER span parented on the envelope's tp/ts (see #post): the
     // requester's client span in one process becomes the parent of the

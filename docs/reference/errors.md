@@ -144,6 +144,13 @@ it is a wire status, of a `WrpcError` or of an error a handler throws.
 | `ALX_ERR_BACKPRESSURE` | `TransportError` | A WebTransport session or a WebRTC channel past `maxBackpressure`: it is closed |
 | `ALX_ERR_CHANNEL_SEND` | `TransportError` | A WebRTC data channel's `send()` threw before the first fragment: only that message is lost |
 | `ALX_ERR_CHANNEL_DESYNC` | `TransportError` | …or threw mid-message: the peer holds a message with no end, and the channel is closed |
+| `ALX_ERR_CHANNEL_ERROR` | `TransportError` | A WebRTC data channel reported an error of its own; the link or transport over it fails |
+| `ALX_ERR_TIMEOUT` | `TransportError` | A wait that ran out: a WebRTC link's connect or ICE restart, a WebTransport session idle past its `idleTimeout`, an encryption handshake, a queue slot past the procedure's `queue.timeout` (the cause of its `503`) |
+| `ALX_ERR_QUEUE_FULL` | `TransportError` | A procedure's `queue` is full — the cause of the `503` the call is answered with |
+| `ALX_ERR_MESSAGE_TOO_BIG` | `TransportError` | An SSE event past the client's `maxMessage` |
+| `ALX_ERR_CLOSED` | `ClosedError` | What the operation needed is gone: a transport not connected, a connection closed or terminated under a call, a link, a peer, a signaler, a channel or a broker consumer closed — retried on a new connection |
+| `ALX_ERR_ABORTED` | `ClosedError` | Ended on purpose by whoever held it: a call cancelled by its caller, a subscription unsubscribed or replaced by a re-subscribe, a signaler replaced by a newer connection, a link re-dialled, a queued call whose signal aborted — the reason a handler's `ctx.signal` carries |
+| `ALX_ERR_PROTOCOL` | `ProtocolError` | A peer's packet that breaks the protocol where no status answers it: a server's packet the client cannot place, a page's message to the worker proxy, another node's unknown cluster op, a broker session frame out of order or that does not inflate |
 | `ALX_ERR_DEFLATE_TRUNCATED` | `DeflateError` | [`./deflate`](../guide/compression): the input ends before its last block does |
 | `ALX_ERR_DEFLATE_HUFFMAN` | `DeflateError` | …a Huffman code that is over-subscribed, empty or invalid, or a length or distance code out of range |
 | `ALX_ERR_DEFLATE_STORED` | `DeflateError` | …a stored block whose `NLEN` is not `LEN`'s complement |
@@ -167,14 +174,23 @@ it is a wire status, of a `WrpcError` or of an error a handler throws.
 | `ALX_ERR_ASSERTION_MISSING` | `AssertionError` | A description that carries no assertion where one is required |
 | `ALX_ERR_OPEN` | `OpenError` | [`./encryption`](../guide/encryption): a sealed message that does not open — a wrong key, nonce, bit or length, on purpose one error |
 | `ALX_ERR_ENCRYPTION_REFUSED` | `EncryptionRefusedError` | A sealed request answered in plaintext; `statusCode` is the outer status |
+| `ALX_ERR_ENCRYPTION_HANDSHAKE` | `EncryptionError` | A handshake message that breaks the pattern, comes out of turn or before the handshake finished |
+| `ALX_ERR_ENCRYPTION_KEY` | `EncryptionError` | A server key that is not the pinned one or was not accepted, a public key that is invalid, a keyring without its current key, a key the client could not fetch |
+| `ALX_ERR_ENCRYPTION_FRAME` | `EncryptionError` | A sealed frame that is none, or plaintext on an encrypted connection |
+| `ALX_ERR_ENCRYPTION_STATE` | `EncryptionError` | A session used out of its state: not established, its handshake not finished, its message counter spent |
 
 Every class takes `(message, options)`, as `Error` does: `options` holds
 `cause` — set only when it is given — and the class's own fields, `code`
 among them where one class has several. `ConfigError` and `ArgumentError`
 extend `TypeError` — what 2.2 and older threw for both — so `instanceof
-TypeError` still holds; they are exported from `@alexify/wrpc`, the others
-from the subpath that throws them (`FramingError` and `TransportError` from
-`./wt` and `./webrtc` alike). An assertion refusal counts in
+TypeError` still holds; they are exported from `@alexify/wrpc` with
+`ClosedError`, `ProtocolError` and `TransportError`, the others from the
+subpath that throws them (`FramingError` and `TransportError` from `./wt`
+and `./webrtc` alike, `EncryptionError` from `./encryption`). A call
+answered by the server still rejects with a `WrpcError` and its numeric
+`code`; these are what is thrown on this side — a transport's `open()` or
+`write()`, a link, an `'error'` event — and the `cause` of a `WrpcError`
+the client builds from one (its `503` for a dead connection). An assertion refusal counts in
 `wrpc.rtc.assertions` under the last word of its code, lowercased —
 `signature` for `ALX_ERR_ASSERTION_SIGNATURE` — the labels the
 [metric](../guide/telemetry) had before the codes.
@@ -189,12 +205,15 @@ try {
 }
 ```
 
-Three errors keep the code of the Node.js error they stand in for, so code
+Five errors keep the code of the Node.js error they stand in for, so code
 that handles Node's handles them: a uWebSockets.js engine that cannot bind
 (`EADDRINUSE`), a body cut short behind an adapter
-(`ERR_STREAM_PREMATURE_CLOSE`) and a permessage-deflate message that
-inflates past `maxPayload` (`ERR_BUFFER_TOO_LARGE`, what `zlib` itself throws
-for it).
+(`ERR_STREAM_PREMATURE_CLOSE`), a permessage-deflate message that inflates
+past `maxPayload` — on the server and in a browser client alike —
+(`ERR_BUFFER_TOO_LARGE`, what `zlib` itself throws for it), a header or a
+status set after the response was written (`ERR_HTTP_HEADERS_SENT`, what a
+`ServerResponse` throws), and an `'error'` emitted with no listener
+(`ERR_UNHANDLED_ERROR`, what an `EventEmitter` throws).
 
 ## WebSocket close codes
 

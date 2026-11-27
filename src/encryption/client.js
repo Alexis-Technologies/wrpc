@@ -19,7 +19,7 @@
 const { aead } = require('./aead.js');
 const { x25519 } = require('./dh.js');
 const { createKdf } = require('./hkdf.js');
-const { isCipher, isDh } = require('./contracts.js');
+const { isCipher, isDh, EncryptionError } = require('./contracts.js');
 const { createNoise, PATTERN_NAMES } = require('./noise.js');
 const { parseBundle } = require('./statics.js');
 const { createHpke, dhKem, AEAD_IDS } = require('./hpke.js');
@@ -40,7 +40,7 @@ const {
   MAX_HELD,
   MAX_HELD_BYTES,
 } = require('./session.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, ClosedError, TransportError } = require('../errors.js');
 
 const resolveCipher = (value) => {
   if (value === undefined || value === null) return aead();
@@ -114,7 +114,10 @@ const createEncryption = (options = {}) => {
       clearTimeout(timer);
       link.fail(error);
     };
-    const timer = setTimeout(() => abort(new Error('encryption: handshake timed out')), handshakeTimeout);
+    const timer = setTimeout(
+      () => abort(new TransportError('encryption: handshake timed out', { code: 'ALX_ERR_TIMEOUT' })),
+      handshakeTimeout,
+    );
     timer.unref?.();
     const outbound = new Sequencer(fail);
     const inbound = new Sequencer(fail);
@@ -134,10 +137,12 @@ const createEncryption = (options = {}) => {
     // whoever the responder is — an impostor must not get to read it.
     const verifyPeer = async () => {
       if (pinned !== null && !equal(handshake.remoteStatic ?? pinned.noise, pinned.noise)) {
-        throw new Error('encryption: the server key is not the pinned one');
+        throw new EncryptionError('encryption: the server key is not the pinned one', {
+          code: 'ALX_ERR_ENCRYPTION_KEY',
+        });
       }
       if (pinned === null && pattern === 'XX' && (await verifyServer(handshake.remoteStatic)) !== true) {
-        throw new Error('encryption: the server key was not accepted');
+        throw new EncryptionError('encryption: the server key was not accepted', { code: 'ALX_ERR_ENCRYPTION_KEY' });
       }
     };
 
@@ -195,7 +200,11 @@ const createEncryption = (options = {}) => {
     const step = async (bytes) => {
       if (failed) return;
       if (channel !== null) return void open(bytes);
-      if (!isFrame(bytes, FRAME_HANDSHAKE)) throw new Error('encryption: unexpected message during the handshake');
+      if (!isFrame(bytes, FRAME_HANDSHAKE)) {
+        throw new EncryptionError('encryption: unexpected message during the handshake', {
+          code: 'ALX_ERR_ENCRYPTION_HANDSHAKE',
+        });
+      }
       await handshake.read(bytes.subarray(2));
       await verifyPeer();
       if (!handshake.done) link.write(frame(FRAME_HANDSHAKE, await handshake.write()));
@@ -211,7 +220,9 @@ const createEncryption = (options = {}) => {
       ready,
       send(data) {
         if (failed) return;
-        if (channel === null) throw new Error('encryption: not established');
+        if (channel === null) {
+          throw new EncryptionError('encryption: not established', { code: 'ALX_ERR_ENCRYPTION_STATE' });
+        }
         outbound.push(channel.seal(data), link.write, fail);
       },
       /**
@@ -224,20 +235,30 @@ const createEncryption = (options = {}) => {
         if (failed) return;
         failed = true;
         clearTimeout(timer);
-        rejectReady(error ?? new Error('Connection closed'));
+        rejectReady(error ?? new ClosedError('Connection closed'));
       },
       receive(data) {
         if (failed) return;
         // Text is plaintext: before the handshake it is a server that does
         // not speak this, after it an injection. Either way, the end.
-        if (typeof data === 'string') return void abort(new Error('encryption: plaintext on an encrypted connection'));
+        if (typeof data === 'string') {
+          return void abort(
+            new EncryptionError('encryption: plaintext on an encrypted connection', {
+              code: 'ALX_ERR_ENCRYPTION_FRAME',
+            }),
+          );
+        }
         const bytes = asBytes(data);
         if (channel !== null && queued === 0) return void open(bytes);
         // What waits behind this end's handshake is the server's to grow.
         queued++;
         held += bytes.length;
         if (queued > MAX_HELD || held > MAX_HELD_BYTES) {
-          return void abort(new Error('encryption: too much sent before the handshake finished'));
+          return void abort(
+            new EncryptionError('encryption: too much sent before the handshake finished', {
+              code: 'ALX_ERR_ENCRYPTION_HANDSHAKE',
+            }),
+          );
         }
         chain = chain
           .then(() => step(bytes))
@@ -266,7 +287,11 @@ const createEncryption = (options = {}) => {
 const fetchServerKey = async (url, { fetch = globalThis.fetch } = {}) => {
   const base = `${url}`.replace(/^ws/, 'http').replace(/\/+$/, '');
   const response = await fetch(`${base}/encryption-key`);
-  if (!response.ok) throw new Error(`encryption: no key at ${base}/encryption-key (${response.status})`);
+  if (!response.ok) {
+    throw new EncryptionError(`encryption: no key at ${base}/encryption-key (${response.status})`, {
+      code: 'ALX_ERR_ENCRYPTION_KEY',
+    });
+  }
   const { key } = await response.json();
   parseBundle(key, 'the discovered key');
   return key;

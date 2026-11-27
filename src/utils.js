@@ -1,7 +1,7 @@
 'use strict';
 
 const { generateUUID } = require('./runtime/node.js');
-const { ConfigError, ArgumentError } = require('./errors.js');
+const { ConfigError, ArgumentError, ClosedError, TransportError } = require('./errors.js');
 
 // Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
 // to become a rejection: a throw escaping emit() would land in a socket
@@ -51,7 +51,10 @@ class Emitter {
       // With what was emitted as its cause: an 'error' nobody listens for
       // used to surface as this message and nothing else — the error itself
       // gone, in an unhandled rejection that said only "Unhandled error".
-      throw new Error('Unhandled error', { cause: value });
+      // node's EventEmitter throws the same, under the same code.
+      const unhandled = new Error('Unhandled error', { cause: value });
+      unhandled.code = 'ERR_UNHANDLED_ERROR';
+      throw unhandled;
     }
     const on = event.on;
     // Gated on once.size because the sweep below may delete the whole record;
@@ -270,7 +273,7 @@ class EventStream {
     }
     if (this.#done) return Promise.resolve({ value: undefined, done: true });
     if (this.#waiting) {
-      return Promise.reject(new Error('EventStream: concurrent next() is not supported'));
+      return Promise.reject(new ArgumentError('EventStream: concurrent next() is not supported'));
     }
     return new Promise((resolve, reject) => {
       this.#waiting = { resolve, reject };
@@ -342,14 +345,14 @@ class Semaphore {
   enter(signal = null, waitMs = 0) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
-        return void reject(new Error('Semaphore entry aborted'));
+        return void reject(new ClosedError('Semaphore entry aborted', { code: 'ALX_ERR_ABORTED' }));
       }
       if (this.#counter > 0) {
         this.#counter--;
         return void resolve(true);
       }
       if (this.#queue.length >= this.#size) {
-        return void reject(new Error('Semaphore queue is full'));
+        return void reject(new TransportError('Semaphore queue is full', { code: 'ALX_ERR_QUEUE_FULL' }));
       }
       const waiter = { resolve, reject, timer: null, release: null };
       const evict = () => {
@@ -362,7 +365,7 @@ class Semaphore {
       if (isOwnFirst) {
         waiter.timer = setTimeout(() => {
           evict();
-          reject(new Error('Semaphore timeout'));
+          reject(new TransportError('Semaphore timeout', { code: 'ALX_ERR_TIMEOUT' }));
         }, this.#timeout);
       } else if (waitMs > 0) {
         waiter.timer = setTimeout(() => {
@@ -373,7 +376,7 @@ class Semaphore {
       if (signal) {
         const onAbort = () => {
           evict();
-          reject(new Error('Semaphore entry aborted'));
+          reject(new ClosedError('Semaphore entry aborted', { code: 'ALX_ERR_ABORTED' }));
         };
         signal.addEventListener('abort', onAbort, { once: true });
         waiter.release = () => signal.removeEventListener('abort', onAbort);

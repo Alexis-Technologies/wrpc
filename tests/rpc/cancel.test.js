@@ -87,6 +87,9 @@ describe('cancellation', () => {
     it("should abort the handler's ctx.signal too", async () => {
       await waitFor(() => state.aborted === 1, 'ctx.signal never reached the handler');
       assert.strictEqual(state.lastSignal.aborted, true);
+      // Ended on purpose by the caller: a reason a handler can tell from a
+      // connection that went away.
+      assert.strictEqual(state.lastSignal.reason.code, 'ALX_ERR_ABORTED');
       assert.strictEqual(state.finished, 0, 'the handler stopped instead of running to completion');
     });
 

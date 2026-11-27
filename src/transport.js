@@ -135,6 +135,15 @@ const listed = (origins, origin) => (typeof origins === 'string' ? origins === o
 
 // `hsts`: the `http.hsts` option — a header value of the application's, or
 // false for none; left out, the default above.
+// What node's own res.setHeader() throws in the same place, code included
+// (ERR_HTTP_HEADERS_SENT): a handler that wrote a header too late is told
+// what a host's response would have told it.
+const headersSent = (what) => {
+  const error = new Error(`${what}: the response was already sent`);
+  error.code = 'ERR_HTTP_HEADERS_SENT';
+  return error;
+};
+
 // A `cors.origins` function answers synchronously. A promise is truthy, and
 // `Boolean(promise)` used to allow every origin to an `async` check: it is
 // refused instead, its rejection kept from going unhandled.
@@ -249,7 +258,7 @@ class ServerHttpTransport extends ServerTransport {
     if (RESERVED_HEADERS.has(name.toLowerCase())) {
       throw new ArgumentError(`setHeader: '${name}' is owned by the transport`);
     }
-    if (this.#responded) throw new Error('setHeader: the response was already sent');
+    if (this.#responded) throw headersSent('setHeader');
     const text = String(value);
     checkHeader(name, text, 'setHeader', ArgumentError);
     // One header per name, whatever the spelling: a second call under
@@ -265,7 +274,7 @@ class ServerHttpTransport extends ServerTransport {
   // (a REST route's declared status is the default). Errors keep their code.
   setStatus(code) {
     if (!(Number.isInteger(code) && code >= 200 && code <= 599)) throw new ArgumentError('status: an integer 200-599');
-    if (this.#responded) throw new Error('status: the response was already sent');
+    if (this.#responded) throw headersSent('status');
     this.#status = code;
   }
 

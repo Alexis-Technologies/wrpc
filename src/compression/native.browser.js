@@ -37,7 +37,11 @@ const through = async (stream, bytes, maxOutput) => {
     if (total > maxOutput) {
       // The cap is what is thrown; a cancel that fails changes nothing.
       reader.cancel().catch(() => {});
-      throw new RangeError('inflated message exceeds the cap');
+      // zlib's own error for the cap, code included, as the Node half throws
+      // it: decodeOrNull in sync.js tells the cap from bad bytes by it.
+      const error = new RangeError('inflated message exceeds the cap');
+      error.code = 'ERR_BUFFER_TOO_LARGE';
+      throw error;
     }
     chunks.push(value);
   }

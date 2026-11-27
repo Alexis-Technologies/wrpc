@@ -209,8 +209,12 @@ const ENTRIES = [
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'src/query/index.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
   // deliberately OUTSIDE the main entry so only apps that opt into the
-  // strategies pay for them.
-  { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'src/auth/index.js', platform: 'browser', budget: 2 },
+  // strategies pay for them. 2 -> 3 for the error classes the review
+  // against alexiskills 1.2 gave the operational errors (ClosedError,
+  // ProtocolError, the wider TransportError): they live in src/errors.js,
+  // which this entry loads for its one ConfigError. Measured 2,083 B against
+  // 2,048 — 35 B over a budget that had 11 B left.
+  { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'src/auth/index.js', platform: 'browser', budget: 3 },
   // The pure-JS DEFLATE codec: inflate (stored, fixed, dynamic) and a
   // fixed-Huffman encoder against a preset dictionary — browser-reachable
   // by design, and deliberately OUTSIDE every other entry so only a page
@@ -229,11 +233,15 @@ const ENTRIES = [
   // HPKE (RFC 9180 base + psk, DHKEM, the exporter) and the sealed `fetch` of
   // the http transport — measured 9.9. 11 -> 12 for the sealed event stream
   // (sse), HPKE's auth modes and the end-to-end helpers — measured 10.8.
+  // 12 -> 13 for the codes of the review against alexiskills 1.2: an
+  // EncryptionError (handshake, key, frame, state) where ~20 bare Errors were,
+  // a handshake timeout and a closed connection that say so, and the classes
+  // src/errors.js gained. Measured 12,479 B against 12,288.
   {
     label: 'encryption — browser (@alexify/wrpc/encryption)',
     entry: 'src/encryption/browser.js',
     platform: 'browser',
-    budget: 12,
+    budget: 13,
   },
   { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'src/encryption/index.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the

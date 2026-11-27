@@ -13,7 +13,7 @@
 const { Readable, Writable } = require('node:stream');
 
 const { isWtStream } = require('./port.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, ClosedError } = require('../errors.js');
 
 // A readable whose controller stays reachable — what a node event source
 // is pushed into, and what a close ends.
@@ -104,12 +104,12 @@ const fromQuico = (req, res, { accept = true, maxDatagramSize = 1200 } = {}) => 
     },
     async createBidirectionalStream() {
       const duplex = res.createBidirectionalStream();
-      if (!duplex) throw new Error('quico: the session is not open');
+      if (!duplex) throw new ClosedError('quico: the session is not open');
       return toWtStream(duplex);
     },
     async createUnidirectionalStream() {
       const writable = res.createUnidirectionalStream();
-      if (!writable) throw new Error('quico: the session is not open');
+      if (!writable) throw new ClosedError('quico: the session is not open');
       return Writable.toWeb(writable);
     },
     // quico has no session close of its own: ending the CONNECT response

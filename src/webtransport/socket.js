@@ -44,7 +44,7 @@ const {
   DEFAULT_MAX_BACKPRESSURE,
   DEFAULT_CLOSE_TIMEOUT,
 } = require('./channel.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, TransportError } = require('../errors.js');
 
 // Datagrams handed to the session and not yet taken by it. On the hosts
 // wrpc is run against the sink is synchronous and this never passes one;
@@ -315,7 +315,9 @@ class WtSocket extends EventEmitter {
     clearTimeout(this.#idleTimer);
     this.#idleTimer = setTimeout(() => {
       this.#idleTimer = null;
-      this.#fault('wt.idle', new Error(`No data for ${this.#idle} ms`), { idle: this.#idle });
+      this.#fault('wt.idle', new TransportError(`No data for ${this.#idle} ms`, { code: 'ALX_ERR_TIMEOUT' }), {
+        idle: this.#idle,
+      });
       this.terminate();
     }, this.#idle);
     this.#idleTimer.unref?.();

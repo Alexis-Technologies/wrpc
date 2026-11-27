@@ -43,6 +43,7 @@ const {
   MAX_HELD_BYTES,
 } = require('./session.js');
 const { ConfigError } = require('../errors.js');
+const { EncryptionError } = require('./contracts.js');
 
 const DEFAULT_PATTERNS = Object.freeze(['NK', 'XX']);
 // What may pile up behind an unfinished handshake: an onConnect hook or a
@@ -354,14 +355,16 @@ class SealedSocket extends EventEmitter {
     if (this.#dead) return;
     if (this.#channel !== null) return void this.#open(bytes);
     if (this.#handshake === null) return this.#hello(bytes);
-    if (!isFrame(bytes, FRAME_HANDSHAKE)) throw new Error('not a handshake frame');
+    if (!isFrame(bytes, FRAME_HANDSHAKE)) {
+      throw new EncryptionError('not a handshake frame', { code: 'ALX_ERR_ENCRYPTION_HANDSHAKE' });
+    }
     await this.#handshake.read(bytes.subarray(2));
     await this.#establish();
   }
 
   async #hello(bytes) {
     const hello = parseHello(bytes);
-    if (hello === null) throw new Error('malformed hello');
+    if (hello === null) throw new EncryptionError('malformed hello', { code: 'ALX_ERR_ENCRYPTION_HANDSHAKE' });
     const encryption = this.#encryption;
     const noise = encryption.protocols.get(hello.name);
     // Refused, never negotiated: answering with what WOULD be accepted is

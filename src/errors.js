@@ -38,15 +38,43 @@ class FramingError extends Error {
   }
 }
 
-// A carrier that gave up on its own side: a WebTransport session or a WebRTC
+// A carrier, or a limit of its own, that gave up on its side: a session or a
 // channel past `maxBackpressure` (`ALX_ERR_BACKPRESSURE`), a data channel
 // whose send threw (`ALX_ERR_CHANNEL_SEND`; `ALX_ERR_CHANNEL_DESYNC` when it
-// threw mid-message). `options.code` says which.
+// threw mid-message) or that failed (`ALX_ERR_CHANNEL_ERROR`), a wait that
+// ran out (`ALX_ERR_TIMEOUT`), a queue that is full (`ALX_ERR_QUEUE_FULL`),
+// a message past a cap (`ALX_ERR_MESSAGE_TOO_BIG`). `options.code` says
+// which.
 class TransportError extends Error {
   constructor(message, options = {}) {
     super(message, options);
     this.name = 'TransportError';
     this.code = options.code;
+  }
+}
+
+// Something that is gone: a connection, a link, a peer, a channel, a session
+// — closed, never connected, torn down under an operation (`ALX_ERR_CLOSED`)
+// — or ended on purpose by whoever held it: a cancel, an unsubscribe, a
+// replacement (`ALX_ERR_ABORTED`, given as `options.code`). A caller retries
+// the first on a new connection and lets the second go.
+class ClosedError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'ClosedError';
+    this.code = options.code ?? 'ALX_ERR_CLOSED';
+  }
+}
+
+// A peer's packet or message that breaks the wrpc protocol where no status
+// answers it: the server's packets on the client, a page's messages in the
+// worker proxy, another node's cluster op, a broker frame out of order. A bug
+// of the other end — not retried.
+class ProtocolError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'ProtocolError';
+    this.code = 'ALX_ERR_PROTOCOL';
   }
 }
 
@@ -67,4 +95,4 @@ class WrpcError extends Error {
   }
 }
 
-module.exports = { ConfigError, ArgumentError, FramingError, TransportError, WrpcError };
+module.exports = { ConfigError, ArgumentError, FramingError, TransportError, ClosedError, ProtocolError, WrpcError };

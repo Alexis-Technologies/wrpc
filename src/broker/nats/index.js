@@ -47,7 +47,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
-const { ConfigError, ArgumentError, WrpcError } = require('../../errors.js');
+const { ConfigError, ArgumentError, WrpcError, ClosedError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_ACK_WAIT = 30_000;
@@ -301,7 +301,7 @@ const createNatsBroker = (options = {}) => {
         // The pull ended without being asked to — the server's doing (the
         // consumer deleted, the stream gone, the connection dropped): the
         // readers move to a fresh tail instead of waiting on this one.
-        if (!signal.aborted && !closed) onEnd(failure ?? new Error('consume ended'));
+        if (!signal.aborted && !closed) onEnd(failure ?? new ClosedError('consume ended'));
       })();
       return state.last > 0 ? state.last : null;
     },

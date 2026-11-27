@@ -26,6 +26,7 @@ const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../wire.js');
 const { concat, utf8 } = require('./bytes.js');
 const { isPromise } = require('../compression/ids.js');
 const { ConfigError } = require('../errors.js');
+const { EncryptionError } = require('./contracts.js');
 
 const HELLO_VERSION = 1;
 const INNER_TEXT = 0;
@@ -130,7 +131,9 @@ const sealedFrame = (sealed) => {
 
 // A sealed frame's plaintext back into what was sent: a string, or bytes.
 const messageOf = (inner) => {
-  if (inner.length === 0 || inner[0] > INNER_BYTES) throw new Error('encryption: malformed sealed message');
+  if (inner.length === 0 || inner[0] > INNER_BYTES) {
+    throw new EncryptionError('encryption: malformed sealed message', { code: 'ALX_ERR_ENCRYPTION_FRAME' });
+  }
   return inner[0] === INNER_TEXT ? decoder.decode(inner.subarray(1)) : inner.subarray(1);
 };
 
@@ -160,7 +163,9 @@ class SecureChannel {
   }
 
   open(bytes) {
-    if (!isFrame(bytes, FRAME_SEALED)) throw new Error('encryption: not a sealed frame');
+    if (!isFrame(bytes, FRAME_SEALED)) {
+      throw new EncryptionError('encryption: not a sealed frame', { code: 'ALX_ERR_ENCRYPTION_FRAME' });
+    }
     const inner = this.#receive.decrypt(bytes.subarray(2));
     return isPromise(inner) ? inner.then(messageOf) : messageOf(inner);
   }

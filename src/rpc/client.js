@@ -24,7 +24,7 @@ const { clip } = require('./errors.js');
 // browser bundle for it.
 const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
 const { hasBytes, encodeAttachments } = require('../attachments.js');
-const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
+const { ConfigError, ArgumentError, WrpcError, ClosedError } = require('../errors.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -724,7 +724,7 @@ class Client extends Emitter {
     // stack, and an HTTP client is destroyed once per request with nothing
     // left in flight (bench/http-call.js).
     if (this.calls.size > 0 || this.subscriptions.size > 0) {
-      const disconnected = new Error('Client disconnected');
+      const disconnected = new ClosedError('Client disconnected');
       for (const controller of this.calls.values()) controller.abort(disconnected);
       for (const controller of this.subscriptions.values()) controller.abort(disconnected);
       this.calls.clear();

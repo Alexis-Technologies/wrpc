@@ -33,6 +33,7 @@ const { WrpcClient } = require('../client/core.js');
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { deferred } = require('./ids.js');
 const { DEFAULT_CONNECT_TIMEOUT } = require('./link.js');
+const { ClosedError } = require('../errors.js');
 
 const REDIAL = { retries: 5, minDelay: 500, maxDelay: 10_000, factor: 2, jitter: true };
 // The remote WrpcClient's reconnect: quick, since the link itself carries
@@ -274,7 +275,7 @@ class PeerLink extends Emitter {
     if (!this.initiator) return;
     const state = this.#link.state;
     if (state === 'failed') return void this.#redialNow();
-    if (state === 'connected' && this.#everOpen) this.#link.fail(new Error('the peer knocked on a link it lost'));
+    if (state === 'connected' && this.#everOpen) this.#link.fail(new ClosedError('the peer knocked on a link it lost'));
   }
 
   /**
@@ -322,7 +323,7 @@ class PeerLink extends Emitter {
   }
 
   #hostClient(what) {
-    if (!this.#client) throw new Error(`PeerLink.${what}: the link to '${this.#id}' is not open`);
+    if (!this.#client) throw new ClosedError(`PeerLink.${what}: the link to '${this.#id}' is not open`);
     return this.#client;
   }
 
@@ -470,7 +471,7 @@ class PeerLink extends Emitter {
     // The client's reconnect cycle stops here; its transport's close() on a
     // closed link is a no-op.
     this.#remote.close();
-    this.#opened.reject(new Error(`PeerLink to '${this.#id}' closed`));
+    this.#opened.reject(new ClosedError(`PeerLink to '${this.#id}' closed`));
     this.#port.released(this);
     // Why the link ended — the goodbye's reason, or this side's own — is
     // what tells a refusal from a give-up from a goodbye on a dashboard.

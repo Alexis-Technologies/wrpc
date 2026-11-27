@@ -52,7 +52,7 @@ const {
   checkListen,
   runDelivery,
 } = require('../adapter.js');
-const { ConfigError, ArgumentError, WrpcError } = require('../../errors.js');
+const { ConfigError, ArgumentError, WrpcError, ClosedError } = require('../../errors.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_INBOX_TTL = 60_000;
@@ -252,7 +252,7 @@ const createAmqpBroker = (options = {}) => {
           // used to return, as if it closed, and the backplane went deaf
           // without a line. Closed here, so onClose rebinds on a fresh one.
           if (message === null) {
-            report('broker.amqp.cancelled', new Error('consumer cancelled'), { queue: 'backplane' });
+            report('broker.amqp.cancelled', new ClosedError('consumer cancelled'), { queue: 'backplane' });
             return void closeChannel(consumerChannel);
           }
           const set = handlers.get(message.fields?.routingKey);
@@ -291,7 +291,7 @@ const createAmqpBroker = (options = {}) => {
       if (want === bound.has(key)) return;
       const consumerChannel = await consuming();
       const queue = consumerQueue;
-      if (queue === null) throw new Error('backplane channel closed');
+      if (queue === null) throw new ClosedError('backplane channel closed');
       if (want) await consumerChannel.bindQueue(queue, exchange, key);
       else await consumerChannel.unbindQueue(queue, exchange, key);
       // The queue may have gone while the bind was in flight: onClose
@@ -430,12 +430,12 @@ const createAmqpBroker = (options = {}) => {
       stopped = true;
       onEnd(error);
     };
-    const channel = await openChannel(false, (error) => ended(error ?? new Error('channel closed')));
+    const channel = await openChannel(false, (error) => ended(error ?? new ClosedError('channel closed')));
     await channel.prefetch(64);
     const { consumerTag } = await channel.consume(
       queue,
       (message) => {
-        if (message === null) return void ended(new Error('consumer cancelled'));
+        if (message === null) return void ended(new ClosedError('consumer cancelled'));
         channel.ack(message);
         onMessage(message);
       },
@@ -723,7 +723,7 @@ const createAmqpBroker = (options = {}) => {
         state.healthy = false;
         state.tag = null;
         state.channel = null;
-        report('broker.amqp.cancelled', new Error('consumer cancelled'), { queue });
+        report('broker.amqp.cancelled', new ClosedError('consumer cancelled'), { queue });
         ensuredQueues.delete(key);
         void closeChannel(channel);
         if (state.running && !closed && !lost) void reopen();
@@ -851,7 +851,7 @@ const createAmqpBroker = (options = {}) => {
       state.tag = null;
       if (!state.running || closed || lost) return;
       state.healthy = false;
-      report('broker.amqp.consumer.closed', error ?? new Error('channel closed'), { queue });
+      report('broker.amqp.consumer.closed', error ?? new ClosedError('channel closed'), { queue });
       // A queue that is gone is declared again on the way back.
       if (error?.code === 404) ensuredQueues.delete(key);
       void reopen();
@@ -1003,7 +1003,7 @@ const createAmqpBroker = (options = {}) => {
             if (message !== null) return void deliver(message);
             // The channel stays open and hears nothing: closed, so its close
             // brings the consumer back.
-            report('broker.amqp.cancelled', new Error('consumer cancelled'), { address });
+            report('broker.amqp.cancelled', new ClosedError('consumer cancelled'), { address });
             void closeChannel(channel);
           },
           { noAck: true },
@@ -1119,7 +1119,7 @@ const createAmqpBroker = (options = {}) => {
   connection.on?.('close', () => {
     if (closed || lost) return;
     lost = true;
-    report('broker.amqp.connection', new Error('connection closed'));
+    report('broker.amqp.connection', new ClosedError('connection closed'));
     // Every memo is a corpse now, and every consumer's re-open loop reads
     // `lost` and stops: there is nothing to re-open on.
     exchanges.clear();

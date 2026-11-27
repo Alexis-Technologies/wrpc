@@ -70,6 +70,26 @@ narrower promise — see
   `send()` that threw — are a `TransportError` in place of an `Error`,
   with `ALX_ERR_CHANNEL_SEND` and `ALX_ERR_CHANNEL_DESYNC` where they said
   `send` and `desync`.
+- **What is gone, what a peer broke and what a carrier gave up on have a
+  class and a code.** They threw a bare `Error`, told apart by the message
+  alone; they read `ClosedError: …`, `ProtocolError: …`,
+  `TransportError: …`, `EncryptionError: …`, `ParseError: …` or
+  `WrpcError: …` now, with their message unchanged: `ALX_ERR_CLOSED` for a
+  transport not connected, a connection closed or terminated under a call,
+  a link, peer, signaler, channel or broker consumer closed;
+  `ALX_ERR_ABORTED` for a cancel, an unsubscribe, a re-subscribe, a
+  replaced signaler, a re-dialled link (the reason a handler's `ctx.signal`
+  carries); `ALX_ERR_PROTOCOL` for a server packet the client cannot place,
+  a page's message to the worker proxy, an unknown cluster op, a broker
+  session frame out of order; `ALX_ERR_TIMEOUT`, `ALX_ERR_QUEUE_FULL`,
+  `ALX_ERR_CHANNEL_ERROR` and `ALX_ERR_MESSAGE_TOO_BIG` on a
+  `TransportError`; `ALX_ERR_ENCRYPTION_HANDSHAKE`, `_KEY`, `_FRAME` and
+  `_STATE` on an `EncryptionError`; the ws engine's UTF-8, continuation and
+  size refusals are a `ParseError` with its `ALX_ERR_PARSE_*` code; the SSE
+  client's refused stream and POST are a `WrpcError` with the HTTP status.
+  Five keep the code of the Node.js error they stand in for, two of them
+  new: `ERR_HTTP_HEADERS_SENT` for a header or status set after the
+  response, `ERR_UNHANDLED_ERROR` for an `'error'` nobody listens to.
 - **A `verifyClient` gate admits with `true` and nothing else**, on the node
   engine and on uWebSockets.js. A promise is truthy, so an `async` gate
   admitted every peer whatever it resolved to; it is refused (`403`) and
@@ -96,6 +116,10 @@ narrower promise — see
   `code`, which is unchanged.
 - `EncryptionRefusedError` reads `statusCode`; `status` still holds the
   same number until 3.0.
+- Code that matched an operational error by its message matches its code:
+  `/Not connected/` is `error.code === 'ALX_ERR_CLOSED'`,
+  `/Cancelled by the caller/` on `ctx.signal.reason` is
+  `'ALX_ERR_ABORTED'`. Every one is still `instanceof Error`.
 - A `verifyClient` that awaits something (a session store, a lookup) moves
   that work into `onConnect` or the HTTP layer in front, and answers
   `true` synchronously; one that answered a truthy value answers
@@ -130,6 +154,11 @@ narrower promise — see
   (`ALX_ERR_BACKPRESSURE`, `ALX_ERR_CHANNEL_SEND`, `ALX_ERR_CHANNEL_DESYNC`).
 - **`EncryptionRefusedError.statusCode`**, the name alexiskills gives a
   numeric status.
+- **`ClosedError`, `ProtocolError` and `TransportError` from
+  `@alexify/wrpc`** (and its browser entry), **`EncryptionError` from
+  `@alexify/wrpc/encryption`**, with their codes in `ErrorCode` and the
+  errors reference. A guard keeps a new bare `Error` out of `src/`.
+- **`Client.drain(signal)`** (server side) resolves when the signal aborts.
 - **`new Emitter({ warn })`**: where the `MaxListenersExceededWarning`
   goes — the console when it is not given, nowhere for `null`.
 
@@ -251,6 +280,12 @@ narrower promise — see
   the browser entries, most of it the longer `ALX_ERR_` strings; the sse
   entry's budget goes from 32 to 33 KB and the webrtc entry's from 63 to
   64 KB.
+- **The review against alexiskills 1.2 costs 210 to 400 B** min+gzip in
+  the browser entries — the guarded observers, the abortable waits and the
+  codes of the operational errors, whose classes live in `src/errors.js`:
+  the main entry's budget goes from 31 to 32 KB, the auth entry's from 2 to
+  3 KB and the encryption entry's from 12 to 13 KB, each with its
+  measurement in `scripts/size.js`.
 - **The tests are `describe` and `it('should …')`**, asserted with
   `node:assert/strict`. The contract suites register their cases in the
   caller's `describe`, and an integration suite run without its server

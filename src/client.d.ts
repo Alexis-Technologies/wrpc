@@ -144,7 +144,18 @@ export interface CompressionOptions {
   async?: boolean | { threshold?: number };
 }
 
-export { ConfigError, ArgumentError, ErrorCode, WrpcError, WrpcErrorOptions } from './errors.js';
+export {
+  ConfigError,
+  ArgumentError,
+  ClosedError,
+  ClosedErrorCode,
+  ProtocolError,
+  TransportError,
+  TransportErrorCode,
+  ErrorCode,
+  WrpcError,
+  WrpcErrorOptions,
+} from './errors.js';
 
 export interface ReadableOptions {
   highWaterMark?: number;

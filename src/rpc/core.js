@@ -1185,7 +1185,7 @@ class RpcServer extends Emitter {
     const active = client.compression;
     if (active === null || (kind !== FRAME_PACKET_COMPRESSED && kind !== FRAME_CHUNK_COMPRESSED)) {
       client.log[levelFor(client, 'frame.refused')]({ event: 'frame.refused', kind, negotiated: active !== null });
-      client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
+      client.error(400, { error: new WrpcError('Unexpected framed message', { code: 400 }), level: 'debug' });
       return null;
     }
     // Why it did not inflate goes on the line: ERR_BUFFER_TOO_LARGE is the
@@ -1197,7 +1197,7 @@ class RpcServer extends Emitter {
       this.#otel.recordCompressionFailure(client.transportKind, 'decode');
       const level = levelFor(client, 'frame.refused');
       client.log[level]({ event: 'frame.refused', kind, reason: 'inflate', codec: active.id, code: cause?.code });
-      client.error(400, { error: new Error('Framed message does not inflate'), level: 'debug' });
+      client.error(400, { error: new WrpcError('Framed message does not inflate', { code: 400 }), level: 'debug' });
       return null;
     }
     if (kind === FRAME_CHUNK_COMPRESSED) return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);

@@ -22,6 +22,7 @@
 
 const { concat, utf8 } = require('./bytes.js');
 const { ConfigError, ArgumentError } = require('../errors.js');
+const { EncryptionError } = require('./contracts.js');
 
 const EMPTY = new Uint8Array(0);
 const VERSION = utf8('HPKE-v1');
@@ -128,7 +129,9 @@ class HpkeContext {
   }
 
   #nonce() {
-    if (this.#sequence >= Number.MAX_SAFE_INTEGER) throw new Error('hpke: the message counter is spent');
+    if (this.#sequence >= Number.MAX_SAFE_INTEGER) {
+      throw new EncryptionError('hpke: the message counter is spent', { code: 'ALX_ERR_ENCRYPTION_STATE' });
+    }
     const nonce = Uint8Array.from(this.#baseNonce);
     const sequence = i2osp(this.#sequence++, nonce.length);
     for (let i = 0; i < nonce.length; i++) nonce[i] ^= sequence[i];

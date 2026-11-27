@@ -3,6 +3,7 @@
 const zlib = require('node:zlib');
 
 const { TRAILER } = require('./permessageDeflate.js');
+const { ClosedError } = require('../errors.js');
 
 // The per-connection half of permessage-deflate with context takeover
 // (RFC 7692 7.1.1): one long-lived deflate stream, one long-lived inflate
@@ -60,7 +61,7 @@ class DeflateContext {
   // the output ends on a byte boundary with the empty stored block RFC 7692
   // 7.2.1 says to strip. cb(error, buffer).
   compress(payload, cb) {
-    if (this.#closed) return void cb(new Error('deflate context closed'));
+    if (this.#closed) return void cb(new ClosedError('deflate context closed'));
     this.#schedule(
       this.#deflateOps,
       () => this.#deflateStream(),
@@ -79,7 +80,7 @@ class DeflateContext {
   // fails with ERR_BUFFER_TOO_LARGE — the code the sync path's
   // maxOutputLength uses — after at most one chunk past it.
   decompress(payload, maxLength, cb) {
-    if (this.#closed) return void cb(new Error('deflate context closed'));
+    if (this.#closed) return void cb(new ClosedError('deflate context closed'));
     this.#schedule(this.#inflateOps, () => this.#inflateStream(), Buffer.concat([payload, TRAILER]), maxLength, cb);
   }
 

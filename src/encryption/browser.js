@@ -15,7 +15,7 @@ const { EncryptionRefusedError } = require('./http.js');
 const { x25519 } = require('./dh.js');
 const { createKdf } = require('./hkdf.js');
 const { normalizeKeys, generateKey, isKid } = require('./keyring.js');
-const { OpenError, isCipher, isCipherKey, isDh, isKeyProvider } = require('./contracts.js');
+const { OpenError, EncryptionError, isCipher, isCipherKey, isDh, isKeyProvider } = require('./contracts.js');
 const { toBase64Url, fromBase64, equal } = require('./bytes.js');
 const { createEncryption, isEncryption, fetchServerKey } = require('./client.js');
 const { createHpke, dhKem, isKem } = require('./hpke.js');
@@ -44,6 +44,7 @@ module.exports = {
   generateKey,
   isKid,
   OpenError,
+  EncryptionError,
   EncryptionRefusedError,
   isCipher,
   isCipherKey,

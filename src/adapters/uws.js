@@ -5,7 +5,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { gateVerdict, negotiateProtocol } = require('../websocket/upgrade.js');
 
 const { MAX_BODY_SIZE, statusLine, eachHeader } = require('./common.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, TransportError } = require('../errors.js');
 
 // uWebSockets.js engine adapter. The module itself is NEVER a dependency of
 // @alexify/wrpc (zero-dependency rule) — the caller injects it:
@@ -101,7 +101,9 @@ class UwsSocket extends EventEmitter {
       // uws silently discarded the message (maxBackpressure hit with
       // closeOnBackpressureLimit off). A hole in the frame stream corrupts
       // the RPC protocol, so fail loudly instead of continuing.
-      const error = new Error('uws dropped an outgoing message: backpressure limit exceeded');
+      const error = new TransportError('uws dropped an outgoing message: backpressure limit exceeded', {
+        code: 'ALX_ERR_BACKPRESSURE',
+      });
       // Logged as well as emitted: 'error' on a socket frequently has no
       // listener, and this is a connection dying from a limit the operator
       // configured — exactly the thing they need to see to raise it.

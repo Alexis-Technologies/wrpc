@@ -47,6 +47,21 @@ class OpenError extends Error {
   }
 }
 
+// Every other failure of the encryption layer, with what went wrong as its
+// code: a handshake that broke or ran out of order (`ALX_ERR_ENCRYPTION_
+// HANDSHAKE`), a key that is missing, not the pinned one or not accepted
+// (`ALX_ERR_ENCRYPTION_KEY`), a sealed frame that is none (`ALX_ERR_
+// ENCRYPTION_FRAME`), a session used out of its state — not established, a
+// spent message counter (`ALX_ERR_ENCRYPTION_STATE`). `options.code` says
+// which; a message that does not open stays an OpenError.
+class EncryptionError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'EncryptionError';
+    this.code = options.code;
+  }
+}
+
 const isObject = (value) => typeof value === 'object' && value !== null;
 
 const isLength = (value) => Number.isInteger(value) && value > 0;
@@ -74,4 +89,4 @@ const isDh = (value) =>
 const isKeyProvider = (value) =>
   isObject(value) && typeof value.current === 'function' && typeof value.get === 'function';
 
-module.exports = { OpenError, isCipher, isCipherKey, isDh, isKeyProvider };
+module.exports = { OpenError, EncryptionError, isCipher, isCipherKey, isDh, isKeyProvider };

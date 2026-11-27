@@ -3,7 +3,7 @@
 const { WrpcClient, ClientTransport, metaHeaders } = require('../client.js');
 const { refusedStatus } = require('../client/core.js');
 const { CHANNEL_HEADER } = require('./constants.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, TransportError, ClosedError, WrpcError } = require('../errors.js');
 
 // The client half of the SSE transport. Browser-safe: `fetch`, streams and
 // TextDecoder only — no node builtins, and deliberately not `EventSource`,
@@ -91,7 +91,9 @@ class SseParser {
   }
 
   #bound() {
-    if (this.#held + this.#open > this.#max) throw new Error('SSE event exceeds maxMessage');
+    if (this.#held + this.#open > this.#max) {
+      throw new TransportError('SSE event exceeds maxMessage', { code: 'ALX_ERR_MESSAGE_TOO_BIG' });
+    }
   }
 
   #line(line) {
@@ -219,7 +221,7 @@ class ClientSseTransport extends ClientTransport {
       return this.#open(false);
     }
     if (!response.ok || !response.body) {
-      throw new Error(`SSE stream refused with ${response.status}`);
+      throw new WrpcError(`SSE stream refused with ${response.status}`, { code: response.status });
     }
     // Not connected until the server names the channel: a POST before the
     // `ready` frame would have no channel to belong to.
@@ -239,10 +241,14 @@ class ClientSseTransport extends ClientTransport {
         settled = true;
         resolve();
       };
-      controller.signal.addEventListener('abort', () => fail(new Error('SSE stream aborted')), { once: true });
+      controller.signal.addEventListener(
+        'abort',
+        () => fail(new ClosedError('SSE stream aborted', { code: 'ALX_ERR_ABORTED' })),
+        { once: true },
+      );
       // A stream that ends (or dies) before `ready` never connected. After
       // `ready` both callbacks are no-ops: the consume loop owns the stream.
-      consuming.then(() => fail(new Error('SSE stream ended before ready')), fail);
+      consuming.then(() => fail(new ClosedError('SSE stream ended before ready')), fail);
     });
     this.active = true;
     this.emit('open');
@@ -316,7 +322,7 @@ class ClientSseTransport extends ClientTransport {
   }
 
   write(data) {
-    if (!this.active || this.#channel === null) throw new Error('Not connected');
+    if (!this.active || this.#channel === null) throw new ClosedError('Not connected');
     // Only a binary packet codec gets here with bytes: revision 1 sends a
     // packet's bytes as JSON.
     if (typeof data !== 'string') throw new ConfigError('SSE carries text only: a binary codec needs a WebSocket');
@@ -347,7 +353,7 @@ class ClientSseTransport extends ClientTransport {
       // A refused POST answers nothing on the event stream, so the exact
       // calls this request carried settle now instead of waiting out
       // callTimeout — same contract as the plain HTTP transport.
-      const failed = new Error(`SSE post failed with ${response.status}: ${text}`);
+      const failed = new WrpcError(`SSE post failed with ${response.status}: ${text}`, { code: response.status });
       if (this.listenerCount('error') > 0) this.emit('error', failed);
       this.failPackets(data, response.status);
     };

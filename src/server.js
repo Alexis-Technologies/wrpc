@@ -16,7 +16,7 @@ const {
   MAX_BODY_SIZE,
 } = require('./adapters/common.js');
 const { createLoggerWriter, emitterWarning } = require('./logging.js');
-const { ConfigError } = require('./errors.js');
+const { ConfigError, ClosedError } = require('./errors.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
 const DEFAULT_BIND_TIMEOUT = 2000;
@@ -222,7 +222,7 @@ class Server extends Emitter {
             const timer = setTimeout(attempt, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
             this.#retry = {
               timer,
-              reject: () => reject(new Error('Server closed before it could listen', { cause: error })),
+              reject: () => reject(new ClosedError('Server closed before it could listen', { cause: error })),
             };
           },
         );

@@ -289,5 +289,6 @@ expectType<webrtc.AssertionErrorCode>(refused.code);
 expectAssignable<webrtc.AssertionRefusal>(refused.code);
 expectAssignable<webrtc.AssertionError>(new webrtc.AssertionError('x', { code: 'ALX_ERR_ASSERTION_EXPIRED' }));
 declare const fault: webrtc.TransportError;
-expectType<'ALX_ERR_BACKPRESSURE' | 'ALX_ERR_CHANNEL_SEND' | 'ALX_ERR_CHANNEL_DESYNC'>(fault.code);
+expectType<webrtc.TransportErrorCode>(fault.code);
+expectAssignable<webrtc.TransportErrorCode>('ALX_ERR_CHANNEL_ERROR');
 expectAssignable<webrtc.FramingError>(new webrtc.FramingError('x', { code: 'ALX_ERR_FRAMING_EMPTY' }));

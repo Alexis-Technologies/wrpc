@@ -24,6 +24,13 @@ export type ErrorCode =
   | 'ALX_ERR_BACKPRESSURE'
   | 'ALX_ERR_CHANNEL_SEND'
   | 'ALX_ERR_CHANNEL_DESYNC'
+  | 'ALX_ERR_CHANNEL_ERROR'
+  | 'ALX_ERR_TIMEOUT'
+  | 'ALX_ERR_QUEUE_FULL'
+  | 'ALX_ERR_MESSAGE_TOO_BIG'
+  | 'ALX_ERR_CLOSED'
+  | 'ALX_ERR_ABORTED'
+  | 'ALX_ERR_PROTOCOL'
   | 'ALX_ERR_DEFLATE_TRUNCATED'
   | 'ALX_ERR_DEFLATE_HUFFMAN'
   | 'ALX_ERR_DEFLATE_STORED'
@@ -46,7 +53,11 @@ export type ErrorCode =
   | 'ALX_ERR_ASSERTION_ISSUER'
   | 'ALX_ERR_ASSERTION_MISSING'
   | 'ALX_ERR_OPEN'
-  | 'ALX_ERR_ENCRYPTION_REFUSED';
+  | 'ALX_ERR_ENCRYPTION_REFUSED'
+  | 'ALX_ERR_ENCRYPTION_HANDSHAKE'
+  | 'ALX_ERR_ENCRYPTION_KEY'
+  | 'ALX_ERR_ENCRYPTION_FRAME'
+  | 'ALX_ERR_ENCRYPTION_STATE';
 
 /**
  * An option, a definition (a router, a procedure, a binding table) or an
@@ -87,19 +98,57 @@ export declare class FramingError extends Error {
   constructor(message: string, options: ErrorOptions & { code: FramingErrorCode });
 }
 
-/** Why a carrier gave up on its own side. */
-export type TransportErrorCode = 'ALX_ERR_BACKPRESSURE' | 'ALX_ERR_CHANNEL_SEND' | 'ALX_ERR_CHANNEL_DESYNC';
+/** Why a carrier, or a limit of its own, gave up on its side. */
+export type TransportErrorCode =
+  | 'ALX_ERR_BACKPRESSURE'
+  | 'ALX_ERR_CHANNEL_SEND'
+  | 'ALX_ERR_CHANNEL_DESYNC'
+  | 'ALX_ERR_CHANNEL_ERROR'
+  | 'ALX_ERR_TIMEOUT'
+  | 'ALX_ERR_QUEUE_FULL'
+  | 'ALX_ERR_MESSAGE_TOO_BIG';
 
 /**
- * A WebTransport session or a WebRTC channel past `maxBackpressure`
- * (`ALX_ERR_BACKPRESSURE`), or a data channel whose send threw
- * (`ALX_ERR_CHANNEL_SEND`; `ALX_ERR_CHANNEL_DESYNC` mid-message, which closes
- * it). The `cause` is the platform's own error, when there was one.
+ * A session or a channel past `maxBackpressure` (`ALX_ERR_BACKPRESSURE`), a
+ * data channel whose send threw (`ALX_ERR_CHANNEL_SEND`;
+ * `ALX_ERR_CHANNEL_DESYNC` mid-message, which closes it) or that failed
+ * (`ALX_ERR_CHANNEL_ERROR`), a wait that ran out — a link's connect, an ICE
+ * restart, an idle session, an encryption handshake, a queue slot
+ * (`ALX_ERR_TIMEOUT`) — a full queue (`ALX_ERR_QUEUE_FULL`) or a message past
+ * a cap (`ALX_ERR_MESSAGE_TOO_BIG`). The `cause` is the platform's own error,
+ * when there was one.
  */
 export declare class TransportError extends Error {
   readonly name: 'TransportError';
   readonly code: TransportErrorCode;
   constructor(message: string, options: ErrorOptions & { code: TransportErrorCode });
+}
+
+/** Gone on its own (`ALX_ERR_CLOSED`), or ended on purpose by its owner (`ALX_ERR_ABORTED`). */
+export type ClosedErrorCode = 'ALX_ERR_CLOSED' | 'ALX_ERR_ABORTED';
+
+/**
+ * Something that is gone — a connection, a link, a peer, a channel, a
+ * session: closed, never connected, or torn down under the operation
+ * (`ALX_ERR_CLOSED`, retried on a new connection) — or ended on purpose by
+ * whoever held it: a cancel, an unsubscribe, a replacement
+ * (`ALX_ERR_ABORTED`, let go).
+ */
+export declare class ClosedError extends Error {
+  readonly name: 'ClosedError';
+  readonly code: ClosedErrorCode;
+  constructor(message: string, options?: ErrorOptions & { code?: ClosedErrorCode });
+}
+
+/**
+ * A peer's packet or message that breaks the wrpc protocol where no status
+ * answers it: the server's packets on the client, a page's messages in the
+ * worker proxy, another node's cluster op, a broker frame out of order.
+ */
+export declare class ProtocolError extends Error {
+  readonly name: 'ProtocolError';
+  readonly code: 'ALX_ERR_PROTOCOL';
+  constructor(message: string, options?: ErrorOptions);
 }
 
 /** What `new WrpcError(message, options)` takes besides `cause`. */

@@ -40,7 +40,7 @@ const {
 } = require('./frames.js');
 const { createBrokerSealing } = require('../sealing.js');
 const { normalizeSyncCompression, headerNegotiator, maxMessageOf } = require('../../compression/sync.js');
-const { ConfigError } = require('../../errors.js');
+const { ConfigError, ClosedError, ProtocolError } = require('../../errors.js');
 
 const DEFAULT_REQUEST_TIMEOUT = 30_000;
 const DEFAULT_HIGH_WATER_MARK = 1024;
@@ -183,7 +183,7 @@ class ClientBrokerTransport extends ClientTransport {
     // The client's connectTimeout races the whole open(); a terminate()
     // meanwhile settles this through #welcome.
     this.#remote = await welcomed;
-    if (generation !== this.#generation) throw new Error('Connection closed');
+    if (generation !== this.#generation) throw new ClosedError('Connection closed');
   }
 
   #onMessage(raw, generation) {
@@ -197,7 +197,9 @@ class ClientBrokerTransport extends ClientTransport {
     if (this.mode === 'stateless') {
       if (kind !== KIND.RESPONSE) return;
       const body = frameBody(message, this.#compression, this.#maxMessage);
-      if (body === null) return void this.#escalate(new Error('broker transport: an answer that cannot be inflated'));
+      if (body === null) {
+        return void this.#escalate(new ProtocolError('broker transport: an answer that cannot be inflated'));
+      }
       return void this.emit('message', packetBody(body));
     }
     if (message.correlationId !== this.#session) return;
@@ -224,16 +226,16 @@ class ClientBrokerTransport extends ClientTransport {
       return void this.#refused('downgrade', kind);
     }
     if (kind === KIND.BYE) {
-      return void this.#lost(new Error(`Session ended: ${message.headers?.['wrpc-reason'] ?? 'bye'}`));
+      return void this.#lost(new ClosedError(`Session ended: ${message.headers?.['wrpc-reason'] ?? 'bye'}`));
     }
     if (kind !== KIND.PACKET && kind !== KIND.CHUNK) return;
     const seq = seqOf(message.headers);
     if (seq !== this.#expectSeq) {
-      return void this.#lost(new Error(`Session frame gap: expected ${this.#expectSeq}, got ${seq}`), true);
+      return void this.#lost(new ProtocolError(`Session frame gap: expected ${this.#expectSeq}, got ${seq}`), true);
     }
     this.#expectSeq++;
     const body = frameBody(message, this.#active === null ? null : this.#compression, this.#maxMessage);
-    if (body === null) return void this.#lost(new Error('Session frame cannot be inflated'), true);
+    if (body === null) return void this.#lost(new ProtocolError('Session frame cannot be inflated'), true);
     if (kind === KIND.CHUNK) this.emit('message', toBytes(body));
     else this.emit('message', packetBody(body));
   }
@@ -295,7 +297,7 @@ class ClientBrokerTransport extends ClientTransport {
   }
 
   write(data, options = null) {
-    if (!this.active) throw new Error('Not connected');
+    if (!this.active) throw new ClosedError('Not connected');
     if (this.mode === 'stateless') return this.#request(data);
     // Numbered once it exists: a frame that could not be built (a key
     // provider that threw) takes no sequence number and no place in the
@@ -355,7 +357,7 @@ class ClientBrokerTransport extends ClientTransport {
     if (this.#welcome) {
       const pending = this.#welcome;
       this.#welcome = null;
-      pending.reject(new Error('Connection closed'));
+      pending.reject(new ClosedError('Connection closed'));
     }
     if (!this.active) return void this.#release();
     if (this.mode === 'session') this.#bye();

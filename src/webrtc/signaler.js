@@ -46,7 +46,7 @@
 
 const { Emitter, resolveGenerateId } = require('../utils.js');
 const { isPeerId: isId } = require('./ids.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, ClosedError } = require('../errors.js');
 
 const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close', 'connect']);
 
@@ -205,8 +205,8 @@ class WrpcSignaler extends Emitter {
   }
 
   ready() {
-    if (this.#closed) return Promise.reject(new Error('Signaler is closed'));
-    if (this.#replaced) return Promise.reject(new Error('Signaler was replaced'));
+    if (this.#closed) return Promise.reject(new ClosedError('Signaler is closed'));
+    if (this.#replaced) return Promise.reject(new ClosedError('Signaler was replaced', { code: 'ALX_ERR_ABORTED' }));
     if (this.#ready === null) {
       // Any failure — a refused call, an answer without an id — forgets the
       // attempt, so the next ready() asks again instead of caching it.
@@ -227,8 +227,8 @@ class WrpcSignaler extends Emitter {
     const args = { instance: this.#instance };
     if (isId(proposed)) args.id = proposed;
     const result = await this.#client.call(`${this.#unit}/whoami`, args);
-    if (this.#closed) throw new Error('Signaler is closed');
-    if (this.#replaced) throw new Error('Signaler was replaced');
+    if (this.#closed) throw new ClosedError('Signaler is closed');
+    if (this.#replaced) throw new ClosedError('Signaler was replaced', { code: 'ALX_ERR_ABORTED' });
     if (typeof result?.id !== 'string' || result.id.length === 0) {
       throw new TypeError(`${this.#unit}/whoami answered without an id`);
     }
@@ -241,7 +241,7 @@ class WrpcSignaler extends Emitter {
     if (!isSignalMessage(message)) {
       throw new ArgumentError('send: message.type must be description, candidate, close or connect');
     }
-    if (this.#replaced) throw new Error('Signaler was replaced');
+    if (this.#replaced) throw new ClosedError('Signaler was replaced', { code: 'ALX_ERR_ABORTED' });
     const room = options.room === undefined ? null : checkRoom(options.room);
     const address = optionalId(options.address) ?? this.#addresses.get(to) ?? null;
     const payload = { to, room, message };

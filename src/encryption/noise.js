@@ -28,6 +28,7 @@
 const { concat, utf8, isZero } = require('./bytes.js');
 const { isPromise } = require('../compression/ids.js');
 const { ConfigError } = require('../errors.js');
+const { EncryptionError } = require('./contracts.js');
 
 const EMPTY = new Uint8Array(0);
 const KEY_LENGTH = 32;
@@ -35,6 +36,8 @@ const ZERO_KEY = new Uint8Array(KEY_LENGTH);
 // Noise caps a HANDSHAKE message at 65535 bytes; wrpc's transport messages
 // are bounded by `maxMessage` instead, and the cipher does not care.
 const MAX_HANDSHAKE_MESSAGE = 65535;
+// What a handshake message that breaks the pattern, or comes out of turn, is.
+const HANDSHAKE = 'ALX_ERR_ENCRYPTION_HANDSHAKE';
 
 // Pre-messages and message patterns. `i`/`r` is who writes.
 const PATTERNS = Object.freeze({
@@ -135,7 +138,9 @@ class CipherState {
   }
 
   #next() {
-    if (this.#counter >= MAX_NONCE) throw new Error('encryption: the message counter is spent');
+    if (this.#counter >= MAX_NONCE) {
+      throw new EncryptionError('encryption: the message counter is spent', { code: 'ALX_ERR_ENCRYPTION_STATE' });
+    }
     if (this.#rekeyAfter > 0 && this.#sinceRekey === this.#rekeyAfter) this.rekey();
     this.#sinceRekey++;
     return nonceOf(this.#cipher, this.#counter++);
@@ -314,7 +319,7 @@ class HandshakeState {
   }
 
   async write(payload = EMPTY) {
-    if (!this.writing) throw new Error("encryption: not this side's turn to write");
+    if (!this.writing) throw new EncryptionError("encryption: not this side's turn to write", { code: HANDSHAKE });
     const parts = [];
     const tokens = this.#pattern.messages[this.#index];
     for (let i = 0; i < tokens.length; i++) {
@@ -342,14 +347,18 @@ class HandshakeState {
   }
 
   async read(message) {
-    if (this.done || this.writing) throw new Error("encryption: not this side's turn to read");
+    if (this.done || this.writing) {
+      throw new EncryptionError("encryption: not this side's turn to read", { code: HANDSHAKE });
+    }
     if (!(message instanceof Uint8Array) || message.length > MAX_HANDSHAKE_MESSAGE) {
-      throw new Error('encryption: malformed handshake message');
+      throw new EncryptionError('encryption: malformed handshake message', { code: HANDSHAKE });
     }
     const length = this.#dh.publicLength;
     let offset = 0;
     const take = (size) => {
-      if (offset + size > message.length) throw new Error('encryption: malformed handshake message');
+      if (offset + size > message.length) {
+        throw new EncryptionError('encryption: malformed handshake message', { code: HANDSHAKE });
+      }
       const part = message.subarray(offset, offset + size);
       offset += size;
       return part;
@@ -359,7 +368,7 @@ class HandshakeState {
       const token = tokens[i];
       if (token === 'e') {
         this.#re = Uint8Array.from(take(length));
-        if (isZero(this.#re)) throw new Error('encryption: malformed handshake message');
+        if (isZero(this.#re)) throw new EncryptionError('encryption: malformed handshake message', { code: HANDSHAKE });
         await this.#symmetric.mixHash(this.#re);
         if (this.#pattern.psk) await this.#symmetric.mixKey(this.#re);
       } else if (token === 's') {
@@ -382,7 +391,9 @@ class HandshakeState {
    * what an application binds a credential to (channel binding).
    */
   async finish() {
-    if (!this.done) throw new Error('encryption: the handshake is not finished');
+    if (!this.done) {
+      throw new EncryptionError('encryption: the handshake is not finished', { code: 'ALX_ERR_ENCRYPTION_STATE' });
+    }
     const states = await this.#symmetric.split(this.#rekeyAfter);
     const first = states[0];
     const second = states[1];

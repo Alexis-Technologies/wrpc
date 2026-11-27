@@ -9,7 +9,7 @@ const { jsonParse } = require('../utils.js');
 const { decodeAttachments } = require('../attachments.js');
 const { createWsCompression } = require('./wsCompression.js');
 const { openSocket } = require('./wsHandshake.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, ClosedError } = require('../errors.js');
 
 const { WebSocket } = globalThis;
 
@@ -94,7 +94,7 @@ class ClientWsTransport extends ClientTransport {
         // What arrives is the socket's Event or CloseEvent, never an Error:
         // an 'error' listener and a rejected ready() get an Error that
         // carries it as its cause.
-        const error = new Error('WebSocket connection closed', { cause: event });
+        const error = new ClosedError('WebSocket connection closed', { cause: event });
         // A handshake still running is over with the socket: its ready()
         // rejects now, not at the handshake timeout.
         this.#secure?.cancel(error);
@@ -103,7 +103,7 @@ class ClientWsTransport extends ClientTransport {
         if (this.#opening) {
           this.#opening = null;
           this.emit('error', error);
-          return void reject(new Error('Connection closed', { cause: event }));
+          return void reject(new ClosedError('Connection closed', { cause: event }));
         }
         if (!this.active) return;
         this.active = false;
@@ -224,7 +224,7 @@ class ClientWsTransport extends ClientTransport {
   }
 
   write(data) {
-    if (!this.active) throw new Error('Not connected');
+    if (!this.active) throw new ClosedError('Not connected');
     if (this.#compression !== null) {
       const frame = this.#compression.encode(data);
       if (frame !== null) return void this.#send(frame);
@@ -562,7 +562,7 @@ class ClientEventTransport extends ClientTransport {
   }
 
   write(data) {
-    if (!this.#port) throw new Error('Not connected');
+    if (!this.#port) throw new ClosedError('Not connected');
     this.#port.postMessage(data);
   }
 }

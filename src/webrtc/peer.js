@@ -42,7 +42,7 @@ const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
 const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError, outcomeOf } = require('./assertions.js');
 const { normalizeCompression } = require('../compression/index.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, ClosedError } = require('../errors.js');
 
 class WrpcPeer extends Emitter {
   #signaler;
@@ -247,7 +247,7 @@ class WrpcPeer extends Emitter {
 
   /** Identifies through the signaler and starts listening for peers. */
   start() {
-    if (this.#closed) return Promise.reject(new Error('WrpcPeer is closed'));
+    if (this.#closed) return Promise.reject(new ClosedError('WrpcPeer is closed'));
     return (this.#started ??= this.#signaler.ready().catch((error) => {
       this.#started = null;
       throw error;
@@ -362,7 +362,9 @@ class WrpcPeer extends Emitter {
     if (message.type !== 'description') return message;
     const fingerprint = sdpFingerprint(message.description?.sdp);
     if (fingerprint === null) {
-      throw new Error('WrpcPeer: the local description declares no single certificate fingerprint');
+      throw new AssertionError('WrpcPeer: the local description declares no single certificate fingerprint', {
+        code: 'ALX_ERR_ASSERTION_FINGERPRINT',
+      });
     }
     const result = await this.#signaler.assert({ fingerprint });
     if (!isAssertion(result?.assertion)) throw new TypeError('signaler.assert() answered without an assertion');

@@ -7,13 +7,13 @@ const crypto = require('node:crypto');
 
 const { OPCODES, CLOSE_CODES, RSV1 } = require('./constants.js');
 const { Frame, EMPTY_PING, EMPTY_PONG, encodeFrame, encodeFrameFrom } = require('./frame.js');
-const { FrameParser, isValidUTF8, PARSE_ERR_CODES } = require('./frameParser.js');
+const { FrameParser, isValidUTF8, PARSE_ERR_CODES, ParseError } = require('./frameParser.js');
 const { SegmentQueue } = require('./segments.js');
 const { PreparedFrames } = require('./prepared.js');
 const { DeflateContext } = require('./deflateContext.js');
 const permessageDeflate = require('./permessageDeflate.js');
 const { Deque } = require('../deque.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, TransportError } = require('../errors.js');
 
 // The write-queue pressure signal when a socket does not say (a test
 // double): net.Socket's own default.
@@ -353,7 +353,7 @@ class Connection extends EventEmitter {
     this.#queue.push(data);
 
     if (this.#queue.length > this.#maxBuffer) {
-      const error = new Error('Buffer overflow, closing connection');
+      const error = new ParseError('Buffer overflow, closing connection', { code: PARSE_ERR_CODES.MESSAGE_TOO_BIG });
       this.#fault('ws.overflow', error, { queued: this.#queue.length, max: this.#maxBuffer });
       if (this.#isClient) {
         this.#failed = true;
@@ -453,7 +453,7 @@ class Connection extends EventEmitter {
   #trackMessageSize(size) {
     const tooBig = size > this.#maxBuffer;
     if (tooBig) {
-      const error = new Error('Message too big');
+      const error = new ParseError('Message too big', { code: PARSE_ERR_CODES.MESSAGE_TOO_BIG });
       this.#fault('ws.too-big', error, { size, max: this.#maxBuffer });
       if (this.#isClient) {
         this.#failed = true;
@@ -472,7 +472,9 @@ class Connection extends EventEmitter {
     if (!this.#fragments) {
       // Continuation frame without a started fragmented message
       if (opcode === OPCODES.CONTINUATION) {
-        const error = new Error('Protocol error: Unexpected CONTINUATION without start');
+        const error = new ParseError('Protocol error: Unexpected CONTINUATION without start', {
+          code: PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON,
+        });
         this.#fault('ws.protocol', error);
         const closeFrame = Frame.protocolErrorClose('COMMON', this.#isClient);
         return void this.#fail(closeFrame);
@@ -505,14 +507,16 @@ class Connection extends EventEmitter {
       const isBinary = firstOpcode === OPCODES.BINARY;
       const isText = firstOpcode === OPCODES.TEXT;
       if (isText && !isValidUTF8(fullPayload)) {
-        const error = new Error('Invalid UTF-8 in text frame');
+        const error = new ParseError('Invalid UTF-8 in text frame', { code: PARSE_ERR_CODES.INVALID_PAYLOAD });
         this.#fault('ws.invalid-utf8', error);
         const closeFrame = Frame.errorClose('INVALID_PAYLOAD', this.#isClient);
         return void this.#fail(closeFrame);
       }
       this.#emitMessage(fullPayload, isBinary);
     } else {
-      const error = new Error('Protocol error: Unexpected data frame during fragments');
+      const error = new ParseError('Protocol error: Unexpected data frame during fragments', {
+        code: PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON,
+      });
       this.#fault('ws.protocol', error);
       const closeFrame = Frame.protocolErrorClose('COMMON', this.#isClient);
       return void this.#fail(closeFrame);
@@ -582,7 +586,7 @@ class Connection extends EventEmitter {
       return void this.#failInflate(error);
     }
     if (isText && !isValidUTF8(inflated)) {
-      const error = new Error('Invalid UTF-8 in text frame');
+      const error = new ParseError('Invalid UTF-8 in text frame', { code: PARSE_ERR_CODES.INVALID_PAYLOAD });
       this.#fault('ws.invalid-utf8', error);
       return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
     }
@@ -620,7 +624,7 @@ class Connection extends EventEmitter {
       if (this.#closing) continue;
       if (item.error !== null) return void this.#failInflate(item.error);
       if (item.isText && !isValidUTF8(item.data)) {
-        const error = new Error('Invalid UTF-8 in text frame');
+        const error = new ParseError('Invalid UTF-8 in text frame', { code: PARSE_ERR_CODES.INVALID_PAYLOAD });
         this.#fault('ws.invalid-utf8', error);
         return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
       }
@@ -705,7 +709,9 @@ class Connection extends EventEmitter {
   #exceedsBackpressure() {
     if (!this.#maxBackpressure) return false;
     if (this.bufferedAmount <= this.#maxBackpressure) return false;
-    const error = new Error('Backpressure limit exceeded, terminating connection');
+    const error = new TransportError('Backpressure limit exceeded, terminating connection', {
+      code: 'ALX_ERR_BACKPRESSURE',
+    });
     this.#fault('ws.backpressure', error, { buffered: this.bufferedAmount, max: this.#maxBackpressure });
     this.terminate();
     return true;

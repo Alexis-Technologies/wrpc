@@ -14,6 +14,7 @@
 
 const { requireSubtle, isZero } = require('./bytes.js');
 const { ArgumentError } = require('../errors.js');
+const { EncryptionError } = require('./contracts.js');
 
 const ALGORITHM = { name: 'X25519' };
 const LENGTH = 32;
@@ -47,7 +48,9 @@ const x25519 = ({ subtle = globalThis.crypto?.subtle } = {}) => {
     } catch {
       shared = null;
     }
-    if (shared === null || isZero(shared)) throw new Error('encryption: invalid public key');
+    if (shared === null || isZero(shared)) {
+      throw new EncryptionError('encryption: invalid public key', { code: 'ALX_ERR_ENCRYPTION_KEY' });
+    }
     return shared;
   };
 

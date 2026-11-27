@@ -14,6 +14,7 @@
 const nodeCrypto = require('node:crypto');
 const { isZero } = require('./bytes.js');
 const { ArgumentError } = require('../errors.js');
+const { EncryptionError } = require('./contracts.js');
 
 const LENGTH = 32;
 
@@ -49,7 +50,9 @@ const x25519 = ({ crypto = nodeCrypto } = {}) => {
     } catch {
       shared = null;
     }
-    if (shared === null || isZero(shared)) throw new Error('encryption: invalid public key');
+    if (shared === null || isZero(shared)) {
+      throw new EncryptionError('encryption: invalid public key', { code: 'ALX_ERR_ENCRYPTION_KEY' });
+    }
     return shared;
   };
 

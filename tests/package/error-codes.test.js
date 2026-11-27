@@ -11,12 +11,12 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { ConfigError, ArgumentError, WrpcError } = require('../../index.js');
-const { FramingError, TransportError } = require('../../src/errors.js');
+const { FramingError, TransportError, ClosedError, ProtocolError } = require('../../src/errors.js');
 const { CliError } = require('../../src/cli/types.js');
 const { DeflateError } = require('../../src/deflate/index.js');
 const { ParseError, PARSE_ERR_CODES } = require('../../src/websocket/ws.js');
 const { AssertionError, outcomeOf } = require('../../src/webrtc/assertions.js');
-const { OpenError, EncryptionRefusedError } = require('../../src/encryption/index.js');
+const { OpenError, EncryptionError, EncryptionRefusedError } = require('../../src/encryption/index.js');
 
 const ROOT = path.join(__dirname, '..', '..');
 // A code never ends with `_`: `ALX_ERR_FRAMING_*` in a comment is a family.
@@ -62,6 +62,41 @@ const BARE_TYPE_ERRORS = {
   'src/client/core.js': 1,
   'src/webrtc/peer.js': 1,
   'src/webrtc/signaler.js': 3,
+};
+
+// The bare Errors that stay, each for a reason: the code of the Node.js
+// error it stands in for, set on it (`EADDRINUSE`, `ERR_STREAM_PREMATURE_CLOSE`,
+// `ERR_HTTP_HEADERS_SENT`, `ERR_UNHANDLED_ERROR`), or a validator's issues the
+// router wraps in a WrpcError 400 at once.
+const BARE_ERRORS = {
+  'src/adapters/common.js': 1,
+  'src/adapters/uws.js': 1,
+  'src/rpc/router.js': 3,
+  'src/transport.js': 1,
+  'src/utils.js': 1,
+};
+
+// The RangeErrors that stay: a length an internal caller got wrong (hkdf, the
+// segment queue's own bookkeeping), a peer's handshake message past the
+// Noise maximum, and the inflate cap under zlib's own code on both halves.
+const BARE_RANGE_ERRORS = {
+  'src/compression/native.browser.js': 1,
+  'src/encryption/hkdf.browser.js': 1,
+  'src/encryption/hkdf.js': 1,
+  'src/encryption/noise.js': 1,
+  'src/websocket/deflateContext.js': 1,
+  'src/websocket/segments.js': 1,
+};
+
+const countIn = (needle) => {
+  const found = {};
+  for (const name of readdirSync(path.join(ROOT, 'src'), { recursive: true })) {
+    if (!name.endsWith('.js')) continue;
+    const file = `src/${name.split(path.sep).join('/')}`;
+    const count = read(file).split(needle).length - 1;
+    if (count > 0) found[file] = count;
+  }
+  return found;
 };
 
 describe('error codes', () => {
@@ -111,6 +146,29 @@ describe('error codes', () => {
     await assert.rejects(() => query.queryOptions(['nope', 'send']).queryFn(), argument);
   });
 
+  // What is gone, what a peer broke and what a carrier gave up on threw a
+  // bare Error each: the message was all a caller had to branch on.
+  it('should code what is gone, what was ended on purpose, and what a carrier gave up on', async () => {
+    const { WrpcClient } = require('../../src/client.js');
+    const { Semaphore } = require('../../src/utils.js');
+    const { ws: ClientWsTransport } = WrpcClient.transport;
+    assert.throws(
+      () => new ClientWsTransport('ws://127.0.0.1:1').write('{}'),
+      (error) => error instanceof ClosedError && error.code === 'ALX_ERR_CLOSED',
+    );
+    const full = new Semaphore({ concurrency: 1, size: 0 });
+    await full.enter();
+    await assert.rejects(
+      full.enter(),
+      (error) => error instanceof TransportError && error.code === 'ALX_ERR_QUEUE_FULL',
+    );
+    const waiting = new Semaphore({ concurrency: 0, size: 1 });
+    const controller = new AbortController();
+    const entered = waiting.enter(controller.signal);
+    controller.abort();
+    await assert.rejects(entered, (error) => error instanceof ClosedError && error.code === 'ALX_ERR_ABORTED');
+  });
+
   it('should give each class its code and keep instanceof TypeError', () => {
     const config = new ConfigError('x');
     const argument = new ArgumentError('y', { cause: config });
@@ -139,7 +197,15 @@ describe('error codes', () => {
         'ALX_ERR_PARSE_INVALID_PAYLOAD',
       ],
       [new AssertionError('a', { code: 'ALX_ERR_ASSERTION_KID', cause }), 'AssertionError', 'ALX_ERR_ASSERTION_KID'],
+      [new ClosedError('a', { cause }), 'ClosedError', 'ALX_ERR_CLOSED'],
+      [new ClosedError('a', { code: 'ALX_ERR_ABORTED', cause }), 'ClosedError', 'ALX_ERR_ABORTED'],
+      [new ProtocolError('a', { cause }), 'ProtocolError', 'ALX_ERR_PROTOCOL'],
       [new OpenError('a', { cause }), 'OpenError', 'ALX_ERR_OPEN'],
+      [
+        new EncryptionError('a', { code: 'ALX_ERR_ENCRYPTION_KEY', cause }),
+        'EncryptionError',
+        'ALX_ERR_ENCRYPTION_KEY',
+      ],
       [
         new EncryptionRefusedError('a', { statusCode: 426, cause }),
         'EncryptionRefusedError',
@@ -185,13 +251,14 @@ describe('error codes', () => {
   });
 
   it('should throw no bare TypeError in src/ but the ones that are not a config or an argument mistake', () => {
-    const found = {};
-    for (const name of readdirSync(path.join(ROOT, 'src'), { recursive: true })) {
-      if (!name.endsWith('.js')) continue;
-      const file = `src/${name.split(path.sep).join('/')}`;
-      const count = read(file).split('new TypeError(').length - 1;
-      if (count > 0) found[file] = count;
-    }
-    assert.deepEqual(found, BARE_TYPE_ERRORS);
+    assert.deepEqual(countIn('new TypeError('), BARE_TYPE_ERRORS);
+  });
+
+  // 186 of them had no code until the review against alexiskills 1.2: a
+  // caller could tell a closed connection from a peer's bad packet only by
+  // the message. A new one takes a class of src/errors.js, or a row here.
+  it('should throw no bare Error or RangeError in src/ but the ones listed with their reason', () => {
+    assert.deepEqual(countIn('new Error('), BARE_ERRORS);
+    assert.deepEqual(countIn('new RangeError('), BARE_RANGE_ERRORS);
   });
 });

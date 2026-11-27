@@ -33,7 +33,7 @@ const { isRtcAdapter, isRtcPeerConnection } = require('./port.js');
 const { negotiateMessageSize, MIN_MESSAGE_SIZE } = require('./framing.js');
 const { sdpFingerprint } = require('./assertions.js');
 const { deferred } = require('./ids.js');
-const { ConfigError, ArgumentError } = require('../errors.js');
+const { ConfigError, ArgumentError, ClosedError, TransportError } = require('../errors.js');
 
 // Candidates held until the remote description arrives; past it they are
 // dropped, said once per dial — a peer used to be able to fill memory
@@ -236,7 +236,7 @@ class RtcLink extends Emitter {
 
   /** Dials: creates the connection and both channels; the initiator offers. */
   start() {
-    if (this.#state !== 'new') throw new Error(`RtcLink.start(): already ${this.#state}`);
+    if (this.#state !== 'new') throw new ArgumentError(`RtcLink.start(): already ${this.#state}`);
     this.#dial('connecting');
   }
 
@@ -255,9 +255,9 @@ class RtcLink extends Emitter {
   /** Resolves when both channels are open; rejects when this dial fails or the link closes. */
   waitOpen() {
     if (this.#state === 'connected') return Promise.resolve();
-    if (this.#state === 'closed') return Promise.reject(new Error('RtcLink is closed'));
-    if (this.#state === 'failed') return Promise.reject(new Error('RtcLink failed'));
-    if (this.#state === 'new') return Promise.reject(new Error('RtcLink not started'));
+    if (this.#state === 'closed') return Promise.reject(new ClosedError('RtcLink is closed'));
+    if (this.#state === 'failed') return Promise.reject(new ClosedError('RtcLink failed'));
+    if (this.#state === 'new') return Promise.reject(new ClosedError('RtcLink not started'));
     return this.#opened.promise;
   }
 
@@ -348,7 +348,7 @@ class RtcLink extends Emitter {
     const replaced = this.#opened;
     this.#opened = null;
     this.#teardownPc();
-    if (replaced) replaced.reject(new Error('RtcLink re-dialled'));
+    if (replaced) replaced.reject(new ClosedError('RtcLink re-dialled', { code: 'ALX_ERR_ABORTED' }));
     const { initiator, responder, label } = this.#channels;
     const mine = this.initiator ? initiator : responder;
     const theirs = this.initiator ? responder : initiator;
@@ -427,12 +427,15 @@ class RtcLink extends Emitter {
       // A channel does not come back on its own: the link is down until a
       // redial, whichever side closed it.
       if (this.#state === 'connected' || this.#state === 'connecting' || this.#state === 'reconnecting') {
-        this.#fail(new Error(`data channel '${which}' closed`));
+        this.#fail(new ClosedError(`data channel '${which}' closed`));
       }
     };
     const onChannelError = (event) => {
       if (this.#pc !== pc) return;
-      this.#error(event?.error ?? new Error('data channel error'), 'channel');
+      this.#error(
+        event?.error ?? new TransportError('data channel error', { code: 'ALX_ERR_CHANNEL_ERROR' }),
+        'channel',
+      );
     };
     const onClientClose = onChannelClose('client');
     const onHostClose = onChannelClose('host');
@@ -592,7 +595,7 @@ class RtcLink extends Emitter {
       return;
     }
     if (connection === 'closed') {
-      if (this.#state !== 'closed' && this.#state !== 'failed') this.#fail(new Error('peer connection closed'));
+      if (this.#state !== 'closed' && this.#state !== 'failed') this.#fail(new ClosedError('peer connection closed'));
       return;
     }
     if ((ice === 'connected' || ice === 'completed' || connection === 'connected') && this.#restarting) {
@@ -644,7 +647,7 @@ class RtcLink extends Emitter {
     this.#opened = null;
     this.#teardownPc();
     this.#setState('closed', closure);
-    if (opened) opened.reject(new Error('RtcLink is closed'));
+    if (opened) opened.reject(new ClosedError('RtcLink is closed'));
     void this.emit('close', closure).catch((error) => this.#error(error, 'listener.close'));
   }
 
@@ -656,7 +659,9 @@ class RtcLink extends Emitter {
     this.#connectTimer = unref(
       setTimeout(() => {
         this.#connectTimer = null;
-        this.#fail(new Error(`RtcLink connect timeout after ${this.#connectTimeout} ms`));
+        this.#fail(
+          new TransportError(`RtcLink connect timeout after ${this.#connectTimeout} ms`, { code: 'ALX_ERR_TIMEOUT' }),
+        );
       }, this.#connectTimeout),
     );
   }
@@ -668,7 +673,11 @@ class RtcLink extends Emitter {
       setTimeout(() => {
         this.#restartTimer = null;
         void this.emit('restart', { outcome: 'failed' }).catch((error) => this.#error(error, 'listener.restart'));
-        this.#fail(new Error(`ICE restart did not reconnect within ${this.#restartTimeout} ms`));
+        this.#fail(
+          new TransportError(`ICE restart did not reconnect within ${this.#restartTimeout} ms`, {
+            code: 'ALX_ERR_TIMEOUT',
+          }),
+        );
       }, this.#restartTimeout),
     );
   }

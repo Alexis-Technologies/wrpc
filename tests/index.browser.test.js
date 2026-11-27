@@ -10,9 +10,12 @@ describe('browser barrel', () => {
   it('should expose only browser-safe exports', () => {
     assert.deepStrictEqual(Object.keys(wrpcBrowser).sort(), [
       'ArgumentError',
+      'ClosedError',
       'ConfigError',
       'Emitter',
       'EventStream',
+      'ProtocolError',
+      'TransportError',
       'WrpcClient',
       'WrpcClientProxy',
       'WrpcError',

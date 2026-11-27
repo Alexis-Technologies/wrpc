@@ -26,7 +26,7 @@
 
 const crypto = require('node:crypto');
 const { aead } = require('./aead.js');
-const { isCipher, OpenError } = require('./contracts.js');
+const { isCipher, OpenError, EncryptionError } = require('./contracts.js');
 const { normalizeKeys } = require('./keyring.js');
 const { isPromise } = require('../compression/ids.js');
 const { ConfigError } = require('../errors.js');
@@ -230,7 +230,11 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     if (sender !== null && sender.kid === kid && sender.counter < RESEED_AFTER) return sender;
     const salt = randomBytes(SALT_LENGTH);
     const key = derive(kid, suite, salt);
-    if (key === null) throw new Error(`encryption: the keyring does not hold its current key ${JSON.stringify(kid)}`);
+    if (key === null) {
+      throw new EncryptionError(`encryption: the keyring does not hold its current key ${JSON.stringify(kid)}`, {
+        code: 'ALX_ERR_ENCRYPTION_KEY',
+      });
+    }
     const header = Buffer.alloc(HEADER_LENGTH);
     header[0] = VERSION;
     header[1] = suite;

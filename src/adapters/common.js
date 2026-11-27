@@ -37,7 +37,7 @@ const { STATUS_CODES } = require('../status.js');
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
 const { getPathname } = require('../websocket/upgrade.js');
-const { ConfigError } = require('../errors.js');
+const { ConfigError, WrpcError } = require('../errors.js');
 
 // The one upgrade gate every host shares. With an explicit ws.path the
 // engine already gates the pathname, and the default RPC-path gate would
@@ -114,7 +114,7 @@ const receiveBody = (stream, limit = MAX_BODY_SIZE) => {
       // server request is let go of its socket first, so the 400 still
       // reaches the peer over a connection that stays usable.
       destroyStream(stream);
-      reject(new Error('Body size limit exceeded'));
+      reject(new WrpcError('Body size limit exceeded', { code: 400 }));
     };
     const onEnd = () => {
       settle();
