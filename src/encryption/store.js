@@ -27,10 +27,10 @@ const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('./envelop
 const { isKeyProvider, OpenError, EncryptionError } = require('./contracts.js');
 const { createLoggerWriter } = require('../logging.js');
 const { ConfigError } = require('../errors.js');
-
-const isFunction = (value) => typeof value === 'function';
 const CREATE = Object.freeze({ create: true });
 const UPDATE = Object.freeze({ create: false });
+
+const isFunction = (value) => typeof value === 'function';
 
 const isPresent = (value) => value !== undefined && value !== null;
 

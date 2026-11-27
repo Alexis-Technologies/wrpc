@@ -109,50 +109,6 @@ const isKem = (value) =>
   typeof value.decap === 'function';
 
 /**
- * One direction of an HPKE context: `seal`/`open` with the sequence number
- * as the nonce (XORed into the base nonce, §5.2), and `export`. The counter
- * is taken synchronously, so calls made in order are sealed in order even
- * over an asynchronous cipher.
- */
-class HpkeContext {
-  #key;
-  #baseNonce;
-  #exporterSecret;
-  #expand;
-  #sequence = 0;
-
-  constructor(key, baseNonce, exporterSecret, expand) {
-    this.#key = key;
-    this.#baseNonce = baseNonce;
-    this.#exporterSecret = exporterSecret;
-    this.#expand = expand;
-  }
-
-  #nonce() {
-    if (this.#sequence >= Number.MAX_SAFE_INTEGER) {
-      throw new EncryptionError('hpke: the message counter is spent', { code: 'ALX_ERR_ENCRYPTION_STATE' });
-    }
-    const nonce = Uint8Array.from(this.#baseNonce);
-    const sequence = i2osp(this.#sequence++, nonce.length);
-    for (let i = 0; i < nonce.length; i++) nonce[i] ^= sequence[i];
-    return nonce;
-  }
-
-  seal(aad, plaintext) {
-    return this.#key.seal(this.#nonce(), plaintext, aad ?? EMPTY);
-  }
-
-  open(aad, sealed) {
-    return this.#key.open(this.#nonce(), sealed, aad ?? EMPTY);
-  }
-
-  /** A secret both ends can derive and nobody else: `length` bytes bound to `context`. */
-  export(context, length) {
-    return this.#expand(this.#exporterSecret, 'sec', context, length);
-  }
-}
-
-/**
  * `{ suite, setupSender(recipientPublicKey, options), setupRecipient(enc,
  * recipientKeyPair, options) }`. Options: `info` (bytes both ends agree on —
  * what the message is FOR, so one sealed for one purpose does not open for
@@ -203,4 +159,48 @@ const createHpke = ({ kem, kdf, cipher }) => {
   });
 };
 
-module.exports = { createHpke, dhKem, isKem, AEAD_IDS, KEM_X25519_HKDF_SHA256 };
+/**
+ * One direction of an HPKE context: `seal`/`open` with the sequence number
+ * as the nonce (XORed into the base nonce, §5.2), and `export`. The counter
+ * is taken synchronously, so calls made in order are sealed in order even
+ * over an asynchronous cipher.
+ */
+class HpkeContext {
+  #key;
+  #baseNonce;
+  #exporterSecret;
+  #expand;
+  #sequence = 0;
+
+  constructor(key, baseNonce, exporterSecret, expand) {
+    this.#key = key;
+    this.#baseNonce = baseNonce;
+    this.#exporterSecret = exporterSecret;
+    this.#expand = expand;
+  }
+
+  #nonce() {
+    if (this.#sequence >= Number.MAX_SAFE_INTEGER) {
+      throw new EncryptionError('hpke: the message counter is spent', { code: 'ALX_ERR_ENCRYPTION_STATE' });
+    }
+    const nonce = Uint8Array.from(this.#baseNonce);
+    const sequence = i2osp(this.#sequence++, nonce.length);
+    for (let i = 0; i < nonce.length; i++) nonce[i] ^= sequence[i];
+    return nonce;
+  }
+
+  seal(aad, plaintext) {
+    return this.#key.seal(this.#nonce(), plaintext, aad ?? EMPTY);
+  }
+
+  open(aad, sealed) {
+    return this.#key.open(this.#nonce(), sealed, aad ?? EMPTY);
+  }
+
+  /** A secret both ends can derive and nobody else: `length` bytes bound to `context`. */
+  export(context, length) {
+    return this.#expand(this.#exporterSecret, 'sec', context, length);
+  }
+}
+
+module.exports = { KEM_X25519_HKDF_SHA256, AEAD_IDS, dhKem, isKem, createHpke };

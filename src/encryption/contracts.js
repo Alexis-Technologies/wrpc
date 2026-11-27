@@ -1,5 +1,32 @@
 'use strict';
 
+const isObject = (value) => typeof value === 'object' && value !== null;
+
+const isLength = (value) => Number.isInteger(value) && value > 0;
+
+const isCipher = (value) =>
+  isObject(value) &&
+  typeof value.id === 'string' &&
+  value.id.length > 0 &&
+  isLength(value.keyLength) &&
+  isLength(value.nonceLength) &&
+  isLength(value.tagLength) &&
+  typeof value.key === 'function';
+
+const isCipherKey = (value) => isObject(value) && typeof value.seal === 'function' && typeof value.open === 'function';
+
+const isDh = (value) =>
+  isObject(value) &&
+  typeof value.id === 'string' &&
+  value.id.length > 0 &&
+  isLength(value.publicLength) &&
+  typeof value.generateKeyPair === 'function' &&
+  typeof value.keyPair === 'function' &&
+  typeof value.dh === 'function';
+
+const isKeyProvider = (value) =>
+  isObject(value) && typeof value.current === 'function' && typeof value.get === 'function';
+
 // The structural seams of @alexify/wrpc/encryption. Like a Compressor or a
 // Backplane, a primitive is whatever answers the right methods: the
 // platform ones of this directory, or an injected one — XChaCha20 from
@@ -62,31 +89,4 @@ class EncryptionError extends Error {
   }
 }
 
-const isObject = (value) => typeof value === 'object' && value !== null;
-
-const isLength = (value) => Number.isInteger(value) && value > 0;
-
-const isCipher = (value) =>
-  isObject(value) &&
-  typeof value.id === 'string' &&
-  value.id.length > 0 &&
-  isLength(value.keyLength) &&
-  isLength(value.nonceLength) &&
-  isLength(value.tagLength) &&
-  typeof value.key === 'function';
-
-const isCipherKey = (value) => isObject(value) && typeof value.seal === 'function' && typeof value.open === 'function';
-
-const isDh = (value) =>
-  isObject(value) &&
-  typeof value.id === 'string' &&
-  value.id.length > 0 &&
-  isLength(value.publicLength) &&
-  typeof value.generateKeyPair === 'function' &&
-  typeof value.keyPair === 'function' &&
-  typeof value.dh === 'function';
-
-const isKeyProvider = (value) =>
-  isObject(value) && typeof value.current === 'function' && typeof value.get === 'function';
-
-module.exports = { OpenError, EncryptionError, isCipher, isCipherKey, isDh, isKeyProvider };
+module.exports = { isCipher, isCipherKey, isDh, isKeyProvider, OpenError, EncryptionError };

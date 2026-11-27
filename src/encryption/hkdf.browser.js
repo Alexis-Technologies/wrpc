@@ -54,4 +54,4 @@ const createKdf = ({ subtle = globalThis.crypto?.subtle } = {}) => {
   return Object.freeze({ id: 'SHA256', hashLength: HASH_LENGTH, hash, hmac, extract, expand, derive });
 };
 
-module.exports = { createKdf, HASH_LENGTH };
+module.exports = { HASH_LENGTH, createKdf };

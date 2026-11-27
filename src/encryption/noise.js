@@ -68,9 +68,11 @@ const PATTERNS = Object.freeze({
 // nonce length it declared.
 const CIPHER_NAMES = Object.freeze({ __proto__: null, 'aes-256-gcm': 'AESGCM', 'chacha20-poly1305': 'ChaChaPoly' });
 
-const cipherName = (cipher) => CIPHER_NAMES[cipher.id] ?? cipher.id;
-
 const MAX_NONCE = Number.MAX_SAFE_INTEGER;
+
+const PATTERN_NAMES = Object.freeze(Object.keys(PATTERNS));
+
+const cipherName = (cipher) => CIPHER_NAMES[cipher.id] ?? cipher.id;
 
 const nonceOf = (cipher, counter) => {
   const nonce = new Uint8Array(cipher.nonceLength);
@@ -105,6 +107,44 @@ const rekeyNonce = (cipher) => {
   const nonce = new Uint8Array(cipher.nonceLength);
   nonce.fill(0xff, cipher.nonceLength - 8);
   return nonce;
+};
+
+const checkKey = (value, name) => {
+  if (!(value instanceof Uint8Array) || value.length !== KEY_LENGTH) {
+    throw new ConfigError(`noise: ${name} must be 32 bytes`);
+  }
+};
+
+/**
+ * `{ name, pattern, initiator(options), responder(options) }` for one Noise
+ * protocol. Options: `prologue` (bytes both sides must agree on — anything
+ * negotiated before the handshake goes here, so tampering with it fails the
+ * handshake), `staticKey` (a Dh key pair: the responder's in NK, both in
+ * XX), `remoteStatic` (the initiator's pinned server key in NK), `psk`
+ * (NNpsk0), `rekeyAfter`. `ephemeral` fixes the ephemeral key — for test
+ * vectors, and nothing else.
+ */
+const createNoise = ({ pattern, dh, cipher, kdf }) => {
+  if (!(pattern in PATTERNS)) {
+    throw new ConfigError(`noise: unknown pattern ${JSON.stringify(pattern)} — ${Object.keys(PATTERNS).join(', ')}`);
+  }
+  const name = `Noise_${pattern}_${dh.id}_${cipherName(cipher)}_${kdf.id}`;
+  const noise = { pattern, dh, cipher, kdf };
+  const start = (initiator, options = {}) => {
+    const needsStatic = pattern === 'XX' || (pattern === 'NK' && !initiator);
+    if (needsStatic && !options.staticKey) throw new ConfigError(`noise: ${pattern} needs a staticKey on this side`);
+    if (pattern === 'NK' && initiator) checkKey(options.remoteStatic, 'remoteStatic');
+    if (PATTERNS[pattern].psk) checkKey(options.psk, 'psk');
+    return new HandshakeState(noise, initiator, options).initialize(name, options.prologue ?? EMPTY);
+  };
+  return Object.freeze({
+    name,
+    pattern,
+    /** The cipher as the protocol name spells it: 'AESGCM', 'ChaChaPoly', or an injected cipher's id. */
+    cipher: cipherName(cipher),
+    initiator: (options) => start(true, options),
+    responder: (options) => start(false, options),
+  });
 };
 
 /**
@@ -406,44 +446,4 @@ class HandshakeState {
   }
 }
 
-const checkKey = (value, name) => {
-  if (!(value instanceof Uint8Array) || value.length !== KEY_LENGTH) {
-    throw new ConfigError(`noise: ${name} must be 32 bytes`);
-  }
-};
-
-/**
- * `{ name, pattern, initiator(options), responder(options) }` for one Noise
- * protocol. Options: `prologue` (bytes both sides must agree on — anything
- * negotiated before the handshake goes here, so tampering with it fails the
- * handshake), `staticKey` (a Dh key pair: the responder's in NK, both in
- * XX), `remoteStatic` (the initiator's pinned server key in NK), `psk`
- * (NNpsk0), `rekeyAfter`. `ephemeral` fixes the ephemeral key — for test
- * vectors, and nothing else.
- */
-const createNoise = ({ pattern, dh, cipher, kdf }) => {
-  if (!(pattern in PATTERNS)) {
-    throw new ConfigError(`noise: unknown pattern ${JSON.stringify(pattern)} — ${Object.keys(PATTERNS).join(', ')}`);
-  }
-  const name = `Noise_${pattern}_${dh.id}_${cipherName(cipher)}_${kdf.id}`;
-  const noise = { pattern, dh, cipher, kdf };
-  const start = (initiator, options = {}) => {
-    const needsStatic = pattern === 'XX' || (pattern === 'NK' && !initiator);
-    if (needsStatic && !options.staticKey) throw new ConfigError(`noise: ${pattern} needs a staticKey on this side`);
-    if (pattern === 'NK' && initiator) checkKey(options.remoteStatic, 'remoteStatic');
-    if (PATTERNS[pattern].psk) checkKey(options.psk, 'psk');
-    return new HandshakeState(noise, initiator, options).initialize(name, options.prologue ?? EMPTY);
-  };
-  return Object.freeze({
-    name,
-    pattern,
-    /** The cipher as the protocol name spells it: 'AESGCM', 'ChaChaPoly', or an injected cipher's id. */
-    cipher: cipherName(cipher),
-    initiator: (options) => start(true, options),
-    responder: (options) => start(false, options),
-  });
-};
-
-const PATTERN_NAMES = Object.freeze(Object.keys(PATTERNS));
-
-module.exports = { createNoise, CipherState, PATTERN_NAMES, cipherName, MAX_HANDSHAKE_MESSAGE };
+module.exports = { MAX_HANDSHAKE_MESSAGE, PATTERN_NAMES, cipherName, createNoise, CipherState };

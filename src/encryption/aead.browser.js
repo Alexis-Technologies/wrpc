@@ -67,4 +67,4 @@ const aead = ({ algorithm = DEFAULT_ID, optional = false, subtle = globalThis.cr
   });
 };
 
-module.exports = { aead, ALGORITHMS, DEFAULT_ID, KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH };
+module.exports = { DEFAULT_ID, KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH, ALGORITHMS, aead };

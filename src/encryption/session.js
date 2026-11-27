@@ -45,6 +45,19 @@ const MAX_HELD_BYTES = 4 * 1024 * 1024;
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const encoder = new TextEncoder();
 
+// The label of THIS framing, bound into the handshake — not the revision of
+// the packet core a connection negotiated (wire.js): the session format has
+// its own version byte and changes on its own, so a core revision must not
+// change the bytes two peers hash here.
+const PROLOGUE_LABEL = 'wrpc.v1';
+
+// Node's own string writer, where there is one: it sizes the buffer exactly,
+// where encodeInto needs room for three bytes per UTF-16 unit — 4.8 µs
+// against 10.7 on a 16 KB packet, 0.4 against 1.0 on 1 KB
+// (bench/encryption.js, the inner-frame rows). A `typeof` guard, so a
+// browser bundle neither needs nor polyfills it.
+const NodeBuffer = typeof Buffer === 'undefined' ? null : Buffer;
+
 /** The part of the first handshake message before the Noise bytes — and of the prologue. */
 const helloHeader = (name, kid) => {
   const nameBytes = utf8(name);
@@ -54,12 +67,6 @@ const helloHeader = (name, kid) => {
   }
   return concat(Uint8Array.of(HELLO_VERSION, nameBytes.length), nameBytes, Uint8Array.of(kidBytes.length), kidBytes);
 };
-
-// The label of THIS framing, bound into the handshake — not the revision of
-// the packet core a connection negotiated (wire.js): the session format has
-// its own version byte and changes on its own, so a core revision must not
-// change the bytes two peers hash here.
-const PROLOGUE_LABEL = 'wrpc.v1';
 
 const prologueOf = (kind, header) => concat(utf8(`${PROLOGUE_LABEL}\0${kind}\0`), header);
 
@@ -91,13 +98,6 @@ const asBytes = (data) => {
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 };
-
-// Node's own string writer, where there is one: it sizes the buffer exactly,
-// where encodeInto needs room for three bytes per UTF-16 unit — 4.8 µs
-// against 10.7 on a 16 KB packet, 0.4 against 1.0 on 1 KB
-// (bench/encryption.js, the inner-frame rows). A `typeof` guard, so a
-// browser bundle neither needs nor polyfills it.
-const NodeBuffer = typeof Buffer === 'undefined' ? null : Buffer;
 
 // One message as the plaintext of a sealed frame: the inner kind, then the
 // text as UTF-8 or the bytes as they are.
@@ -172,18 +172,18 @@ class SecureChannel {
 }
 
 module.exports = {
-  SecureChannel,
-  innerOf,
-  helloHeader,
-  prologueOf,
-  parseHello,
-  frame,
-  isFrame,
-  asBytes,
   FRAME_HANDSHAKE,
   FRAME_SEALED,
   DEFAULT_REKEY_AFTER,
   DEFAULT_HANDSHAKE_TIMEOUT,
   MAX_HELD,
   MAX_HELD_BYTES,
+  helloHeader,
+  prologueOf,
+  isFrame,
+  frame,
+  parseHello,
+  asBytes,
+  innerOf,
+  SecureChannel,
 };

@@ -301,4 +301,4 @@ const fetchServerKey = async (url, { fetch = globalThis.fetch } = {}) => {
 const isEncryption = (value) =>
   typeof value === 'object' && value !== null && typeof value.secure === 'function' && typeof value.param === 'string';
 
-module.exports = { createEncryption, isEncryption, fetchServerKey };
+module.exports = { createEncryption, fetchServerKey, isEncryption };

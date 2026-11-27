@@ -98,4 +98,4 @@ const normalizeKeys = (value, name = 'keys') => {
 /** A fresh 32-byte key from the platform's CSPRNG. */
 const generateKey = ({ crypto = globalThis.crypto } = {}) => randomSource(crypto)(KEY_LENGTH);
 
-module.exports = { normalizeKeys, parseKey, generateKey, isKid, KEY_LENGTH, DEFAULT_KID };
+module.exports = { KEY_LENGTH, DEFAULT_KID, isKid, parseKey, normalizeKeys, generateKey };

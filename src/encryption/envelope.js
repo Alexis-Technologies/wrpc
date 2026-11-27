@@ -125,42 +125,6 @@ const normalizeEnvelopeEncryption = (value, name) => {
   });
 };
 
-/**
- * A sliding anti-replay window over one sender's counters, as IPsec and
- * DTLS keep: the highest counter seen and a ring of flags under it. A
- * receiver hears only the channels it subscribed to, so GAPS are normal and
- * cost nothing; what is refused is a counter seen before, or one older than
- * the window.
- */
-class ReplayWindow {
-  #seen;
-  #size = 0;
-  #top = -1;
-
-  constructor(size) {
-    this.#size = size;
-    this.#seen = new Uint8Array(size);
-  }
-
-  /** True when `counter` is fresh — and marks it; call only after the tag verified. */
-  accept(counter) {
-    const size = this.#size;
-    const top = this.#top;
-    if (counter > top) {
-      const advance = counter - top;
-      if (advance >= size) this.#seen.fill(0);
-      else for (let c = top + 1; c < counter; c++) this.#seen[c % size] = 0;
-      this.#seen[counter % size] = 1;
-      this.#top = counter;
-      return true;
-    }
-    if (top - counter >= size) return false;
-    if (this.#seen[counter % size] === 1) return false;
-    this.#seen[counter % size] = 1;
-    return true;
-  }
-}
-
 const writeCounter = (buffer, offset, counter) => {
   buffer.writeUInt32BE(Math.floor(counter / 0x100000000), offset);
   buffer.writeUInt32BE(counter >>> 0, offset + 4);
@@ -332,11 +296,47 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
   return { seal, open };
 };
 
+/**
+ * A sliding anti-replay window over one sender's counters, as IPsec and
+ * DTLS keep: the highest counter seen and a ring of flags under it. A
+ * receiver hears only the channels it subscribed to, so GAPS are normal and
+ * cost nothing; what is refused is a counter seen before, or one older than
+ * the window.
+ */
+class ReplayWindow {
+  #seen;
+  #size = 0;
+  #top = -1;
+
+  constructor(size) {
+    this.#size = size;
+    this.#seen = new Uint8Array(size);
+  }
+
+  /** True when `counter` is fresh — and marks it; call only after the tag verified. */
+  accept(counter) {
+    const size = this.#size;
+    const top = this.#top;
+    if (counter > top) {
+      const advance = counter - top;
+      if (advance >= size) this.#seen.fill(0);
+      else for (let c = top + 1; c < counter; c++) this.#seen[c % size] = 0;
+      this.#seen[counter % size] = 1;
+      this.#top = counter;
+      return true;
+    }
+    if (top - counter >= size) return false;
+    if (this.#seen[counter % size] === 1) return false;
+    this.#seen[counter % size] = 1;
+    return true;
+  }
+}
+
 module.exports = {
-  normalizeEnvelopeEncryption,
-  createEnvelopeSealer,
-  ReplayWindow,
   HEADER_LENGTH,
   DEFAULT_REPLAY_WINDOW,
   MAX_SENDERS,
+  normalizeEnvelopeEncryption,
+  createEnvelopeSealer,
+  ReplayWindow,
 };

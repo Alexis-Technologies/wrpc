@@ -43,6 +43,21 @@ const NONCE_LABEL = utf8('nonce');
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
+const STREAM_NONCE_PARAM = /;\s*n=([A-Za-z0-9_-]+)/;
+
+// The one way a sealed request fails that the application can act on: the
+// server answered in plaintext, which a client that encrypts does not
+// read. The outer status is unauthenticated (anything on the path could
+// have written it), so only a closed set is named — and a transport maps
+// only that set onto the calls it carried; anything else is a 503.
+const REFUSAL_MESSAGES = {
+  __proto__: null,
+  400: 'the sealed request was not accepted — the pinned server key may be retired',
+  409: "the sealed request was refused as stale or replayed — check this device's clock",
+  426: 'the server requires encryption and this request did not carry it',
+  503: 'the server cannot vouch a sealed request fresh right now (its replay memory is full or out of reach) — retry later',
+};
+
 const isSealedType = (value) => typeof value === 'string' && value.toLowerCase().startsWith(CONTENT_TYPE);
 
 const isSealedStream = (value) =>
@@ -106,8 +121,6 @@ const streamKey = async ({ kdf, cipher }, context, enc, nonce) => {
   return cipher.key(await kdf.expand(prk, KEY_LABEL, cipher.keyLength));
 };
 
-const STREAM_NONCE_PARAM = /;\s*n=([A-Za-z0-9_-]+)/;
-
 /** The Content-Type of a sealed stream under `nonce`. */
 const sealedStreamType = (nonce) => `${SEALED_STREAM_TYPE}; n=${toBase64Url(nonce)}`;
 
@@ -152,33 +165,8 @@ const openSealedStream = (body, key) => {
   });
 };
 
-// The one way a sealed request fails that the application can act on: the
-// server answered in plaintext, which a client that encrypts does not
-// read. The outer status is unauthenticated (anything on the path could
-// have written it), so only a closed set is named — and a transport maps
-// only that set onto the calls it carried; anything else is a 503.
-const REFUSAL_MESSAGES = {
-  __proto__: null,
-  400: 'the sealed request was not accepted — the pinned server key may be retired',
-  409: "the sealed request was refused as stale or replayed — check this device's clock",
-  426: 'the server requires encryption and this request did not carry it',
-  503: 'the server cannot vouch a sealed request fresh right now (its replay memory is full or out of reach) — retry later',
-};
-
 const refusalMessage = (status) =>
   `encryption: ${REFUSAL_MESSAGES[status] ?? `the server answered in plaintext (${status})`}`;
-
-// `options.statusCode` is that outer status; `status` is the same number
-// under its 2.x name, kept until 3.0.
-class EncryptionRefusedError extends Error {
-  constructor(message, options = {}) {
-    super(message, options);
-    this.name = 'EncryptionRefusedError';
-    this.code = 'ALX_ERR_ENCRYPTION_REFUSED';
-    this.statusCode = options.statusCode;
-    this.status = options.statusCode;
-  }
-}
 
 /**
  * The client half: `sealedFetch({ hpke, kdf, cipher, serverKey })`
@@ -235,23 +223,35 @@ const sealedFetch = ({ hpke, kdf, cipher, serverKey, now = Date.now }) => {
   };
 };
 
+// `options.statusCode` is that outer status; `status` is the same number
+// under its 2.x name, kept until 3.0.
+class EncryptionRefusedError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'EncryptionRefusedError';
+    this.code = 'ALX_ERR_ENCRYPTION_REFUSED';
+    this.statusCode = options.statusCode;
+    this.status = options.statusCode;
+  }
+}
+
 module.exports = {
-  EncryptionRefusedError,
-  sealedFetch,
-  responseKey,
-  streamKey,
-  streamNonce,
-  sealedStreamType,
-  openSealedStream,
-  isSealedStream,
-  SEALED_STREAM_TYPE,
-  STREAM_TYPE,
-  pack,
-  unpack,
-  isSealedType,
-  decoder,
   CONTENT_TYPE,
   VERSION,
   RESPONSE_NONCE,
   INFO,
+  STREAM_TYPE,
+  SEALED_STREAM_TYPE,
+  decoder,
+  isSealedType,
+  isSealedStream,
+  pack,
+  unpack,
+  responseKey,
+  streamKey,
+  sealedStreamType,
+  streamNonce,
+  openSealedStream,
+  sealedFetch,
+  EncryptionRefusedError,
 };

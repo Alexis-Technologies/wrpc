@@ -9,6 +9,10 @@ const { ConfigError } = require('../errors.js');
 
 const encoder = new TextEncoder();
 
+const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/;
+
+const HEX = /^(?:[0-9a-fA-F]{2})*$/;
+
 const utf8 = (text) => encoder.encode(text);
 
 const isBytes = (value) => value instanceof Uint8Array;
@@ -54,8 +58,6 @@ const toBase64Url = (bytes) => {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 };
 
-const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/;
-
 /** base64 or base64url, padded or not → bytes; null when it is neither. */
 const fromBase64 = (text) => {
   if (typeof text !== 'string' || !BASE64.test(text)) return null;
@@ -71,8 +73,6 @@ const fromBase64 = (text) => {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 };
-
-const HEX = /^(?:[0-9a-fA-F]{2})*$/;
 
 const fromHex = (text) => {
   if (typeof text !== 'string' || !HEX.test(text)) return null;

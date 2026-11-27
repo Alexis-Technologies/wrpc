@@ -49,4 +49,4 @@ const createKdf = () =>
     derive: async (ikm, salt, info, length) => expandOf(hmacOf(salt, ikm), info, length),
   });
 
-module.exports = { createKdf, HASH_LENGTH };
+module.exports = { HASH_LENGTH, createKdf };

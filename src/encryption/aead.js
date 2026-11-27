@@ -93,4 +93,4 @@ const aead = ({ algorithm = DEFAULT_ID } = {}) => {
   });
 };
 
-module.exports = { aead, ALGORITHMS, DEFAULT_ID, KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH };
+module.exports = { DEFAULT_ID, KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH, ALGORITHMS, aead };

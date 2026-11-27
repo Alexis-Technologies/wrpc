@@ -531,4 +531,4 @@ class SealedSocket extends EventEmitter {
   }
 }
 
-module.exports = { normalizeServerEncryption, wantsEncryption, SealedSocket, DEFAULT_PATTERNS, MAX_QUEUED };
+module.exports = { DEFAULT_PATTERNS, MAX_QUEUED, normalizeServerEncryption, wantsEncryption, SealedSocket };

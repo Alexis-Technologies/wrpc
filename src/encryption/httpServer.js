@@ -311,4 +311,4 @@ const createHttpSealing = ({
   return { unwrap, isSealed: (call) => isSealedType(call.headers?.['content-type']) };
 };
 
-module.exports = { createHttpSealing, createReplayCache, DEFAULT_MAX_SKEW, MAX_INNER_HEADER };
+module.exports = { DEFAULT_MAX_SKEW, MAX_INNER_HEADER, createReplayCache, createHttpSealing };
