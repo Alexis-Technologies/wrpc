@@ -159,6 +159,10 @@ narrower promise — see
   `@alexify/wrpc/encryption`**, with their codes in `ErrorCode` and the
   errors reference. A guard keeps a new bare `Error` out of `src/`.
 - **`Client.drain(signal)`** (server side) resolves when the signal aborts.
+- **`new WrpcError(message, { statusCode })`**: the status again, under the
+  name a host's error handler reads (fastify's), given to the constructor —
+  the fastify adapter's 403 and the core's 426 set it so, where they wrote
+  it on the error after making it.
 - **`new Emitter({ warn })`**: where the `MaxListenersExceededWarning`
   goes — the console when it is not given, nowhere for `null`.
 

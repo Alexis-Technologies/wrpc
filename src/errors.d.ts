@@ -159,6 +159,8 @@ export interface WrpcErrorOptions extends ErrorOptions {
   details?: unknown;
   /** Lets a 5xx's message and details travel to the peer, as a 4xx's always do. */
   expose?: boolean;
+  /** The status again, under the name a host framework's error handler reads (fastify's). */
+  statusCode?: number;
 }
 
 /**
@@ -173,5 +175,6 @@ export declare class WrpcError extends Error {
   /** Structured issue lists the server attached; an optional wire field. */
   details?: unknown;
   expose?: boolean;
+  statusCode?: number;
   constructor(message?: string, options?: WrpcErrorOptions);
 }

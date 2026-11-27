@@ -66,12 +66,10 @@ const BARE_TYPE_ERRORS = {
 
 // The bare Errors that stay, each for a reason: the code of the Node.js
 // error it stands in for, set on it (`EADDRINUSE`, `ERR_STREAM_PREMATURE_CLOSE`,
-// `ERR_HTTP_HEADERS_SENT`, `ERR_UNHANDLED_ERROR`), or a validator's issues the
-// router wraps in a WrpcError 400 at once.
+// `ERR_HTTP_HEADERS_SENT`, `ERR_UNHANDLED_ERROR`).
 const BARE_ERRORS = {
   'src/adapters/common.js': 1,
   'src/adapters/uws.js': 1,
-  'src/rpc/router.js': 3,
   'src/transport.js': 1,
   'src/utils.js': 1,
 };
@@ -226,6 +224,10 @@ describe('error codes', () => {
     assert.equal(bare.code, 500);
     assert.equal(Object.hasOwn(bare, 'details'), false);
     assert.equal(Object.hasOwn(bare, 'expose'), false);
+    assert.equal(Object.hasOwn(bare, 'statusCode'), false);
+    // The status under the name a host's error handler reads, given to the
+    // constructor rather than set on the instance after it.
+    assert.equal(new WrpcError('z', { code: 403, statusCode: 403 }).statusCode, 403);
     const full = new WrpcError('y', { code: 400, details: { issues: [] }, expose: true });
     assert.deepEqual([full.code, full.details, full.expose], [400, { issues: [] }, true]);
     assert.equal(String(full), 'WrpcError: y');

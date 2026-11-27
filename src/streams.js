@@ -233,8 +233,10 @@ class WrpcReadable extends Emitter {
   // place of the plain "no longer read": a handler refusing an upload with
   // something its uploader can show. Only a string is a reason: terminate
   // is also handed over as a listener, and called with whatever that emits.
+  // The reason is for the sender, whatever its code: `expose` lets a 5xx's
+  // message reach it (tellSender in src/rpc/dispatcher.js).
   async terminate(message, code = 499) {
-    this.#finish('terminated', typeof message === 'string' ? new WrpcError(message, { code }) : null);
+    this.#finish('terminated', typeof message === 'string' ? new WrpcError(message, { code, expose: true }) : null);
   }
 
   // Ends the stream for its reader with an error it can see: the iteration

@@ -782,13 +782,12 @@ class RpcServer extends Emitter {
     // added, the same 426 the core answers on its own surface.
     if (this.#encryption?.required) {
       this.#refusePlaintext('http');
-      const error = new WrpcError('Upgrade Required: this server answers sealed requests only', {
+      // statusCode too: the host's error handler reads it (fastify's does).
+      throw new WrpcError('Upgrade Required: this server answers sealed requests only', {
         code: 426,
         expose: true,
+        statusCode: 426,
       });
-      // The host's error handler reads statusCode (fastify's does).
-      error.statusCode = 426;
-      throw error;
     }
     const transport = new ServerHttpTransport({ headers, remoteAddress, respond: () => {} }, { headers: {} });
     const verb = `${method}`.toUpperCase();

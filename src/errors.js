@@ -83,15 +83,18 @@ class ProtocolError extends Error {
 // client's own 408/499/503), and what wrpc — or a handler or a hook — throws
 // on the server to answer a peer with that status. `details` is the optional
 // wire field, `expose` lets a 5xx's message and details travel
-// (`publicErrorMessage` in src/rpc/errors.js); both are set only when given.
+// (`publicErrorMessage` in src/rpc/errors.js), `statusCode` is the same
+// status under the name a host's error handler reads (fastify's); each is
+// set only when given — `details` must be absent on the wire, not null.
 class WrpcError extends Error {
   constructor(message, options = {}) {
-    const { code = 500, details, expose } = options;
+    const { code = 500, details, expose, statusCode } = options;
     super(message, options);
     this.name = 'WrpcError';
     this.code = code;
     if (details !== undefined) this.details = details;
     if (expose !== undefined) this.expose = expose;
+    if (statusCode !== undefined) this.statusCode = statusCode;
   }
 }
 

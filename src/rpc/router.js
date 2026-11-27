@@ -35,6 +35,11 @@ const isGeneratorHandler = (handler) => handler instanceof AsyncGeneratorFunctio
 // for the caller, so the transport sends them verbatim even on a 5xx, where
 // an ordinary error's message is replaced by the status line.
 
+// The issues a validator found, as the error the router wraps — in a 400
+// for arguments, a 500 for a result: the joined messages its text, the
+// issues, with their paths, its details.
+const issuesError = (messages, issues) => new WrpcError(messages.join('; '), { code: 400, details: { issues } });
+
 // A validator is either a plain function `(value) => value | throws`
 // (returning undefined keeps the original value) or a Standard Schema
 // (https://standardschema.dev) object carrying `~standard`. `context` is
@@ -73,9 +78,7 @@ const runStandardSchema = async (validator, value) => {
       issues.push({ message: issue.message, path: issue.path });
       messages.push(issue.message);
     }
-    const error = new Error(messages.join('; '));
-    error.details = { issues };
-    throw error;
+    throw issuesError(messages, issues);
   }
   return result.value;
 };
@@ -678,9 +681,7 @@ const compileInput = (ajv, schema, label) => {
     if (issues) {
       const messages = [];
       for (let i = 0; i < issues.length; i++) messages.push(`${issues[i].path} ${issues[i].message}`);
-      const error = new Error(messages.join('; '));
-      error.details = { issues };
-      throw error;
+      throw issuesError(messages, issues);
     }
     return value;
   };
@@ -716,9 +717,7 @@ const compileOutput = (ajv, schema, label) => {
       issues.push({ message: errors[i].message, path: errors[i].instancePath });
       messages.push(`${errors[i].instancePath} ${errors[i].message}`);
     }
-    const error = new Error(messages.join('; '));
-    error.details = { issues };
-    throw error;
+    throw issuesError(messages, issues);
   };
 };
 

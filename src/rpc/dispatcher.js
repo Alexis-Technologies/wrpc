@@ -518,10 +518,12 @@ const tellSender = (client, stream, asked) => (reason) => {
   let error = reason;
   if (stream.error === null) {
     if (!asked || stream.bytesReceived === stream.size) return;
-    if (error === null) error = new WrpcError(`Stream ${stream.label} is no longer read`, { code: CANCELLED });
-    // Written for the sender, whatever its code: a 5xx message is
-    // otherwise a server internal and stays here.
-    error.expose = true;
+    // Written for the sender, whatever its code — `expose` is set where the
+    // error is made (terminate() builds the reader's reason with it): a 5xx
+    // message is otherwise a server internal and stays here.
+    if (error === null) {
+      error = new WrpcError(`Stream ${stream.label} is no longer read`, { code: CANCELLED, expose: true });
+    }
   }
   const { code } = error;
   // A stream that broke its announcement is a peer breaking the protocol;

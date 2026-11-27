@@ -98,13 +98,9 @@ const resolveEngine = (fastify, options) => {
 
 const argsOf = (request) => ({ params: request.params, query: request.query, body: request.body });
 
-const forbidden = () => {
-  const error = new WrpcError('Forbidden', { code: 403, expose: true });
-  // fastify's own error handler reads statusCode; wrpc's reads code. Both
-  // are set so `restErrors: 'app'` keeps the status too.
-  error.statusCode = 403;
-  return error;
-};
+// fastify's own error handler reads statusCode; wrpc's reads code. Both
+// are set so `restErrors: 'app'` keeps the status too.
+const forbidden = () => new WrpcError('Forbidden', { code: 403, expose: true, statusCode: 403 });
 
 // The wrpc wire error shape, as a fastify route errorHandler: the code is
 // the status, the body is { message, code, details? } under the same

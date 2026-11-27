@@ -57,6 +57,9 @@ const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PARTITIONS = 3;
 const DEFAULT_MAX_RETRY_DELAY = 60_000;
 const DEFAULT_MAX_CATCH_UP = 4;
+// The errors a failed heartbeat turned into: the group is rebalancing, and
+// whatever settles a delivery then is no longer this member's to do.
+const REBALANCES = new WeakSet();
 // A settlement the broker refused (a leader election, a producer that
 // cannot reach it) is tried again (SETTLE_ATTEMPTS in ../adapter.js) before
 // the consumer gives the message back; and a retry's in-process delay is cut
@@ -734,7 +737,7 @@ const createKafkaBroker = (options = {}) => {
             state.healthy = true;
             return;
           } catch (error) {
-            if (error?.rebalanced === true) {
+            if (REBALANCES.has(error)) {
               return void log.info({ event: 'broker.kafka.rebalanced', queue, id, action });
             }
             if (round < SETTLE_ATTEMPTS - 1 && state.running) {
@@ -757,7 +760,10 @@ const createKafkaBroker = (options = {}) => {
         try {
           await heartbeat();
         } catch (error) {
-          throw Object.assign(error, { rebalanced: true });
+          // Wrapped, not marked: the heartbeat's error is the client's own.
+          const rebalance = new ClosedError('the consumer group is rebalancing', { cause: error });
+          REBALANCES.add(rebalance);
+          throw rebalance;
         }
       };
       const republish = async (extra, delay = 0) => {
