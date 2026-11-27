@@ -242,6 +242,12 @@ narrower promise — see
   next.
 - **A closing ws connection's 200 ms destroy grace has an owner**:
   `terminate()` and the socket's `close` clear it.
+- **A Redis log read that resumes from an id fails when Redis does.** The
+  first retained id was read with `XINFO`, whose every error stood for "no
+  such key": a refused connection, a `NOAUTH` or a timeout read as an empty
+  stream, and a resume past a trimmed history passed the gap check. It is
+  read with `XRANGE … COUNT 1`, which answers an empty list for a missing
+  key.
 - **A closed HTTP or SSE client aborts its packet POSTs in flight**; a
   retried call's backoff ends when its signal aborts, and its timer holds
   the process while the call is awaited; a subscription parked on

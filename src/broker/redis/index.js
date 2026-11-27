@@ -203,15 +203,13 @@ const createRedisBroker = (options = {}) => {
     return rows.length > 0 ? rows[0][0] : null;
   };
 
+  // XRANGE answers [] for a key that does not exist, so no error stands for
+  // "empty". XINFO threw for it, and the catch that read that as an empty
+  // stream read a refused connection, a NOAUTH or a timeout the same way —
+  // a gap check that passed while Redis was down.
   const firstId = async (topic) => {
-    try {
-      const info = await client.xinfo('STREAM', streamKey(topic));
-      const at = info.indexOf('first-entry');
-      const entry = at >= 0 ? info[at + 1] : null;
-      return entry ? entry[0] : null;
-    } catch {
-      return null; // no such key: an empty stream
-    }
+    const rows = await client.xrange(streamKey(topic), '-', '+', 'COUNT', 1);
+    return rows.length > 0 ? rows[0][0] : null;
   };
 
   const range = async (topic, { after, limit }) => {

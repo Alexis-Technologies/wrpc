@@ -303,6 +303,22 @@ describe('redis broker', () => {
     assert.strictEqual(client.ended, false);
   });
 
+  // The read of the first retained id caught every error as "no such key":
+  // Redis down read as an empty stream, and a resume past a trimmed history
+  // was let through instead of refused.
+  it('should fail a resume when Redis fails, not read the failure as an empty stream', async (t) => {
+    const { client, broker, close } = open();
+    t.after(close);
+    const topic = unique('down');
+    const first = await broker.log.append(topic, 'a');
+    await broker.log.append(topic, 'b');
+    const refused = new Error('ECONNREFUSED');
+    client.server.fail = (command) => (command === 'xrange' || command === 'xinfo' ? refused : null);
+    const read = broker.log.read(topic, { after: first });
+    await assert.rejects(read.ready, (error) => error === refused);
+    client.server.fail = null;
+  });
+
   it('should mint opaque stream ids, strictly ordered across the ms boundary', async (t) => {
     const { broker, close } = open();
     t.after(close);
