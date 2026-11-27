@@ -32,6 +32,19 @@ const ATTEMPT_HEADER = 'x-wrpc-attempt';
 const REDELIVERED_HEADER = 'x-wrpc-redelivered';
 const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
 
+// A direct message's body was a string ('1') or bytes ('0'), where the
+// broker itself carries bytes only.
+const TEXT_HEADER = 'wrpc-text';
+
+const DEFAULT_PREFETCH = 16;
+
+// A settlement that has to PUBLISH — a retry's copy, a dead letter — and was
+// refused is tried again on this schedule by the adapters that settle that
+// way (AMQP, Kafka), before the message is handed back to the broker as it
+// was: at least once, attempt untouched.
+const SETTLE_ATTEMPTS = 3;
+const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
+
 // The attempt a delivery is on, read back from the header an adapter wrote
 // when it re-published the message: a positive integer, or `fallback` for
 // anything else. It used to be `Number(header ?? '1') || 1`, which believes
@@ -69,19 +82,6 @@ const producerHeaders = (headers) => {
 // warning of its own, one per frame. The reasons are this package's (a
 // closed set), so the table holds a handful of entries.
 const refusalLevels = () => lineLevels();
-
-// A direct message's body was a string ('1') or bytes ('0'), where the
-// broker itself carries bytes only.
-const TEXT_HEADER = 'wrpc-text';
-
-const DEFAULT_PREFETCH = 16;
-
-// A settlement that has to PUBLISH — a retry's copy, a dead letter — and was
-// refused is tried again on this schedule by the adapters that settle that
-// way (AMQP, Kafka), before the message is handed back to the broker as it
-// was: at least once, attempt untouched.
-const SETTLE_ATTEMPTS = 3;
-const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
 
 // A pause that does not keep the process alive.
 const sleep = (ms) =>
@@ -216,16 +216,16 @@ module.exports = {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  TEXT_HEADER,
+  DEFAULT_PREFETCH,
+  SETTLE_ATTEMPTS,
+  SETTLE_BACKOFF,
   attemptOf,
   producerHeaders,
   refusalLevels,
-  SETTLE_ATTEMPTS,
-  SETTLE_BACKOFF,
   sleep,
   stopOnAbort,
   reporter,
-  TEXT_HEADER,
-  DEFAULT_PREFETCH,
   idFactory,
   failedRead,
   guardedRead,

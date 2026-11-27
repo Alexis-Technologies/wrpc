@@ -390,4 +390,4 @@ class TopicTails {
   }
 }
 
-module.exports = { TopicTails, DEFAULT_HIGH_WATER_MARK };
+module.exports = { DEFAULT_HIGH_WATER_MARK, TopicTails };

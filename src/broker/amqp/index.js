@@ -60,12 +60,7 @@ const DEFAULT_QUEUE_TYPE = 'quorum';
 const OFFSET = /^\d{1,19}$/;
 
 const STREAM_OFFSET = 'x-stream-offset';
-
-const isFunction = (value) => typeof value === 'function';
-// An offset is a number inside and a string outside.
-const offsetText = (offset) => `${offset}`;
 const token = tokenEncoder({ maxLength: 180 });
-const name = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 // A consumer's channel is re-opened on this schedule after the server
 // closed it; a lost CONNECTION stops the loop (nothing to re-open on).
 const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2, jitter: true });
@@ -84,6 +79,11 @@ const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2,
 const RANGE_IDLE = 250;
 const RANGE_TIMEOUT = 10_000;
 const RANGE_TIP_TIMEOUT = 500;
+
+const isFunction = (value) => typeof value === 'function';
+// An offset is a number inside and a string outside.
+const offsetText = (offset) => `${offset}`;
+const name = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 
 const createAmqpBroker = (options = {}) => {
   const {

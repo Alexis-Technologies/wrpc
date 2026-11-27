@@ -14,17 +14,6 @@ const { MemoryBackplane, DEFAULT_PREFIX } = require('../scaling/memory.js');
 const { createLoggerWriter } = require('../logging.js');
 const { generateUUID } = require('../runtime/node.js');
 const { resolveGenerateId } = require('../utils.js');
-
-// The default for names that go on the wire to a broker: short, because a
-// consumer name or an inbox is repeated in every log line and metric label
-// the broker itself emits, and alphabet-safe for all four brokers.
-//
-// An injected `generateId` is used VERBATIM — never truncated. Trimming a
-// user's id would quietly weaken the uniqueness they chose it for, and the
-// only thing wrpc knows about their generator is that it answers a string.
-// The cost is that a generator answering characters a broker refuses in a
-// consumer name, subject or queue name fails at the driver, not here.
-const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
 const { toText, toHeaders, reasonText } = require('./ids.js');
 const { crashDelay } = require('./retry.js');
 const {
@@ -46,6 +35,17 @@ const DEFAULT_LOG_ENTRIES = 10_000;
 const MAX_ID_LENGTH = 128;
 const LOG_ID = /^[A-Za-z0-9_-]{1,64}\.\d{1,16}$/;
 
+// The default for names that go on the wire to a broker: short, because a
+// consumer name or an inbox is repeated in every log line and metric label
+// the broker itself emits, and alphabet-safe for all four brokers.
+//
+// An injected `generateId` is used VERBATIM — never truncated. Trimming a
+// user's id would quietly weaken the uniqueness they chose it for, and the
+// only thing wrpc knows about their generator is that it answers a string.
+// The cost is that a generator answering characters a broker refuses in a
+// consumer name, subject or queue name fails at the driver, not here.
+const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
+
 const requireName = (value, what, label) => {
   if (typeof value !== 'string' || value.length === 0) {
     throw new ArgumentError(`${label}: ${what} must be a non-empty string`);
@@ -59,6 +59,8 @@ const copyBody = (body) => {
 
 const firstEpoch = (generateId) =>
   generateId === null ? shortId() : resolveGenerateId(generateId, 'MemoryBroker').first;
+
+const createMemoryBroker = (options) => new MemoryBroker(options);
 
 class MemoryBroker {
   #closed = false;
@@ -504,6 +506,4 @@ class MemoryBroker {
   }
 }
 
-const createMemoryBroker = (options) => new MemoryBroker(options);
-
-module.exports = { MemoryBroker, createMemoryBroker };
+module.exports = { createMemoryBroker, MemoryBroker };

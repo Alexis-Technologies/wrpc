@@ -112,4 +112,4 @@ const createBrokerSealing = (option, name, { layer, replay, text = false }) => {
   };
 };
 
-module.exports = { createBrokerSealing, HEADER_SEALED };
+module.exports = { HEADER_SEALED, createBrokerSealing };

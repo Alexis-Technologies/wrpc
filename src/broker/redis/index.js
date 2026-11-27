@@ -870,4 +870,4 @@ const createRedisBroker = (options = {}) => {
   };
 };
 
-module.exports = { createRedisBroker, compareIds };
+module.exports = { compareIds, createRedisBroker };

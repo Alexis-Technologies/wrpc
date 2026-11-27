@@ -69,13 +69,13 @@ const HEARTBEAT_STEP = 3000;
 const CHANNEL_HEADER = 'wrpc-channel';
 const VECTOR = /^k1:(\d{1,5}=\d{1,19})(,\d{1,5}=\d{1,19})*$/;
 
+// A Kafka topic name: letters, digits, dot, underscore and dash only.
+const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });
+
 const isFunction = (value) => typeof value === 'function';
 const byNumber = (a, b) => a - b;
 // Stands in for a watcher's stop() until the watcher is set.
 const NOOP = () => {};
-
-// A Kafka topic name: letters, digits, dot, underscore and dash only.
-const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });
 const topicName = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 
 // The resume token: every partition this reader has passed, sorted.
@@ -906,4 +906,4 @@ const createKafkaBroker = (options = {}) => {
   };
 };
 
-module.exports = { createKafkaBroker, encodeVector, decodeVector };
+module.exports = { encodeVector, decodeVector, createKafkaBroker };

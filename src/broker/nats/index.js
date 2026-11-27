@@ -61,13 +61,13 @@ const CORRELATION_HEADER = 'wrpc-correlation';
 
 const MILLIS = 1_000_000; // JetStream durations are nanoseconds
 
+// One subject token, always: see the header comment.
+const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '~', maxLength: 120 });
+
 const isFunction = (value) => typeof value === 'function';
 
 // A sequence is a number inside and a string outside.
 const sequenceText = (seq) => `${seq}`;
-
-// One subject token, always: see the header comment.
-const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '~', maxLength: 120 });
 // A stream NAME may not contain `.`, spaces or wildcards either.
 const streamName = (prefix, kind, name) => `${prefix}_${kind}_${token(name)}`.replace(/~/g, '_');
 

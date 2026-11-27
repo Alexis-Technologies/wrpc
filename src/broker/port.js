@@ -117,13 +117,6 @@ const isBrokerDirect = (value) => hasFunctions(value, ['inbox', 'listen', 'send'
 // A listener's stop() that also answers `healthy` (see the direct contract).
 const withHealth = (stop, healthy) => Object.defineProperty(stop, 'healthy', { get: healthy, enumerable: true });
 
-const CAPABILITIES = Object.freeze({
-  backplane: isBackplane,
-  log: isBrokerLog,
-  queue: isBrokerQueue,
-  direct: isBrokerDirect,
-});
-
 // A broker exposes at least one capability, each one well-shaped when
 // present, and a close(). A present-but-malformed capability is a broken
 // adapter, not a missing feature — refused rather than silently skipped.
@@ -153,13 +146,20 @@ const capabilityOf = (value, name, label) => {
 const brokerName = (value) =>
   isObject(value) && typeof value.name === 'string' && value.name.length > 0 ? value.name : 'custom';
 
+const CAPABILITIES = Object.freeze({
+  backplane: isBackplane,
+  log: isBrokerLog,
+  queue: isBrokerQueue,
+  direct: isBrokerDirect,
+});
+
 module.exports = {
-  isBroker,
+  isBackplane,
   isBrokerLog,
   isBrokerQueue,
   isBrokerDirect,
-  isBackplane,
+  withHealth,
+  isBroker,
   capabilityOf,
   brokerName,
-  withHealth,
 };

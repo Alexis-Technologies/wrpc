@@ -61,125 +61,6 @@ const DEFAULT_HIGH_WATER_MARK = 1024;
 // another instance, the group spreads them. 0 lifts the cap.
 const DEFAULT_MAX_SESSIONS = 10_000;
 
-// The server half of one session: what the core's Client writes to. The
-// base supplies send()/error() over write().
-class BrokerSessionTransport extends ServerTransport {
-  kind = 'broker';
-  connection = true;
-  #direct = null;
-  #peer = '';
-  #session = '';
-  #seq = 0;
-  #unconfirmed = 0;
-  #highWaterMark = 0;
-  #closed = false;
-  #onFailure = null;
-  // What both ends agreed to on hello/welcome — `{ encode, decode }` — or null.
-  #compression = null;
-  // The binding's sealing (../sealing.js) or null: compress, then seal.
-  #sealing = null;
-  // A codec that threw on the way out — the frame left plain; said by the
-  // server's reporter.
-  #failed = null;
-
-  constructor({ direct, peer, session, highWaterMark, onFailure, compression = null, sealing = null, failed = null }) {
-    super(`broker:${fingerprint(session)}`);
-    this.#direct = direct;
-    this.#peer = peer;
-    this.#session = session;
-    this.#highWaterMark = highWaterMark;
-    this.#onFailure = onFailure;
-    this.#compression = compression;
-    this.#sealing = sealing;
-    this.#failed = failed;
-  }
-
-  /** The codec ids in effect on this session — `{ encode, decode }` — or null. */
-  get compression() {
-    const active = this.#compression;
-    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
-  }
-
-  // Frames go out in call order (the direct contract keeps one sender's
-  // order); the broker's confirmation is what backpressure counts.
-  write(data) {
-    return this.#send(data, null);
-  }
-
-  // A write with per-message options (`compress: false`) — what
-  // Client.sendRaw and a Broadcast use, as on a WebSocket.
-  writeWith(text, options) {
-    return this.#send(text, options);
-  }
-
-  #send(data, options) {
-    if (this.#closed) return false;
-    // Numbered once it exists. Building the frame can throw — sealing asks a
-    // key provider, and a provider is a network call somewhere — and the
-    // number used to be taken first: the frame that failed was never sent,
-    // the next one left with a gap in front of it and the peer dropped the
-    // session for it; the count below was never given back either, so
-    // write() answered false for good.
-    const seq = this.#seq + 1;
-    const frame = sessionFrame(
-      this.#sealing,
-      this.#peer,
-      this.#session,
-      seq,
-      data,
-      this.#compression,
-      options,
-      this.#failed,
-    );
-    this.#seq = seq;
-    this.#unconfirmed++;
-    this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).then(
-      () => this.#confirmed(),
-      (error) => {
-        this.#confirmed();
-        this.#onFailure(error);
-      },
-    );
-    return this.#unconfirmed < this.#highWaterMark;
-  }
-
-  // One frame left the broker's hands, delivered or refused: crossing back
-  // under the high-water mark is what a parked producer waits for.
-  #confirmed() {
-    this.#unconfirmed--;
-    if (this.#unconfirmed === this.#highWaterMark - 1) this.emit('drain');
-  }
-
-  bye(reason) {
-    if (this.#closed) return;
-    // Through the sealer like every other frame: a sealed client drops a
-    // plaintext goodbye as `unsealed` and would go on waiting for a session
-    // that is over.
-    const headers = { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: reason };
-    const frame = sealFrame(this.#sealing, this.#peer, this.#session, headers, '');
-    // Best effort, like every goodbye: a peer it does not reach times out.
-    this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).catch(() => {});
-  }
-
-  get closed() {
-    return this.#closed;
-  }
-
-  close() {
-    if (this.#closed) return;
-    this.bye('closed');
-    this.#closed = true;
-    this.emit('close');
-  }
-
-  // Ended by the peer or the broker: no goodbye to send.
-  drop() {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.emit('close');
-  }
-}
-
 const attachBrokerRpc = async (server, broker, options = {}) => {
   const rpc = rpcOf(server, 'attachBrokerRpc');
   const direct = capabilityOf(broker, 'direct', 'attachBrokerRpc');
@@ -567,5 +448,124 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     stop,
   };
 };
+
+// The server half of one session: what the core's Client writes to. The
+// base supplies send()/error() over write().
+class BrokerSessionTransport extends ServerTransport {
+  kind = 'broker';
+  connection = true;
+  #direct = null;
+  #peer = '';
+  #session = '';
+  #seq = 0;
+  #unconfirmed = 0;
+  #highWaterMark = 0;
+  #closed = false;
+  #onFailure = null;
+  // What both ends agreed to on hello/welcome — `{ encode, decode }` — or null.
+  #compression = null;
+  // The binding's sealing (../sealing.js) or null: compress, then seal.
+  #sealing = null;
+  // A codec that threw on the way out — the frame left plain; said by the
+  // server's reporter.
+  #failed = null;
+
+  constructor({ direct, peer, session, highWaterMark, onFailure, compression = null, sealing = null, failed = null }) {
+    super(`broker:${fingerprint(session)}`);
+    this.#direct = direct;
+    this.#peer = peer;
+    this.#session = session;
+    this.#highWaterMark = highWaterMark;
+    this.#onFailure = onFailure;
+    this.#compression = compression;
+    this.#sealing = sealing;
+    this.#failed = failed;
+  }
+
+  /** The codec ids in effect on this session — `{ encode, decode }` — or null. */
+  get compression() {
+    const active = this.#compression;
+    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
+  }
+
+  // Frames go out in call order (the direct contract keeps one sender's
+  // order); the broker's confirmation is what backpressure counts.
+  write(data) {
+    return this.#send(data, null);
+  }
+
+  // A write with per-message options (`compress: false`) — what
+  // Client.sendRaw and a Broadcast use, as on a WebSocket.
+  writeWith(text, options) {
+    return this.#send(text, options);
+  }
+
+  #send(data, options) {
+    if (this.#closed) return false;
+    // Numbered once it exists. Building the frame can throw — sealing asks a
+    // key provider, and a provider is a network call somewhere — and the
+    // number used to be taken first: the frame that failed was never sent,
+    // the next one left with a gap in front of it and the peer dropped the
+    // session for it; the count below was never given back either, so
+    // write() answered false for good.
+    const seq = this.#seq + 1;
+    const frame = sessionFrame(
+      this.#sealing,
+      this.#peer,
+      this.#session,
+      seq,
+      data,
+      this.#compression,
+      options,
+      this.#failed,
+    );
+    this.#seq = seq;
+    this.#unconfirmed++;
+    this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).then(
+      () => this.#confirmed(),
+      (error) => {
+        this.#confirmed();
+        this.#onFailure(error);
+      },
+    );
+    return this.#unconfirmed < this.#highWaterMark;
+  }
+
+  // One frame left the broker's hands, delivered or refused: crossing back
+  // under the high-water mark is what a parked producer waits for.
+  #confirmed() {
+    this.#unconfirmed--;
+    if (this.#unconfirmed === this.#highWaterMark - 1) this.emit('drain');
+  }
+
+  bye(reason) {
+    if (this.#closed) return;
+    // Through the sealer like every other frame: a sealed client drops a
+    // plaintext goodbye as `unsealed` and would go on waiting for a session
+    // that is over.
+    const headers = { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: reason };
+    const frame = sealFrame(this.#sealing, this.#peer, this.#session, headers, '');
+    // Best effort, like every goodbye: a peer it does not reach times out.
+    this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).catch(() => {});
+  }
+
+  get closed() {
+    return this.#closed;
+  }
+
+  close() {
+    if (this.#closed) return;
+    this.bye('closed');
+    this.#closed = true;
+    this.emit('close');
+  }
+
+  // Ended by the peer or the broker: no goodbye to send.
+  drop() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.emit('close');
+  }
+}
 
 module.exports = { attachBrokerRpc, BrokerSessionTransport };

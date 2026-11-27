@@ -200,9 +200,9 @@ module.exports = {
   serviceAddress,
   peerHeaders,
   seqOf,
+  sealFrame,
+  openFrame,
   packetBody,
   frameBody,
   sessionFrame,
-  sealFrame,
-  openFrame,
 };

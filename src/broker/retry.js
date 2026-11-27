@@ -18,6 +18,14 @@ const DEFAULT_RETRY = Object.freeze({
   retryOn: DEFAULT_RETRY_ON,
 });
 
+// The delay before a delivery whose HANDLER threw (or rejected) comes back.
+// It settled nothing, so the adapter retries it — attempt + 1, after this
+// backoff — rather than releasing it: a release puts the message back at the
+// head, and a handler that always throws then spins the queue hot (the
+// memory broker re-dispatched on a microtask and starved every timer in
+// the process). Deterministic, so the contract tests can bound it.
+const CRASH_BACKOFF = Object.freeze({ minDelay: 50, maxDelay: 1000, factor: 2, jitter: false });
+
 const positiveInteger = (value) => Number.isInteger(value) && value > 0;
 const nonNegative = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 
@@ -62,14 +70,6 @@ const decide = ({ code, attempt, retry = DEFAULT_RETRY, draining = false, random
   const delay = backoffDelay({ attempt: attempt - 1, minDelay: base, maxDelay: max, factor, jitter, random });
   return { action: 'retry', delay };
 };
-
-// The delay before a delivery whose HANDLER threw (or rejected) comes back.
-// It settled nothing, so the adapter retries it — attempt + 1, after this
-// backoff — rather than releasing it: a release puts the message back at the
-// head, and a handler that always throws then spins the queue hot (the
-// memory broker re-dispatched on a microtask and starved every timer in
-// the process). Deterministic, so the contract tests can bound it.
-const CRASH_BACKOFF = Object.freeze({ minDelay: 50, maxDelay: 1000, factor: 2, jitter: false });
 const crashDelay = (attempt) => backoffDelay({ ...CRASH_BACKOFF, attempt: Math.max(0, attempt - 1) });
 
-module.exports = { DEFAULT_RETRY, DEFAULT_RETRY_ON, normalizeRetry, decide, crashDelay, positiveInteger, nonNegative };
+module.exports = { DEFAULT_RETRY_ON, DEFAULT_RETRY, positiveInteger, nonNegative, normalizeRetry, decide, crashDelay };

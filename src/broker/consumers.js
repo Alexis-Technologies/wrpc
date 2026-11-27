@@ -38,75 +38,19 @@ const { ConfigError, ArgumentError, WrpcError } = require('../errors.js');
 // The binding's own refusals: fixed text, safe on a dead letter's outer
 // header under sealing — unlike a handler's message (settle).
 const OWN_REFUSALS = new WeakSet();
-const refusal = (message, code) => {
-  const error = new WrpcError(message, { code });
-  OWN_REFUSALS.add(error);
-  return error;
-};
 
 const DEFAULT_TOKEN_CLIENTS = 128;
 const DEFAULT_TOKEN_TTL = 60_000;
 const DEFAULT_VERSION = '*';
 const TRUST = new Set(['none', 'service', 'token']);
 
-// The outbound half of a consumer client: it never writes to a wire, it
-// settles the delivery waiting on the call id.
-class ConsumerTransport extends Emitter {
-  kind = 'broker';
-  connection = true; // cleared by attach({ persistent: false })
-  #pending = new Map(); // call id -> resolve
-  #closed = false;
-
-  constructor(source) {
-    super({ maxListeners: Number.MAX_SAFE_INTEGER });
-    this.source = source;
-  }
-
-  expect(id) {
-    return new Promise((resolve) => {
-      if (this.#closed) return void resolve({ code: 503, error: null, closed: true });
-      this.#pending.set(id, resolve);
-    });
-  }
-
-  settle(id, outcome) {
-    const resolve = this.#pending.get(id);
-    if (!resolve) return;
-    this.#pending.delete(id);
-    resolve(outcome);
-  }
-
-  /** Deliveries whose call has not answered yet. */
-  get pending() {
-    return this.#pending.size;
-  }
-
-  send(packet) {
-    if (packet?.type === 'callback' && !packet.error) this.settle(packet.id, { code: null, error: null });
-    return true;
-  }
-
-  // The original error, before wireError masks it: what a dead-letter
-  // reason and the log want.
-  error(code, { id = '', error = null } = {}) {
-    this.settle(id, { code, error });
-    return true;
-  }
-
-  write() {
-    return true;
-  }
-
-  close() {
-    if (this.#closed) return;
-    this.#closed = true;
-    // A call the close aborted never answers: its delivery is released
-    // rather than left waiting forever.
-    for (const resolve of this.#pending.values()) resolve({ code: 503, error: null, closed: true });
-    this.#pending.clear();
-    this.emit('close');
-  }
-}
+// How long every slot of a binding may be taken before it is not healthy.
+const DEFAULT_STALL_AFTER = 60_000;
+const refusal = (message, code) => {
+  const error = new WrpcError(message, { code });
+  OWN_REFUSALS.add(error);
+  return error;
+};
 
 const labelOf = (unitKey, name) => `${unitKey}/${name}`;
 
@@ -145,9 +89,6 @@ const retire = (attached) => {
   if (attached.transport.pending === 0) attached.transport.close();
   else attached.retired = true;
 };
-
-// How long every slot of a binding may be taken before it is not healthy.
-const DEFAULT_STALL_AFTER = 60_000;
 
 const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
   if (policy !== undefined && policy !== null && (typeof policy !== 'object' || Array.isArray(policy))) {
@@ -724,5 +665,64 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     }),
   };
 };
+
+// The outbound half of a consumer client: it never writes to a wire, it
+// settles the delivery waiting on the call id.
+class ConsumerTransport extends Emitter {
+  kind = 'broker';
+  connection = true; // cleared by attach({ persistent: false })
+  #pending = new Map(); // call id -> resolve
+  #closed = false;
+
+  constructor(source) {
+    super({ maxListeners: Number.MAX_SAFE_INTEGER });
+    this.source = source;
+  }
+
+  expect(id) {
+    return new Promise((resolve) => {
+      if (this.#closed) return void resolve({ code: 503, error: null, closed: true });
+      this.#pending.set(id, resolve);
+    });
+  }
+
+  settle(id, outcome) {
+    const resolve = this.#pending.get(id);
+    if (!resolve) return;
+    this.#pending.delete(id);
+    resolve(outcome);
+  }
+
+  /** Deliveries whose call has not answered yet. */
+  get pending() {
+    return this.#pending.size;
+  }
+
+  send(packet) {
+    if (packet?.type === 'callback' && !packet.error) this.settle(packet.id, { code: null, error: null });
+    return true;
+  }
+
+  // The original error, before wireError masks it: what a dead-letter
+  // reason and the log want.
+  error(code, { id = '', error = null } = {}) {
+    this.settle(id, { code, error });
+    return true;
+  }
+
+  write() {
+    return true;
+  }
+
+  close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    // A call the close aborted never answers: its delivery is released
+    // rather than left waiting forever.
+    for (const resolve of this.#pending.values()) resolve({ code: 503, error: null, closed: true });
+    this.#pending.clear();
+    this.emit('close');
+  }
+}
 
 module.exports = { attachConsumers, ConsumerTransport };
