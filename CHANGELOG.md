@@ -332,6 +332,19 @@ narrower promise — see
   keep each case's result, await only promises, warm every hand-written
   timer, and run each case of the four that `src/` cites in a process of
   its own (`bench/support/isolate.js`); `bench/semaphore.js` is new.
+- **File names are kebab-case**, as alexiskills' Library profile asks:
+  twelve under `src/` (`src/rpc/server-transport.js`,
+  `src/client/ws-handshake.js` and its browser half, `src/webrtc/peer-link.js`,
+  `src/websocket/frame-parser.js`, …) and 27 test helpers and suites. Every
+  entry point and the `browser` map resolve as before; a deep `require` of a
+  renamed file under `src/` — outside `exports` — moves with it.
+- **Every module is laid out requires, constants, functions, classes,
+  exports**, its `module.exports` in declaration order (a guard holds the
+  latter); only moves, with each statement's comments, and a constant that
+  reads a function or a class while the module loads stays after it.
+- **A flaky assertion is exact**: the scaling encryption suite looked for
+  `'4111'` in ciphertext and hex ids, where four digits turn up by chance;
+  it looks for the whole card number.
 - **`prepublishOnly`** chains every gate CI's always-on jobs run.
 - **The CHANGELOG** has a link block for every version, and the 2.0
   "Migrating from 1.0" block is the section `Upgrading from 1.0`.
